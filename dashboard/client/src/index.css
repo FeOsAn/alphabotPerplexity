@@ -1,0 +1,130 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Dark-first finance palette — charcoal surfaces, electric green accent */
+    --background: 220 15% 7%;
+    --foreground: 210 20% 92%;
+
+    --card: 220 14% 10%;
+    --card-foreground: 210 20% 92%;
+
+    --popover: 220 14% 10%;
+    --popover-foreground: 210 20% 92%;
+
+    --primary: 142 76% 42%;
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 220 13% 16%;
+    --secondary-foreground: 210 20% 85%;
+
+    --muted: 220 13% 14%;
+    --muted-foreground: 215 15% 55%;
+
+    --accent: 220 13% 18%;
+    --accent-foreground: 210 20% 92%;
+
+    --destructive: 0 62% 52%;
+    --destructive-foreground: 210 20% 92%;
+
+    --border: 220 12% 18%;
+    --input: 220 12% 18%;
+    --ring: 142 76% 42%;
+
+    --radius: 0.5rem;
+
+    /* Custom semantic tokens */
+    --color-gain: 142 76% 42%;       /* Electric green */
+    --color-loss: 0 72% 56%;          /* Red */
+    --color-neutral: 215 15% 55%;     /* Muted blue-gray */
+    --color-momentum: 217 91% 60%;    /* Blue */
+    --color-mean-rev: 38 92% 50%;     /* Amber */
+    --color-trend: 142 76% 42%;       /* Green */
+
+    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  }
+
+  /* Force dark mode always — financial dashboards are dark-first */
+  .dark {
+    --background: 220 15% 7%;
+    --foreground: 210 20% 92%;
+    --card: 220 14% 10%;
+    --card-foreground: 210 20% 92%;
+    --popover: 220 14% 10%;
+    --popover-foreground: 210 20% 92%;
+    --primary: 142 76% 42%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 220 13% 16%;
+    --secondary-foreground: 210 20% 85%;
+    --muted: 220 13% 14%;
+    --muted-foreground: 215 15% 55%;
+    --accent: 220 13% 18%;
+    --accent-foreground: 210 20% 92%;
+    --destructive: 0 62% 52%;
+    --destructive-foreground: 210 20% 92%;
+    --border: 220 12% 18%;
+    --input: 220 12% 18%;
+    --ring: 142 76% 42%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum' 1;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: hsl(var(--muted)); }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground)); }
+
+/* Gain/Loss utilities */
+.text-gain { color: hsl(var(--color-gain)); }
+.text-loss { color: hsl(var(--color-loss)); }
+.bg-gain-subtle { background: hsl(var(--color-gain) / 0.12); }
+.bg-loss-subtle { background: hsl(var(--color-loss) / 0.12); }
+
+/* Strategy color badges */
+.strategy-momentum { color: hsl(var(--color-momentum)); }
+.strategy-mean_reversion { color: hsl(var(--color-mean-rev)); }
+.strategy-trend_following { color: hsl(var(--color-trend)); }
+
+/* Glow effect for positive P&L */
+.glow-green {
+  box-shadow: 0 0 20px hsl(var(--color-gain) / 0.15);
+}
+
+/* Pulse animation for live indicator */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.live-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.card-hover:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px hsl(0 0% 0% / 0.3);
+}
