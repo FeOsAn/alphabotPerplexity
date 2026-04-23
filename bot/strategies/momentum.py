@@ -37,9 +37,6 @@ def should_rebalance() -> bool:
 
 
 def score_universe(broker: AlpacaBroker) -> pd.Series:
-    """Compute 12-1 month momentum scores for each symbol in universe."""
-    logger.info("Fetching historical data for momentum scoring...")
-    def score_universe(broker: AlpacaBroker) -> pd.Series:
     """Compute 12-1 month momentum scores using yFinance (free, full history)."""
     logger.info("Fetching historical data for momentum scoring via yFinance...")
     end = datetime.now()
@@ -68,6 +65,8 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
                 scores[sym] = (price_now - price_then) / price_then
         except (IndexError, ZeroDivisionError):
             pass
+
+    return pd.Series(scores).sort_values(ascending=False)
 
     return pd.Series(scores).sort_values(ascending=False)
 
