@@ -19,14 +19,20 @@ import yfinance as yf
 from datetime import datetime, time as dtime
 import pytz
 
+# Build log handlers — always log to stdout (Railway captures this)
+_log_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _LOG_PATH = os.path.join(_BASE_DIR, 'alphabot.log')
+    _log_handlers.append(logging.FileHandler(_LOG_PATH))
+except Exception:
+    pass  # File logging unavailable — stdout only (fine for Railway)
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/home/user/workspace/alphabot/alphabot.log"),
-    ]
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("alphabot.main")
 
@@ -45,7 +51,6 @@ EASTERN = pytz.timezone("America/New_York")
 
 
 def is_trading_window() -> bool:
-    """Check if we're within the safe trading window (not too close to open/close)."""
     now_et = datetime.now(EASTERN)
     market_open = dtime(9, 30 + MARKET_OPEN_BUFFER_MIN)
     market_close = dtime(16, 0 - MARKET_CLOSE_BUFFER_MIN)
@@ -65,42 +70,31 @@ def get_spy_price() -> float:
 
 
 def run_all_strategies(broker: AlpacaBroker, db_conn):
-    """Execute all three strategies in sequence."""
     if not broker.is_market_open():
         logger.info("Market is closed — skipping strategy run")
         return
-
     if not is_trading_window():
         logger.info("Outside trading window — skipping (too close to open/close)")
         return
-
     logger.info("==========================================")
     logger.info(f"Running all strategies — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("==========================================")
-
     try:
-        # Strategy 1: Momentum (monthly rebalance)
         momentum.run(broker, db_conn)
     except Exception as e:
         logger.error(f"Momentum strategy error: {e}", exc_info=True)
-
     try:
-        # Strategy 2: Mean Reversion (intraday signals)
         mean_reversion.run(broker, db_conn)
     except Exception as e:
         logger.error(f"Mean reversion strategy error: {e}", exc_info=True)
-
     try:
-        # Strategy 3: Trend Following (daily signals)
         trend_following.run(broker, db_conn)
     except Exception as e:
         logger.error(f"Trend following strategy error: {e}", exc_info=True)
-
     logger.info("Strategy run complete")
 
 
 def run_ai_research(broker: AlpacaBroker, db_conn):
-    """Run AI research strategy — once daily at market open."""
     if not broker.is_market_open():
         return
     if not is_trading_window():
@@ -115,7 +109,6 @@ def run_ai_research(broker: AlpacaBroker, db_conn):
 
 
 def take_snapshot(broker: AlpacaBroker, db_conn):
-    """Record portfolio snapshot for performance tracking."""
     try:
         acct = broker.get_account()
         spy_price = get_spy_price()
@@ -143,25 +136,20 @@ def main():
         logger.error("API keys not configured! Set ALPACA_API_KEY and ALPACA_SECRET_KEY env vars.")
         sys.exit(1)
 
-    # Initialize database
     init_db()
     db_conn = get_connection()
 
-    # Initialize broker
     broker = AlpacaBroker()
     acct = broker.get_account()
     logger.info(
         f"Connected | Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f}"
     )
 
-    # Schedule tasks
     schedule.every(CHECK_INTERVAL_MIN).minutes.do(run_all_strategies, broker, db_conn)
     schedule.every(60).minutes.do(take_snapshot, broker, db_conn)
-    schedule.every().day.at("16:05").do(take_snapshot, broker, db_conn)       # EOD snapshot
-    # AI Research: runs once daily at 9:45 AM ET (15 min after open)
+    schedule.every().day.at("16:05").do(take_snapshot, broker, db_conn)
     schedule.every().day.at("09:45").do(run_ai_research, broker, db_conn)
 
-    # Run immediately on startup
     take_snapshot(broker, db_conn)
     run_all_strategies(broker, db_conn)
 
