@@ -41,26 +41,38 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
     logger.info("Fetching historical data for momentum scoring via yFinance...")
     end = datetime.now()
     start = end - timedelta(days=MOMENTUM_LOOKBACK + 60)
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
 
     scores = {}
-    try:
-        raw = yf.download(
-            UNIVERSE, start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"),
-            auto_adjust=True, progress=False, threads=True, group_by="ticker"
-        )
-        if isinstance(raw.columns, pd.MultiIndex):
-            close = raw.xs("Close", axis=1, level=1)
-        else:
-            close = raw[["Close"]] if "Close" in raw.columns else raw
-    except Exception as e:
-        logger.error(f"yFinance download failed: {e}")
-        return pd.Series()
+    all_closes = {}
+    batch_size = 20
 
-    for sym in UNIVERSE:
+    for i in range(0, len(UNIVERSE), batch_size):
+        batch = UNIVERSE[i:i + batch_size]
         try:
-            if sym not in close.columns:
-                continue
-            df = close[sym].dropna()
+            raw = yf.download(
+                batch, start=start_str, end=end_str,
+                auto_adjust=True, progress=False, threads=False
+            )
+            if isinstance(raw.columns, pd.MultiIndex):
+                if "Close" in raw.columns.get_level_values(0):
+                    close_batch = raw["Close"]
+                else:
+                    close_batch = raw.xs("Close", axis=1, level=1)
+            else:
+                close_batch = raw[["Close"]] if "Close" in raw.columns else pd.DataFrame()
+            for sym in batch:
+                if sym in close_batch.columns:
+                    all_closes[sym] = close_batch[sym].dropna()
+        except Exception as e:
+            logger.warning(f"Batch download failed: {e}")
+            continue
+
+    logger.info(f"Downloaded data for {len(all_closes)} symbols")
+
+    for sym, df in all_closes.items():
+        try:
             if len(df) < MOMENTUM_LOOKBACK:
                 continue
             price_now = df.iloc[-MOMENTUM_SKIP - 1]
