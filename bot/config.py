@@ -42,7 +42,7 @@ MIN_CASH_RESERVE_PCT = 0.15  # Keep at least 15% cash (raised due to existing op
 # ============================================================
 
 # Momentum strategy
-MOMENTUM_LOOKBACK = 252        # 12-month lookback (trading days)
+MOMENTUM_LOOKBACK = 200        # 10-month lookback (trading days)
 MOMENTUM_SKIP = 21             # Skip last month (reversal avoidance)
 MOMENTUM_TOP_N = 10            # Hold top-N momentum stocks
 MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month
