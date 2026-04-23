@@ -46,17 +46,21 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
     try:
         raw = yf.download(
             UNIVERSE, start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"),
-            auto_adjust=True, progress=False, threads=True
-        )["Close"]
+            auto_adjust=True, progress=False, threads=True, group_by="ticker"
+        )
+        if isinstance(raw.columns, pd.MultiIndex):
+            close = raw.xs("Close", axis=1, level=1)
+        else:
+            close = raw[["Close"]] if "Close" in raw.columns else raw
     except Exception as e:
         logger.error(f"yFinance download failed: {e}")
         return pd.Series()
 
     for sym in UNIVERSE:
         try:
-            if sym not in raw.columns:
+            if sym not in close.columns:
                 continue
-            df = raw[sym].dropna()
+            df = close[sym].dropna()
             if len(df) < MOMENTUM_LOOKBACK:
                 continue
             price_now = df.iloc[-MOMENTUM_SKIP - 1]
@@ -66,30 +70,13 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
         except (IndexError, ZeroDivisionError):
             pass
 
-    return pd.Series(scores).sort_values(ascending=False)
-
-    return pd.Series(scores).sort_values(ascending=False)
-
-    scores = {}
-    for sym, df in bars.items():
-        if df is None or len(df) < MOMENTUM_LOOKBACK:
-            continue
-        df = df.sort_index()
-        try:
-            price_now = df["close"].iloc[-MOMENTUM_SKIP - 1]  # 1 month ago
-            price_then = df["close"].iloc[-MOMENTUM_LOOKBACK]   # 12 months ago
-            if price_then > 0:
-                scores[sym] = (price_now - price_then) / price_then
-        except (IndexError, ZeroDivisionError):
-            pass
-
+    logger.info(f"Momentum scores computed for {len(scores)} symbols")
     return pd.Series(scores).sort_values(ascending=False)
 
 
 def run(broker: AlpacaBroker, db_conn):
     """Execute momentum strategy rebalance if due."""
     if not should_rebalance():
-        # Still check stop losses on existing positions
         _check_stop_losses(broker, db_conn)
         return
 
@@ -104,12 +91,10 @@ def run(broker: AlpacaBroker, db_conn):
     top_picks = scores.head(MOMENTUM_TOP_N).index.tolist()
     logger.info(f"Top momentum picks: {top_picks}")
 
-    # Log signals
     for sym in scores.head(20).index:
         log_signal(db_conn, STRATEGY_NAME, sym, "buy" if sym in top_picks else "hold",
                    float(scores[sym]), {"rank": int(scores.index.get_loc(sym)) + 1})
 
-    # Current momentum positions (equity only — skip options)
     all_positions = broker.get_positions()
     equity_positions = [p for p in all_positions if p.get("asset_class", "equity") == "equity"]
     momentum_positions = [p for p in equity_positions if p["strategy"] == STRATEGY_NAME]
@@ -120,7 +105,6 @@ def run(broker: AlpacaBroker, db_conn):
     cash = account["cash"]
     target_allocation_per_stock = portfolio_value * MAX_POSITION_PCT
 
-    # Exit positions no longer in top picks
     for pos in momentum_positions:
         if pos["symbol"] not in top_picks:
             logger.info(f"Exiting {pos['symbol']} — not in top momentum picks")
@@ -129,27 +113,21 @@ def run(broker: AlpacaBroker, db_conn):
                 log_trade(db_conn, STRATEGY_NAME, pos["symbol"], "sell",
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"])
 
-    # Enter new top picks
     for sym in top_picks:
         if sym not in current_symbols:
-            # Check position limits (equity only)
             total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
             if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
                 logger.info(f"Max equity positions reached ({MAX_TOTAL_EQUITY_POSITIONS}), skipping {sym}")
                 break
-
-            # Check cash available
             min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
             if cash - target_allocation_per_stock < min_cash:
                 logger.info(f"Insufficient cash for {sym}, skipping")
                 break
-
             notional = min(target_allocation_per_stock, cash * 0.9)
             if notional < 1:
                 break
-
             logger.info(f"Opening momentum position: {sym} ${notional:.0f}")
-            order = broker.market_buy(sym, notional, STRATEGY_NAME)
+            broker.market_buy(sym, notional, STRATEGY_NAME)
             tag_symbol(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, 0, 0,
                       metadata={"notional": notional, "momentum_score": float(scores.get(sym, 0))})
