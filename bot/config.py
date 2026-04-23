@@ -15,7 +15,7 @@ ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.ma
 # Universe — Large-cap S&P 500 stocks with high liquidity
 # ============================================================
 UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK.B", "UNH", "LLY",
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "PYPL", "UNH", "LLY",
     "JPM", "V", "XOM", "AVGO", "PG", "MA", "JNJ", "HD", "MRK", "ABBV",
     "CVX", "COST", "CRM", "BAC", "NFLX", "AMD", "PEP", "KO", "ADBE", "WMT",
     "TMO", "MCD", "ACN", "CSCO", "ABT", "ORCL", "LIN", "DHR", "TXN", "INTC",
