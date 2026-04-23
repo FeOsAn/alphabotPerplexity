@@ -150,7 +150,7 @@ def run(broker: AlpacaBroker, db_conn):
 
         logger.info(f"[MR] ENTER {sym} — RSI: {sig['rsi']:.1f}, BB lower: {sig['bb_lower']:.2f}")
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", sig["rsi"],
-                                      {"rsi": sig["rsi"], "bb_lower": sig["bb_lower"], "vol_elevated": int(sig["vol_elevated"])})
+                                                         {"rsi": sig["rsi"], "bb_lower": sig["bb_lower"], "vol_elevated": int(sig["vol_elevated"])})
         order = broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
         log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, sig["close"], 0,
