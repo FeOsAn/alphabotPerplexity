@@ -133,6 +133,7 @@ class AlpacaBroker:
             timeframe=TimeFrame.Day,
             start=start,
             end=end,
+            feed="iex",
         )
         bars = self.data.get_stock_bars(req).df
         result = {}
