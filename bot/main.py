@@ -63,9 +63,11 @@ def start_api_server():
 
 def is_trading_window() -> bool:
     now_et = datetime.now(EASTERN)
-    market_open = dtime(9, 30 + MARKET_OPEN_BUFFER_MIN)
-market_close = dtime(15, 60 - MARKET_CLOSE_BUFFER_MIN)
-return market_open <= now_et.time() <= market_close
+    open_h, open_m = divmod(9 * 60 + 30 + MARKET_OPEN_BUFFER_MIN, 60)
+    close_h, close_m = divmod(16 * 60 - MARKET_CLOSE_BUFFER_MIN, 60)
+    market_open = dtime(open_h, open_m)
+    market_close = dtime(close_h, close_m)
+    return market_open <= now_et.time() <= market_close
 
 
 def get_spy_price() -> float:
