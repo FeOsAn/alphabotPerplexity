@@ -1,13 +1,15 @@
 """
 SQLite database for trade logging and strategy performance tracking.
 """
+import os
 import sqlite3
 import json
 import logging
 from datetime import datetime
 from typing import Optional
 
-DB_PATH = "/home/user/workspace/alphabot/alphabot.db"
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(_BASE_DIR, 'alphabot.db')
 logger = logging.getLogger("alphabot.db")
 
 
@@ -86,7 +88,6 @@ def log_trade(conn: sqlite3.Connection, strategy: str, symbol: str, side: str,
     """, (strategy, symbol, side, qty, price, pnl, json.dumps(metadata or {})))
     conn.commit()
 
-    # Update strategy performance
     date = datetime.now().strftime("%Y-%m-%d")
     win = 1 if pnl > 0 else 0
     loss = 1 if pnl < 0 else 0
