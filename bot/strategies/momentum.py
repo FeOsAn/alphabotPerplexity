@@ -11,7 +11,8 @@ Expected alpha: 3-8% annualized over SPY (from quant literature).
 import logging
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import yfinance as yf
+from datetime import datetime, timedelta
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
@@ -38,7 +39,37 @@ def should_rebalance() -> bool:
 def score_universe(broker: AlpacaBroker) -> pd.Series:
     """Compute 12-1 month momentum scores for each symbol in universe."""
     logger.info("Fetching historical data for momentum scoring...")
-    bars = broker.get_bars(UNIVERSE, days=MOMENTUM_LOOKBACK + 30)
+    def score_universe(broker: AlpacaBroker) -> pd.Series:
+    """Compute 12-1 month momentum scores using yFinance (free, full history)."""
+    logger.info("Fetching historical data for momentum scoring via yFinance...")
+    end = datetime.now()
+    start = end - timedelta(days=MOMENTUM_LOOKBACK + 60)
+
+    scores = {}
+    try:
+        raw = yf.download(
+            UNIVERSE, start=start.strftime("%Y-%m-%d"), end=end.strftime("%Y-%m-%d"),
+            auto_adjust=True, progress=False, threads=True
+        )["Close"]
+    except Exception as e:
+        logger.error(f"yFinance download failed: {e}")
+        return pd.Series()
+
+    for sym in UNIVERSE:
+        try:
+            if sym not in raw.columns:
+                continue
+            df = raw[sym].dropna()
+            if len(df) < MOMENTUM_LOOKBACK:
+                continue
+            price_now = df.iloc[-MOMENTUM_SKIP - 1]
+            price_then = df.iloc[-MOMENTUM_LOOKBACK]
+            if price_then > 0:
+                scores[sym] = (price_now - price_then) / price_then
+        except (IndexError, ZeroDivisionError):
+            pass
+
+    return pd.Series(scores).sort_values(ascending=False)
 
     scores = {}
     for sym, df in bars.items():
