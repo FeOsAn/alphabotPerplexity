@@ -30,27 +30,27 @@ UNIVERSE = [
 # ============================================================
 # Risk Management
 # ============================================================
-MAX_POSITION_PCT = 0.05       # Max 5% of portfolio per position
-MAX_TOTAL_EQUITY_POSITIONS = 12  # Max equity positions managed by bot (not counting options)
-MAX_TOTAL_POSITIONS = 25      # Hard cap including all existing positions
-STOP_LOSS_PCT = 0.07          # 7% stop loss per position
-TAKE_PROFIT_PCT = 0.20        # 20% take profit target
-MIN_CASH_RESERVE_PCT = 0.15  # Keep at least 15% cash (raised due to existing options exposure)
+MAX_POSITION_PCT = 0.05
+MAX_TOTAL_EQUITY_POSITIONS = 12
+MAX_TOTAL_POSITIONS = 25
+STOP_LOSS_PCT = 0.07
+TAKE_PROFIT_PCT = 0.20
+MIN_CASH_RESERVE_PCT = 0.15
 
 # ============================================================
 # Strategy Parameters
 # ============================================================
 
 # Momentum strategy
-MOMENTUM_LOOKBACK = 200        # 10-month lookback (trading days)
-MOMENTUM_SKIP = 21             # Skip last month (reversal avoidance)
-MOMENTUM_TOP_N = 10            # Hold top-N momentum stocks
-MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month
+MOMENTUM_LOOKBACK = 200
+MOMENTUM_SKIP = 21
+MOMENTUM_TOP_N = 10
+MOMENTUM_REBALANCE_DAYS = 21
 
 # Mean Reversion strategy
 MR_RSI_PERIOD = 14
-MR_RSI_OVERSOLD = 32           # Buy signal threshold
-MR_RSI_OVERBOUGHT = 68         # Sell signal threshold
+MR_RSI_OVERSOLD = 32
+MR_RSI_OVERBOUGHT = 68
 MR_BB_PERIOD = 20
 MR_BB_STD = 2.0
 MR_MAX_POSITIONS = 5
@@ -58,12 +58,31 @@ MR_MAX_POSITIONS = 5
 # Trend Following strategy
 TREND_FAST_EMA = 9
 TREND_SLOW_EMA = 21
-TREND_VIX_MAX = 35             # Pause trend-following above this VIX level
+TREND_VIX_MAX = 35
 TREND_MAX_POSITIONS = 5
+
+# Post-Earnings Announcement Drift (PEAD) strategy
+PEAD_MIN_SURPRISE_PCT = 5.0
+PEAD_MAX_POSITIONS = 4
+PEAD_HOLD_DAYS = 15
+PEAD_WATCHLIST = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+    "JPM", "V", "MA", "BAC", "GS", "WMT", "HD", "COST",
+    "NFLX", "ADBE", "CRM", "ORCL", "AMD", "AVGO", "INTC",
+    "LLY", "JNJ", "PFE", "ABBV", "MRK", "UNH", "CVS",
+    "XOM", "CVX", "COP", "CAT", "DE", "HON", "GE", "UPS",
+    "SPGI", "BLK", "MS", "SCHW", "AXP", "AMGN", "ISRG",
+]
+
+# Sector Rotation strategy
+SR_TOP_N = 3
+SR_LOOKBACK_DAYS = 63
+SR_REBALANCE_DAYS = 21
+SR_MAX_POSITION_PCT = 0.08
 
 # ============================================================
 # Scheduling
 # ============================================================
-MARKET_OPEN_BUFFER_MIN = 15    # Wait 15min after open before trading
-MARKET_CLOSE_BUFFER_MIN = 15   # Stop 15min before close
-CHECK_INTERVAL_MIN = 5         # Check signals every 5 minutes
+MARKET_OPEN_BUFFER_MIN = 15
+MARKET_CLOSE_BUFFER_MIN = 15
+CHECK_INTERVAL_MIN = 5
