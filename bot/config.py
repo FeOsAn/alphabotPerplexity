@@ -12,19 +12,14 @@ ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "5yxUCTa9VpXhRG6uKLWGAUS
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 # ============================================================
-# Universe — Large-cap S&P 500 stocks with high liquidity
+# Universe — Top 50 large-cap S&P 500 stocks (memory optimized)
 # ============================================================
 UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "PYPL", "UNH", "LLY",
-    "JPM", "V", "XOM", "AVGO", "PG", "MA", "JNJ", "HD", "MRK", "ABBV",
-    "CVX", "COST", "CRM", "BAC", "NFLX", "AMD", "PEP", "KO", "ADBE", "WMT",
-    "TMO", "MCD", "ACN", "CSCO", "ABT", "ORCL", "LIN", "DHR", "TXN", "INTC",
-    "COP", "UPS", "RTX", "AMGN", "INTU", "PM", "SPGI", "CAT", "BKNG", "GE",
-    "HON", "LOW", "AXP", "MS", "GS", "BLK", "SYK", "ELV", "PLD", "MDT",
-    "DE", "ADP", "SCHW", "ADI", "LMT", "ISRG", "CI", "TGT", "VRTX", "MO",
-    "MMM", "SO", "DUK", "EOG", "SLB", "BSX", "NOW", "PANW", "REGN", "ZTS",
-    "APD", "PSA", "ITW", "HUM", "D", "KLAC", "LRCX", "MU", "MRVL", "AMAT",
-    "CME", "ICE", "PGR", "TRV", "AFL", "AIG", "AEP", "EXC", "WM", "ECL",
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "UNH", "LLY", "JPM",
+    "V", "XOM", "AVGO", "PG", "MA", "JNJ", "HD", "MRK", "ABBV", "CVX",
+    "COST", "CRM", "BAC", "NFLX", "AMD", "ADBE", "WMT", "MCD", "ORCL", "TXN",
+    "AMGN", "INTU", "SPGI", "CAT", "BKNG", "GS", "MS", "ISRG", "NOW", "PANW",
+    "REGN", "LRCX", "KLAC", "AMAT", "MU", "ADI", "SCHW", "AXP", "BLK", "GE",
 ]
 
 # ============================================================
@@ -69,9 +64,8 @@ PEAD_WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
     "JPM", "V", "MA", "BAC", "GS", "WMT", "HD", "COST",
     "NFLX", "ADBE", "CRM", "ORCL", "AMD", "AVGO", "INTC",
-    "LLY", "JNJ", "PFE", "ABBV", "MRK", "UNH", "CVS",
-    "XOM", "CVX", "COP", "CAT", "DE", "HON", "GE", "UPS",
-    "SPGI", "BLK", "MS", "SCHW", "AXP", "AMGN", "ISRG",
+    "LLY", "JNJ", "MRK", "UNH", "XOM", "CVX", "CAT",
+    "GE", "SCHW", "AXP", "BLK", "AMGN", "ISRG",
 ]
 
 # Sector Rotation strategy
