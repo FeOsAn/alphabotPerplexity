@@ -8,6 +8,7 @@ Rebalance monthly. Equal-weight top-N picks.
 Expected alpha: 3-8% annualized over SPY (from quant literature).
 """
 
+import gc
 import logging
 import pandas as pd
 import numpy as np
@@ -37,7 +38,7 @@ def should_rebalance() -> bool:
 
 
 def score_universe(broker: AlpacaBroker) -> pd.Series:
-    """Compute 12-1 month momentum scores using yFinance (free, full history)."""
+    """Compute 10-month momentum scores using yFinance (free, full history)."""
     logger.info("Fetching historical data for momentum scoring via yFinance...")
     end = datetime.now()
     start = end - timedelta(days=MOMENTUM_LOOKBACK + 60)
@@ -46,7 +47,7 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
 
     scores = {}
     all_closes = {}
-    batch_size = 20
+    batch_size = 10
 
     for i in range(0, len(UNIVERSE), batch_size):
         batch = UNIVERSE[i:i + batch_size]
@@ -65,6 +66,8 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
             for sym in batch:
                 if sym in close_batch.columns:
                     all_closes[sym] = close_batch[sym].dropna()
+            del raw, close_batch
+            gc.collect()
         except Exception as e:
             logger.warning(f"Batch download failed: {e}")
             continue
@@ -81,6 +84,9 @@ def score_universe(broker: AlpacaBroker) -> pd.Series:
                 scores[sym] = (price_now - price_then) / price_then
         except (IndexError, ZeroDivisionError):
             pass
+
+    del all_closes
+    gc.collect()
 
     logger.info(f"Momentum scores computed for {len(scores)} symbols")
     return pd.Series(scores).sort_values(ascending=False)
@@ -129,7 +135,7 @@ def run(broker: AlpacaBroker, db_conn):
         if sym not in current_symbols:
             total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
             if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
-                logger.info(f"Max equity positions reached ({MAX_TOTAL_EQUITY_POSITIONS}), skipping {sym}")
+                logger.info(f"Max equity positions reached, skipping {sym}")
                 break
             min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
             if cash - target_allocation_per_stock < min_cash:
