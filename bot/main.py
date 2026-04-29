@@ -42,7 +42,7 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MARKET_OPEN_BUFFER_MIN, MARKET_CLOSE_BUFFER_MIN, CHECK_INTERVAL_MIN,
 )
-from broker import AlpacaBroker
+from broker import AlpacaBroker, restore_tags_from_db
 from db import init_db, get_connection, log_snapshot
 
 # Import strategies
@@ -247,6 +247,10 @@ def main():
     broker = AlpacaBroker()
     acct = broker.get_account()
     logger.info(f"Connected | Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f}")
+
+    # Restore strategy tags from DB so positions aren't labelled 'unknown' after restart
+    restored = restore_tags_from_db(db_conn)
+    logger.info(f"Restored {restored} strategy tag(s) from trade history")
 
     now_et = datetime.now(EASTERN)
     logger.info(f"Time: {now_et.strftime('%Y-%m-%d %H:%M:%S ET')} | "

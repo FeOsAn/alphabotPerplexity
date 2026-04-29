@@ -28,8 +28,8 @@ UNIVERSE = [
 # Risk Management
 # ============================================================
 MAX_POSITION_PCT = 0.05       # Max 5% of portfolio per position
-MAX_TOTAL_EQUITY_POSITIONS = 12  # Max equity positions managed by bot
-MAX_TOTAL_POSITIONS = 25      # Hard cap including all existing positions
+MAX_TOTAL_EQUITY_POSITIONS = 30  # Max equity positions managed by bot
+MAX_TOTAL_POSITIONS = 35      # Hard cap including all existing positions
 STOP_LOSS_PCT = 0.05          # 5% stop loss per position (tightened)
 TAKE_PROFIT_PCT = 0.20        # 20% take profit target
 MIN_CASH_RESERVE_PCT = 0.15  # Keep at least 15% cash

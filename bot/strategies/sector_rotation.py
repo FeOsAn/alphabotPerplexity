@@ -56,64 +56,39 @@ def _should_rebalance() -> bool:
 def _score_sectors() -> pd.Series:
     """
     Compute 3-month momentum for each sector ETF via yFinance.
-    Alpaca IEX only has ~15 days — not enough for SR_LOOKBACK_DAYS (63).
+    Downloads one ETF at a time to stay within Railway 512MB RAM.
     """
-    symbols = list(SECTOR_ETFS.keys())
     scores = {}
 
-    try:
-        # Download all sector ETFs in one call — they're only 11 symbols, low RAM cost
-        raw = yf.download(
-            symbols, period="6mo",
-            auto_adjust=True, progress=False, threads=False
-        )
-
-        if raw.empty:
-            logger.warning("[SR] yFinance returned empty data")
-            return pd.Series()
-
-        # Parse Close column
-        if isinstance(raw.columns, pd.MultiIndex):
-            level0 = raw.columns.get_level_values(0).unique().tolist()
-            if "Close" in level0:
-                closes = raw["Close"]
-            elif "close" in level0:
-                closes = raw["close"]
-            else:
-                closes = raw.xs("Close", axis=1, level=1)
-        else:
-            closes = raw[["Close"]] if "Close" in raw.columns else pd.DataFrame()
-
-        logger.info(f"[SR] Downloaded sector data — {len(closes)} rows, {len(closes.columns)} ETFs")
-
-        for etf in symbols:
-            if etf not in closes.columns:
-                continue
-            series = closes[etf].dropna()
-            if len(series) < SR_LOOKBACK_DAYS:
-                logger.debug(f"[SR] {etf}: only {len(series)} rows, need {SR_LOOKBACK_DAYS}")
+    for etf, sector_name in SECTOR_ETFS.items():
+        try:
+            ticker = yf.Ticker(etf)
+            hist = ticker.history(period="6mo")
+            if hist.empty or len(hist) < SR_LOOKBACK_DAYS:
+                logger.debug(f"[SR] {etf}: only {len(hist)} rows, need {SR_LOOKBACK_DAYS}")
                 continue
 
+            series = hist["Close"].dropna()
             price_now = float(series.iloc[-1])
             price_then = float(series.iloc[-SR_LOOKBACK_DAYS])
             if price_then <= 0:
                 continue
 
             momentum = (price_now - price_then) / price_then
-
-            # Extra filter: price must be above its 50-day MA (trend confirmation)
             ma50 = float(series.tail(50).mean())
+
             if price_now > ma50:
                 scores[etf] = momentum
-                logger.debug(f"[SR] {etf} ({SECTOR_ETFS[etf]}): {momentum:.2%} momentum, above MA50")
+                logger.debug(f"[SR] {etf} ({sector_name}): {momentum:.2%} momentum, above MA50")
             else:
-                logger.debug(f"[SR] {etf} ({SECTOR_ETFS[etf]}): {momentum:.2%} momentum, BELOW MA50 — excluded")
+                logger.debug(f"[SR] {etf} ({sector_name}): {momentum:.2%} momentum, BELOW MA50 — excluded")
 
-    except Exception as e:
-        logger.error(f"[SR] Failed to score sectors: {e}", exc_info=True)
-    finally:
-        gc.collect()
+        except Exception as e:
+            logger.warning(f"[SR] Error fetching {etf}: {e}")
+        finally:
+            gc.collect()
 
+    logger.info(f"[SR] Scored {len(scores)}/{len(SECTOR_ETFS)} sectors")
     return pd.Series(scores).sort_values(ascending=False)
 
 

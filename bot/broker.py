@@ -155,8 +155,39 @@ class AlpacaBroker:
 # ------------------------------------------------------------------ helpers
 _STRATEGY_TAGS: dict[str, str] = {}  # populated by strategies at runtime
 
+
 def tag_symbol(symbol: str, strategy: str):
     _STRATEGY_TAGS[symbol] = strategy
+
+
+def restore_tags_from_db(db_conn) -> int:
+    """
+    On bot restart, re-populate strategy tags from the trades DB.
+    Finds the most recent 'buy' trade for each currently-open symbol
+    and restores the tag so positions aren't labelled 'unknown'.
+    Called once at startup from main.py.
+    """
+    try:
+        rows = db_conn.execute("""
+            SELECT symbol, strategy
+            FROM trades
+            WHERE side = 'buy'
+            GROUP BY symbol
+            HAVING MAX(created_at)
+            ORDER BY created_at DESC
+        """).fetchall()
+        count = 0
+        for row in rows:
+            sym, strat = row["symbol"], row["strategy"]
+            if sym not in _STRATEGY_TAGS and strat and strat != "unknown":
+                _STRATEGY_TAGS[sym] = strat
+                count += 1
+        return count
+    except Exception as e:
+        import logging
+        logging.getLogger("alphabot.broker").warning(f"Could not restore tags from DB: {e}")
+        return 0
+
 
 def _infer_strategy(symbol: str) -> str:
     return _STRATEGY_TAGS.get(symbol, "unknown")
