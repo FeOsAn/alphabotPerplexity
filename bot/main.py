@@ -1,12 +1,11 @@
 """
 AlphaBot — Main entry point
 Multi-factor algorithmic trading bot for Alpaca Markets
-Runs 24/7 on Railway. Handles all 6 strategies + API server.
+Runs 24/7 on Railway. Handles all strategies + API server.
 """
 import os
 import sys
 import time
-import threading
 import subprocess
 
 # Load .env if present (local dev). Railway injects env vars directly.
@@ -49,7 +48,8 @@ from db import init_db, get_connection, log_snapshot, log_trade
 
 # Import strategies
 sys.path.insert(0, os.path.dirname(__file__))
-from strategies import momentum, mean_reversion, trend_following, ai_research, earnings_drift, sector_rotation
+from strategies import mean_reversion, trend_following, ai_research, earnings_drift, sector_rotation
+from strategies import spy_dip
 
 EASTERN = pytz.timezone("America/New_York")
 
@@ -63,6 +63,18 @@ def is_trading_window() -> bool:
     market_close = dtime(close_total // 60, close_total % 60)
     current_time = now_et.time()
     return market_open <= current_time <= market_close
+
+
+def is_ai_research_window() -> bool:
+    """
+    AI Research runs once daily — between 9:45 and 10:30 AM ET.
+    Uses ET time directly (not UTC) to avoid Railway timezone issues.
+    schedule.every().day.at() uses server time (UTC on Railway),
+    so instead we check ET time manually on each 5-min cycle.
+    """
+    now_et = datetime.now(EASTERN)
+    t = now_et.time()
+    return dtime(9, 45) <= t <= dtime(10, 30)
 
 
 def get_spy_price() -> float:
@@ -99,17 +111,18 @@ def enforce_global_stops(broker: AlpacaBroker, db_conn):
     """
     Enforce stop losses on ALL positions regardless of strategy tag.
     Catches positions tagged 'unknown' or any strategy that missed a stop.
-    Uses tighter 5% stop loss for better capital protection.
     """
-    TIGHT_STOP = 0.05  # 5% stop — tighter than default 7%
+    TIGHT_STOP = 0.05  # 5% stop
     positions = broker.get_positions()
+    logger.info(f"[GLOBAL STOP] Checking {len(positions)} position(s)...")
     for pos in positions:
-        if pos["unrealized_pnl_pct"] <= -TIGHT_STOP * 100:
-            sym = pos["symbol"]
-            strategy = pos.get("strategy", "unknown")
+        pnl_pct = pos["unrealized_pnl_pct"]
+        sym = pos["symbol"]
+        strategy = pos.get("strategy", "unknown")
+        logger.info(f"  {sym} ({strategy}): P&L={pnl_pct:+.1f}%")
+        if pnl_pct <= -TIGHT_STOP * 100:
             logger.info(
-                f"[GLOBAL STOP] {sym} ({strategy}) @ {pos['unrealized_pnl_pct']:.1f}% "
-                f"— closing position"
+                f"[GLOBAL STOP] CUTTING {sym} ({strategy}) @ {pnl_pct:.1f}% — stop triggered"
             )
             try:
                 broker.close_position(sym, strategy)
@@ -120,8 +133,14 @@ def enforce_global_stops(broker: AlpacaBroker, db_conn):
                 logger.error(f"[GLOBAL STOP] Failed to close {sym}: {e}")
 
 
+# Track whether AI research has fired today
+_ai_research_fired_date: str = ""
+
+
 def run_all_strategies(broker: AlpacaBroker, db_conn):
     """Execute all strategies in sequence with regime filter."""
+    global _ai_research_fired_date
+
     if not broker.is_market_open():
         logger.info("Market is closed — skipping strategy run")
         return
@@ -131,19 +150,17 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         return
 
     logger.info("==========================================")
-    logger.info(f"Running all strategies — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Running all strategies — {datetime.now(EASTERN).strftime('%Y-%m-%d %H:%M:%S ET')}")
     logger.info("==========================================")
 
-    # Always enforce stops first — catches all positions including 'unknown'
+    # Always enforce stops first — catches ALL positions including 'unknown' tagged ones
     enforce_global_stops(broker, db_conn)
 
-    # Check market regime — in bear market, skip new entries but still manage exits
+    # Check market regime
     regime = get_market_regime()
 
     if regime == "bear":
-        logger.info("BEAR MARKET regime — skipping new entries, managing exits only")
-        # Still run strategies but they will only exit, not enter
-        # (each strategy checks regime internally via the broker's positions)
+        logger.info("BEAR MARKET regime — managing exits only, no new entries")
         try:
             mean_reversion.run(broker, db_conn)
         except Exception as e:
@@ -152,13 +169,14 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             trend_following.run(broker, db_conn)
         except Exception as e:
             logger.error(f"Trend following error: {e}", exc_info=True)
+        try:
+            spy_dip.run(broker, db_conn)
+        except Exception as e:
+            logger.error(f"SPY dip error: {e}", exc_info=True)
         logger.info("Strategy run complete (bear market — exits only)")
         return
 
     # Bull market — run all strategies
-    # NOTE: Momentum disabled — yFinance batch downloads exceed Railway 512MB RAM limit.
-    # The other 5 strategies (mean reversion, trend following, AI research,
-    # earnings drift, sector rotation) provide full market coverage without it.
     try:
         mean_reversion.run(broker, db_conn)
     except Exception as e:
@@ -168,6 +186,10 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     except Exception as e:
         logger.error(f"Trend following error: {e}", exc_info=True)
     try:
+        spy_dip.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"SPY dip error: {e}", exc_info=True)
+    try:
         earnings_drift.run(broker, db_conn)
     except Exception as e:
         logger.error(f"Earnings drift error: {e}", exc_info=True)
@@ -176,27 +198,26 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     except Exception as e:
         logger.error(f"Sector rotation error: {e}", exc_info=True)
 
+    # AI Research: fires once daily in the 9:45–10:30 AM ET window
+    # Checked here (not via schedule.at()) to avoid Railway UTC timezone issues
+    today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+    if is_ai_research_window() and _ai_research_fired_date != today_str:
+        logger.info("==========================================")
+        logger.info("Running AI Research Strategy (daily window)")
+        logger.info("==========================================")
+        try:
+            ai_research.run(broker, db_conn)
+            _ai_research_fired_date = today_str
+            logger.info(f"AI Research fired for {today_str} — will not re-run today")
+        except Exception as e:
+            logger.error(f"AI Research strategy error: {e}", exc_info=True)
+    elif not is_ai_research_window():
+        now_et = datetime.now(EASTERN)
+        logger.info(f"AI Research: outside window (ET={now_et.strftime('%H:%M')}, window=09:45–10:30)")
+    elif _ai_research_fired_date == today_str:
+        logger.info(f"AI Research: already fired today ({today_str})")
+
     logger.info("Strategy run complete")
-
-
-def run_ai_research(broker: AlpacaBroker, db_conn):
-    """Run AI research strategy — once daily at market open."""
-    if not broker.is_market_open():
-        return
-    if not is_trading_window():
-        return
-    # Skip AI research in bear market
-    regime = get_market_regime()
-    if regime == "bear":
-        logger.info("AI Research skipped — bear market regime")
-        return
-    logger.info("==========================================")
-    logger.info("Running AI Research Strategy")
-    logger.info("==========================================")
-    try:
-        ai_research.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"AI Research strategy error: {e}", exc_info=True)
 
 
 def take_snapshot(broker: AlpacaBroker, db_conn):
@@ -249,10 +270,15 @@ def main():
     acct = broker.get_account()
     logger.info(f"Connected | Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f}")
 
+    # Log current ET time so we can verify timezone handling
+    now_et = datetime.now(EASTERN)
+    logger.info(f"Current time: {now_et.strftime('%Y-%m-%d %H:%M:%S ET')} (UTC offset {now_et.strftime('%z')})")
+    logger.info(f"AI Research window: 09:45–10:30 ET | Currently: {'IN WINDOW' if is_ai_research_window() else 'outside window'}")
+
+    # Schedules — snapshot only (strategies run on 5-min cycle, AI research checked inline)
     schedule.every(CHECK_INTERVAL_MIN).minutes.do(run_all_strategies, broker, db_conn)
     schedule.every(60).minutes.do(take_snapshot, broker, db_conn)
-    schedule.every().day.at("16:05").do(take_snapshot, broker, db_conn)
-    schedule.every().day.at("09:45").do(run_ai_research, broker, db_conn)
+    schedule.every().day.at("21:05").do(take_snapshot, broker, db_conn)  # 21:05 UTC = 16:05 ET (after close)
 
     take_snapshot(broker, db_conn)
     run_all_strategies(broker, db_conn)
