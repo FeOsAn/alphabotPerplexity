@@ -32,12 +32,13 @@ STRATEGY_NAME = "trend_following"
 STOP_LOSS_PCT = 0.05   # Tighter 5% stop for trend following
 MAX_NEW_ENTRIES_PER_SCAN = 2  # Stagger entries
 
+# Trimmed to 20 names — trend following needs strong momentum stocks with clean
+# EMA crossovers. These are the most trend-friendly large-caps. Reduces RAM per scan.
 TREND_WATCHLIST = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
-    "NFLX", "AMD", "CRM", "ADBE", "ORCL", "NOW", "PANW",
-    "AMAT", "LRCX", "KLAC", "MU", "ISRG", "VRTX", "REGN", "AMGN",
-    "BKNG", "V", "MA", "SPGI", "CME",
-    "CAT", "HON", "GE", "XOM", "COP",
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "TSLA", "AVGO",
+    "AMD", "CRM", "NOW", "PANW", "KLAC",
+    "ISRG", "VRTX", "V", "MA",
+    "CAT", "HON", "XOM", "COP",
 ]
 
 

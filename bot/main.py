@@ -267,7 +267,10 @@ def main():
     schedule.every().day.at("21:05").do(take_snapshot, broker, db_conn)  # 21:05 UTC = 16:05 ET
 
     take_snapshot(broker, db_conn)
-    run_all_strategies(broker, db_conn)
+
+    # Delay first strategy run by CHECK_INTERVAL_MIN — let imports settle
+    # and avoid OOM on boot when all modules are freshly loaded in RAM.
+    logger.info(f"Bot running — first strategy run in {CHECK_INTERVAL_MIN} minutes")
 
     logger.info(f"Bot running — checking every {CHECK_INTERVAL_MIN} minutes")
 

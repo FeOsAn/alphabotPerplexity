@@ -32,12 +32,12 @@ STRATEGY_NAME = "mean_reversion"
 STOP_LOSS_PCT = 0.05   # Tighter 5% stop for mean reversion
 MAX_NEW_ENTRIES_PER_SCAN = 2  # Stagger entries — max 2 new positions per 5-min scan
 
+# Trimmed to 20 high-liquidity names — mean reversion works best on large-caps
+# with reliable RSI/BB signals. Reduces peak RAM per scan cycle.
 MR_WATCHLIST = [
     "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "NVDA", "JPM",
-    "V", "MA", "BAC", "GS", "MS", "WMT", "HD", "MCD", "COST",
-    "XOM", "CVX", "JNJ", "PG", "ABBV", "LLY", "MRK",
-    "NFLX", "ADBE", "CRM", "ORCL", "AMD", "AVGO", "TXN",
-    "CAT", "GE", "SPGI", "BLK",
+    "V", "MA", "WMT", "HD", "XOM", "JNJ", "LLY", "MRK",
+    "AMD", "AVGO", "TXN", "CAT",
 ]
 
 
