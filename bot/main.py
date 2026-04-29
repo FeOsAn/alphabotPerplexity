@@ -156,10 +156,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         return
 
     # Bull market — run all strategies
-    try:
-        momentum.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"Momentum error: {e}", exc_info=True)
+    # NOTE: Momentum disabled — yFinance batch downloads exceed Railway 512MB RAM limit.
+    # The other 5 strategies (mean reversion, trend following, AI research,
+    # earnings drift, sector rotation) provide full market coverage without it.
     try:
         mean_reversion.run(broker, db_conn)
     except Exception as e:
