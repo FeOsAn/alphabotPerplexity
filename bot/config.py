@@ -37,7 +37,7 @@ MIN_CASH_RESERVE_PCT = 0.15
 # ============================================================
 
 # Momentum strategy
-MOMENTUM_LOOKBACK = 200
+MOMENTUM_LOOKBACK = 150
 MOMENTUM_SKIP = 21
 MOMENTUM_TOP_N = 10
 MOMENTUM_REBALANCE_DAYS = 21
