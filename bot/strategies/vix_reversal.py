@@ -36,8 +36,8 @@ STOP_LOSS_PCT    = 0.03   # 3% stop — tight, these should bounce fast
 TAKE_PROFIT_PCT  = 0.05   # 5% take profit — fear bounces are quick
 ALLOCATION_PCT   = 0.15   # 15% of portfolio — high conviction setup
 MAX_HOLD_DAYS    = 5      # Exit after 5 trading days if neither stop nor TP hit
-VIX_SPIKE_RATIO  = 1.20   # VIX must be 20% above its 10-day average
-VIX_ABS_MIN      = 28     # OR VIX above 28 in absolute terms
+VIX_SPIKE_RATIO  = 1.25   # VIX must be 25% above its 10-day average
+VIXY_ABS_MIN     = 35.0   # OR VIXY above $35 in absolute terms (= real VIX ~85, genuine panic)
 SPY_DROP_MIN     = 0.02   # SPY must be down 2%+ on the day
 
 # Track entry dates for time-based exits
@@ -77,9 +77,9 @@ def _get_vix_signal() -> dict:
         result["vixy_avg10"] = vixy_avg10
         result["spike_ratio"] = spike_ratio
 
-        # VIX spiked if ratio >= threshold OR absolute level is high
-        vix_spiked = spike_ratio >= VIX_SPIKE_RATIO or vixy_price >= (VIX_ABS_MIN * 0.4)
-        # VIXY trades at ~40% of actual VIX value due to futures structure
+        # VIX spiked if ratio >= threshold OR VIXY is at an extreme absolute level
+        # VIXY normal range: $25-38. Above $35 = genuine panic event.
+        vix_spiked = spike_ratio >= VIX_SPIKE_RATIO or vixy_price >= VIXY_ABS_MIN
         result["vix_spiked"] = vix_spiked
 
         # SPY day move and 200MA
