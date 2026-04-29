@@ -12,37 +12,34 @@ ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "5yxUCTa9VpXhRG6uKLWGAUS
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 # ============================================================
-# Universe — Large-cap S&P 500 stocks with high liquidity
+# Universe — 50 large-cap S&P 500 stocks (kept small for Railway 512MB RAM)
 # ============================================================
 UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "UNH", "LLY", "PYPL",
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "LLY", "PYPL",
     "JPM", "V", "XOM", "AVGO", "PG", "MA", "JNJ", "HD", "MRK", "ABBV",
-    "CVX", "COST", "CRM", "BAC", "NFLX", "AMD", "PEP", "KO", "ADBE", "WMT",
-    "TMO", "MCD", "ACN", "CSCO", "ABT", "ORCL", "LIN", "DHR", "TXN", "INTC",
-    "COP", "UPS", "RTX", "AMGN", "INTU", "PM", "SPGI", "CAT", "BKNG", "GE",
-    "HON", "LOW", "AXP", "MS", "GS", "BLK", "SYK", "ELV", "PLD", "MDT",
-    "DE", "ADP", "SCHW", "ADI", "LMT", "ISRG", "CI", "TGT", "VRTX", "MO",
-    "MMM", "SO", "DUK", "EOG", "SLB", "BSX", "NOW", "PANW", "REGN", "ZTS",
-    "APD", "PSA", "ITW", "HUM", "D", "KLAC", "LRCX", "MU", "MRVL", "AMAT",
-    "CME", "ICE", "PGR", "TRV", "AFL", "AIG", "AEP", "EXC", "WM", "ECL",
+    "CVX", "COST", "CRM", "BAC", "NFLX", "AMD", "ADBE", "WMT",
+    "MCD", "CSCO", "ORCL", "TXN",
+    "COP", "RTX", "AMGN", "INTU", "SPGI", "CAT", "BKNG", "GE",
+    "HON", "AXP", "MS", "GS", "LMT", "ISRG", "VRTX",
+    "NOW", "PANW", "REGN", "KLAC",
 ]
 
 # ============================================================
 # Risk Management
 # ============================================================
 MAX_POSITION_PCT = 0.05       # Max 5% of portfolio per position
-MAX_TOTAL_EQUITY_POSITIONS = 12  # Max equity positions managed by bot (not counting options)
+MAX_TOTAL_EQUITY_POSITIONS = 12  # Max equity positions managed by bot
 MAX_TOTAL_POSITIONS = 25      # Hard cap including all existing positions
-STOP_LOSS_PCT = 0.07          # 7% stop loss per position
+STOP_LOSS_PCT = 0.05          # 5% stop loss per position (tightened)
 TAKE_PROFIT_PCT = 0.20        # 20% take profit target
-MIN_CASH_RESERVE_PCT = 0.15  # Keep at least 15% cash (raised due to existing options exposure)
+MIN_CASH_RESERVE_PCT = 0.15  # Keep at least 15% cash
 
 # ============================================================
 # Strategy Parameters
 # ============================================================
 
 # Momentum strategy
-MOMENTUM_LOOKBACK = 200        # 10-month lookback (trading days) — IEX data limit
+MOMENTUM_LOOKBACK = 120        # ~6 months (safe under yFinance ~179 day limit)
 MOMENTUM_SKIP = 21             # Skip last month (reversal avoidance)
 MOMENTUM_TOP_N = 10            # Hold top-N momentum stocks
 MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month
@@ -68,10 +65,10 @@ PEAD_HOLD_DAYS = 15           # Hold for ~15 trading days then exit
 PEAD_WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
     "JPM", "V", "MA", "BAC", "GS", "WMT", "HD", "COST",
-    "NFLX", "ADBE", "CRM", "ORCL", "AMD", "AVGO", "INTC",
-    "LLY", "JNJ", "PFE", "ABBV", "MRK", "UNH", "CVS",
-    "XOM", "CVX", "COP", "CAT", "DE", "HON", "GE", "UPS",
-    "SPGI", "BLK", "MS", "SCHW", "AXP", "AMGN", "ISRG",
+    "NFLX", "ADBE", "CRM", "ORCL", "AMD", "AVGO",
+    "LLY", "JNJ", "ABBV", "MRK",
+    "XOM", "CVX", "COP", "CAT", "HON", "GE",
+    "SPGI", "MS", "AXP", "AMGN", "ISRG",
 ]
 
 # Sector Rotation strategy
