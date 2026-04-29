@@ -224,7 +224,13 @@ def take_snapshot(broker: AlpacaBroker, db_conn):
 
 
 def start_api_server():
-    """Start the FastAPI server as a background process."""
+    """Start the FastAPI server as a background process.
+    Disabled by default on Railway (512MB RAM) via DISABLE_API_SERVER=true.
+    Set DISABLE_API_SERVER=false in Railway env vars to re-enable.
+    """
+    if os.environ.get("DISABLE_API_SERVER", "true").lower() == "true":
+        logger.info("API server disabled (DISABLE_API_SERVER=true) — skipping to save RAM")
+        return
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     logger.info("Starting API server on port 8000...")
     subprocess.Popen(
