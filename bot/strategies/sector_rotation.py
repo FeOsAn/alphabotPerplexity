@@ -61,17 +61,39 @@ def _load_last_rebalance(db_conn) -> Optional[datetime]:
     return None
 
 
-def _should_rebalance(db_conn) -> bool:
+def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
+    """
+    Rebalance only if:
+    1. We don't already hold the top sectors (live Alpaca check — survives restarts), AND
+    2. Either the in-memory timer has expired OR it's a fresh start with no DB record
+
+    Checking live positions is the primary guard — it prevents double-buying after
+    container restarts where the DB is wiped (Railway ephemeral filesystem).
+    """
     global _last_rebalance
-    # If we have an in-memory timestamp, use it
-    if _last_rebalance is not None:
-        return (datetime.now() - _last_rebalance).days >= SR_REBALANCE_DAYS
-    # On first run after restart, check DB
+
+    # Primary guard: check what we actually hold right now on Alpaca
+    current_sr_symbols = {
+        p["symbol"] for p in broker.get_positions()
+        if p["strategy"] == STRATEGY_NAME
+    }
+    if current_sr_symbols:
+        # Already holding sector rotation positions — only rebalance if timer expired
+        if _last_rebalance is not None:
+            if (datetime.now() - _last_rebalance).days < SR_REBALANCE_DAYS:
+                return False
+        else:
+            # No in-memory timer but we have live positions — set timer now and skip
+            _last_rebalance = datetime.now()
+            return False
+
+    # No live positions — check DB for when we last bought
     db_ts = _load_last_rebalance(db_conn)
     if db_ts is not None:
         _last_rebalance = db_ts
         return (datetime.now() - db_ts).days >= SR_REBALANCE_DAYS
-    # No record at all — rebalance now
+
+    # Truly no positions and no history — rebalance now
     return True
 
 
@@ -116,7 +138,7 @@ def _score_sectors() -> pd.Series:
 
 def run(broker: AlpacaBroker, db_conn):
     """Run sector rotation rebalance if due."""
-    if not _should_rebalance(db_conn):
+    if not _should_rebalance(db_conn, broker):
         # Still enforce stop losses between rebalances
         _check_stops(broker, db_conn)
         return

@@ -5,3 +5,5 @@ builder = "dockerfile"
 startCommand = "python bot/main.py"
 restartPolicyType = "always"
 restartPolicyMaxRetries = 10
+healthcheckPath = "/"
+healthcheckTimeout = 30
