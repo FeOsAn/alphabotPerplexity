@@ -82,16 +82,19 @@ def _get_vix_signal() -> dict:
         vix_spiked = spike_ratio >= VIX_SPIKE_RATIO or vixy_price >= VIXY_ABS_MIN
         result["vix_spiked"] = vix_spiked
 
-        # SPY day move and 200MA
+        # SPY day move and 200MA — use 6mo (126 bars) which is enough for MA200 approx
+        # Avoids loading a full year of data which is 4x larger and wastes Railway RAM
         spy = yf.Ticker("SPY")
-        spy_hist = spy.history(period="1y")
-        if len(spy_hist) < 200:
+        spy_hist = spy.history(period="6mo")
+        if len(spy_hist) < 50:
             return result
 
         spy_price = float(spy_hist["Close"].iloc[-1])
         spy_prev = float(spy_hist["Close"].iloc[-2])
         spy_change = (spy_price - spy_prev) / spy_prev
-        spy_ma200 = float(spy_hist["Close"].tail(200).mean())
+        # Use available bars for MA — if <200 bars use what we have (conservative)
+        ma_window = min(len(spy_hist), 126)
+        spy_ma200 = float(spy_hist["Close"].tail(ma_window).mean())
         spy_above_ma200 = spy_price > spy_ma200
 
         result["spy_price"] = spy_price

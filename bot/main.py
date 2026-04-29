@@ -14,6 +14,7 @@ try:
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 except ImportError:
     pass
+import gc
 import logging
 import schedule
 import yfinance as yf
@@ -177,6 +178,8 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             fn(broker, db_conn)
         except Exception as e:
             logger.error(f"{name} error: {e}", exc_info=True)
+        finally:
+            gc.collect()  # Free memory between each strategy to stay under Railway 512MB
 
     # ── AI Research: once daily 9:45–10:30 ET ────────────────────────────────
     today_str = now_et.strftime("%Y-%m-%d")
