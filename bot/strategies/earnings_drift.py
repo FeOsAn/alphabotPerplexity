@@ -13,7 +13,7 @@ Expected alpha: 3-6% per trade in backtests (Fama, Ball & Brown 1968+).
 import logging
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
@@ -42,9 +42,11 @@ def _get_earnings_surprise(symbol: str) -> Optional[dict]:
         if earnings is None or earnings.empty:
             return None
 
-        # Look for earnings in the last 5 days
-        cutoff = datetime.now() - timedelta(days=5)
-        earnings.index = pd.to_datetime(earnings.index, utc=True).tz_localize(None)
+        # earnings_dates index is tz-aware (America/New_York) — convert to UTC then strip tz
+        earnings.index = pd.to_datetime(earnings.index, utc=True).tz_convert(None)
+
+        # cutoff must also be tz-naive for comparison
+        cutoff = datetime.utcnow() - timedelta(days=5)
         recent = earnings[earnings.index >= cutoff]
 
         if recent.empty:
@@ -138,6 +140,11 @@ def run(broker: AlpacaBroker, db_conn):
             beats.append(surprise)
             logger.info(f"[PEAD] Earnings beat found: {sym} +{surprise['surprise_pct']:.1f}% surprise")
 
+    if not beats:
+        logger.info("[PEAD] No fresh earnings beats found today")
+        logger.info(f"[PEAD] Scan complete — {current_pead_count} active positions")
+        return
+
     # Sort by largest surprise first
     beats.sort(key=lambda x: x["surprise_pct"], reverse=True)
 
@@ -161,7 +168,7 @@ def run(broker: AlpacaBroker, db_conn):
             f"(reported {beat['reported_eps']:.2f} vs est {beat['estimated_eps']:.2f})"
         )
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", beat["surprise_pct"], beat)
-        order = broker.market_buy(sym, notional, STRATEGY_NAME)
+        broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
         log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, 0, 0, metadata={
             "notional": notional,
@@ -172,6 +179,4 @@ def run(broker: AlpacaBroker, db_conn):
         cash -= notional
         current_pead_count += 1
 
-    if not beats:
-        logger.info("[PEAD] No fresh earnings beats found today")
     logger.info(f"[PEAD] Scan complete — {current_pead_count} active positions")
