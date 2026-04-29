@@ -46,11 +46,33 @@ SECTOR_ETFS = {
 _last_rebalance: Optional[datetime] = None
 
 
-def _should_rebalance() -> bool:
+def _load_last_rebalance(db_conn) -> Optional[datetime]:
+    """Read last rebalance timestamp from DB (survives restarts)."""
+    try:
+        row = db_conn.execute("""
+            SELECT created_at FROM trades
+            WHERE strategy = 'sector_rotation' AND side = 'buy'
+            ORDER BY created_at DESC LIMIT 1
+        """).fetchone()
+        if row:
+            return datetime.fromisoformat(row["created_at"])
+    except Exception:
+        pass
+    return None
+
+
+def _should_rebalance(db_conn) -> bool:
     global _last_rebalance
-    if _last_rebalance is None:
-        return True
-    return (datetime.now() - _last_rebalance).days >= SR_REBALANCE_DAYS
+    # If we have an in-memory timestamp, use it
+    if _last_rebalance is not None:
+        return (datetime.now() - _last_rebalance).days >= SR_REBALANCE_DAYS
+    # On first run after restart, check DB
+    db_ts = _load_last_rebalance(db_conn)
+    if db_ts is not None:
+        _last_rebalance = db_ts
+        return (datetime.now() - db_ts).days >= SR_REBALANCE_DAYS
+    # No record at all — rebalance now
+    return True
 
 
 def _score_sectors() -> pd.Series:
@@ -94,7 +116,7 @@ def _score_sectors() -> pd.Series:
 
 def run(broker: AlpacaBroker, db_conn):
     """Run sector rotation rebalance if due."""
-    if not _should_rebalance():
+    if not _should_rebalance(db_conn):
         # Still enforce stop losses between rebalances
         _check_stops(broker, db_conn)
         return
