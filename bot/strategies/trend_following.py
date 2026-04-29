@@ -9,8 +9,10 @@ Improvements:
 - Tighter 5% stop loss (was 7%)
 - Staggered entries: max 2 new positions per scan
 - Additional filter: SPY must be above its 20-day MA before entering
+- yFinance one-at-a-time (vs batch broker.get_bars) to stay under Railway 512MB RAM
 """
 
+import gc
 import logging
 import pandas as pd
 import numpy as np
@@ -18,7 +20,7 @@ import yfinance as yf
 import ta
 from broker import AlpacaBroker, tag_symbol
 from config import (
-    UNIVERSE, TREND_FAST_EMA, TREND_SLOW_EMA, TREND_VIX_MAX,
+    TREND_FAST_EMA, TREND_SLOW_EMA, TREND_VIX_MAX,
     TREND_MAX_POSITIONS, MAX_POSITION_PCT, MAX_TOTAL_POSITIONS,
     TAKE_PROFIT_PCT, MIN_CASH_RESERVE_PCT
 )
@@ -39,12 +41,13 @@ TREND_WATCHLIST = [
 ]
 
 
-def _get_vix(broker: AlpacaBroker) -> float:
-    """Get current VIX level as market regime filter."""
+def _get_vix() -> float:
+    """Get current VIXY level as market regime filter (via yFinance, not IEX)."""
     try:
-        bars = broker.get_bars(["VIXY"], days=5)
-        if "VIXY" in bars and bars["VIXY"] is not None and not bars["VIXY"].empty:
-            return float(bars["VIXY"]["close"].iloc[-1])
+        ticker = yf.Ticker("VIXY")
+        hist = ticker.history(period="5d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
     except Exception:
         pass
     return 20.0
@@ -69,15 +72,19 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     if df is None or len(df) < TREND_SLOW_EMA + 10:
         return {}
 
-    df = df.sort_index().copy()
-    close = df["close"]
+    df = df.copy()
+    # Normalise column names — yFinance uses Title case
+    df.columns = [c.lower() for c in df.columns]
+    df = df.sort_index()
+
+    close  = df["close"]
     volume = df["volume"]
 
     ema_fast = ta.trend.EMAIndicator(close, window=TREND_FAST_EMA).ema_indicator()
     ema_slow = ta.trend.EMAIndicator(close, window=TREND_SLOW_EMA).ema_indicator()
 
     vol_avg = volume.rolling(20).mean()
-    vol_ok = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 0.8)
+    vol_ok  = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 0.8)
 
     # Crossover detection: EMA fast crossed above EMA slow in last 3 days
     recent_cross = False
@@ -114,14 +121,27 @@ def run(broker: AlpacaBroker, db_conn):
     """Run trend following strategy."""
     logger.info("=== Trend Following Strategy: Scanning signals ===")
 
-    vix = _get_vix(broker)
+    vix = _get_vix()
     if vix > TREND_VIX_MAX:
         logger.info(f"[TF] VIX={vix:.1f} above threshold ({TREND_VIX_MAX}) — exits only")
         _check_exits_and_stops(broker, db_conn, {})
         return
 
-    bars = broker.get_bars(TREND_WATCHLIST, days=60)
-    signals = {sym: _compute_signals(df) for sym, df in bars.items() if df is not None}
+    # ── Fetch data one symbol at a time to avoid OOM on Railway 512MB ──────────
+    signals = {}
+    for sym in TREND_WATCHLIST:
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="3mo")
+            if not hist.empty:
+                sig = _compute_signals(hist)
+                if sig:
+                    signals[sym] = sig
+            del hist
+        except Exception as e:
+            logger.debug(f"[TF] Error fetching {sym}: {e}")
+        finally:
+            gc.collect()
 
     _check_exits_and_stops(broker, db_conn, signals)
 

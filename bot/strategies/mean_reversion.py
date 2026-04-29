@@ -9,15 +9,18 @@ Improvements:
 - Tighter 5% stop loss (was 7%)
 - Staggered entries: max 2 new positions per scan to avoid buying cluster tops
 - Additional confirmation: price must be above 200-day MA (don't catch falling knives)
+- yFinance one-at-a-time (vs batch broker.get_bars) to stay under Railway 512MB RAM
 """
 
+import gc
 import logging
 import pandas as pd
 import numpy as np
 import ta
+import yfinance as yf
 from broker import AlpacaBroker, tag_symbol
 from config import (
-    UNIVERSE, MR_RSI_PERIOD, MR_RSI_OVERSOLD, MR_RSI_OVERBOUGHT,
+    MR_RSI_PERIOD, MR_RSI_OVERSOLD, MR_RSI_OVERBOUGHT,
     MR_BB_PERIOD, MR_BB_STD, MR_MAX_POSITIONS, MAX_POSITION_PCT,
     MAX_TOTAL_EQUITY_POSITIONS, MIN_CASH_RESERVE_PCT
 )
@@ -43,27 +46,28 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     if df is None or len(df) < max(MR_RSI_PERIOD, MR_BB_PERIOD) + 10:
         return {}
 
-    df = df.sort_index().copy()
+    df = df.copy()
+    # Normalise column names — yFinance uses Title case
+    df.columns = [c.lower() for c in df.columns]
+    df = df.sort_index()
+
     close = df["close"]
     volume = df["volume"]
 
     rsi = ta.momentum.RSIIndicator(close, window=MR_RSI_PERIOD).rsi()
     bb = ta.volatility.BollingerBands(close, window=MR_BB_PERIOD, window_dev=MR_BB_STD)
     bb_lower = bb.bollinger_lband()
-    bb_upper = bb.bollinger_hband()
-    bb_mid = bb.bollinger_mavg()
+    bb_mid   = bb.bollinger_mavg()
 
     vol_avg = volume.rolling(20).mean()
     vol_elevated = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 1.2)
 
-    latest_rsi = float(rsi.iloc[-1])
+    latest_rsi   = float(rsi.iloc[-1])
     latest_close = float(close.iloc[-1])
     latest_bb_lower = float(bb_lower.iloc[-1])
-    latest_bb_upper = float(bb_upper.iloc[-1])
-    latest_bb_mid = float(bb_mid.iloc[-1])
+    latest_bb_mid   = float(bb_mid.iloc[-1])
 
-    # Extra filter: don't buy if price is in a longer-term downtrend
-    # (price must be within 15% of 50-day MA — avoids catching falling knives)
+    # Don't buy if in a longer-term downtrend (price must be within 15% of 50-day MA)
     ma50 = float(close.tail(50).mean()) if len(close) >= 50 else latest_close
     not_in_freefall = latest_close >= ma50 * 0.85
 
@@ -82,7 +86,6 @@ def _compute_signals(df: pd.DataFrame) -> dict:
         "rsi": latest_rsi,
         "close": latest_close,
         "bb_lower": latest_bb_lower,
-        "bb_upper": latest_bb_upper,
         "bb_mid": latest_bb_mid,
         "vol_elevated": vol_elevated,
         "not_in_freefall": not_in_freefall,
@@ -95,15 +98,23 @@ def run(broker: AlpacaBroker, db_conn):
     """Run mean reversion scan and execute trades."""
     logger.info("=== Mean Reversion Strategy: Scanning for signals ===")
 
-    bars = broker.get_bars(MR_WATCHLIST, days=60)
+    # ── Fetch data one symbol at a time to avoid OOM on Railway 512MB ──────────
     signals = {}
     for sym in MR_WATCHLIST:
-        df = bars.get(sym)
-        sig = _compute_signals(df)
-        if sig:
-            signals[sym] = sig
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="3mo")
+            if not hist.empty:
+                sig = _compute_signals(hist)
+                if sig:
+                    signals[sym] = sig
+            del hist
+        except Exception as e:
+            logger.debug(f"[MR] Error fetching {sym}: {e}")
+        finally:
+            gc.collect()
 
-    # --- Exit existing positions ---
+    # ── Exit existing positions ─────────────────────────────────────────────────
     all_positions = broker.get_positions()
     mr_positions = [
         p for p in all_positions
@@ -129,7 +140,7 @@ def run(broker: AlpacaBroker, db_conn):
             log_trade(db_conn, STRATEGY_NAME, sym, "sell",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
 
-    # --- Enter new positions ---
+    # ── Enter new positions ─────────────────────────────────────────────────────
     current_mr_count = len([
         p for p in broker.get_positions()
         if p["strategy"] == STRATEGY_NAME and p.get("asset_class", "equity") == "equity"
@@ -151,7 +162,7 @@ def run(broker: AlpacaBroker, db_conn):
 
     for sym, sig in buy_candidates:
         if new_entries >= MAX_NEW_ENTRIES_PER_SCAN:
-            logger.info(f"[MR] Stagger limit reached — deferring remaining entries to next scan")
+            logger.info("[MR] Stagger limit reached — deferring remaining entries to next scan")
             break
         if sym in current_symbols:
             continue
