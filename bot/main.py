@@ -223,28 +223,35 @@ def take_snapshot(broker: AlpacaBroker, db_conn):
         logger.error(f"Snapshot error: {e}", exc_info=True)
 
 
-def start_api_server():
-    """Start the FastAPI server as a background process.
-    Disabled by default on Railway (512MB RAM) via DISABLE_API_SERVER=true.
-    Set DISABLE_API_SERVER=false in Railway env vars to re-enable.
+def start_health_server():
     """
-    if os.environ.get("DISABLE_API_SERVER", "true").lower() == "true":
-        logger.info("API server disabled (DISABLE_API_SERVER=true) — skipping to save RAM")
-        return
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    logger.info("Starting API server on port 8000...")
-    subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"],
-        cwd=base_dir,
-    )
-    logger.info("API server started")
+    Bind a minimal HTTP health check server on $PORT (Railway requires this).
+    Uses only Python built-ins — zero extra RAM vs uvicorn's ~150MB.
+    Returns 200 OK on GET / so Railway's health check passes.
+    """
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    port = int(os.environ.get("PORT", 8080))
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *args):
+            pass  # suppress access logs
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    logger.info(f"Health check server started on port {port}")
 
 
 def main():
     logger.info("=== AlphaBot Starting ===")
 
-    start_api_server()
-    time.sleep(2)
+    start_health_server()  # Must bind to $PORT or Railway kills the container
 
     if ALPACA_API_KEY == "YOUR_API_KEY_HERE":
         logger.error("API keys not configured!")
