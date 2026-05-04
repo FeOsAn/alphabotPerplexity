@@ -173,6 +173,16 @@ def run(broker: AlpacaBroker, db_conn):
     """Run trend following strategy."""
     logger.info("=== Trend Following Strategy: Scanning signals ===")
 
+    from utils.regime import is_bull_market
+    if not is_bull_market():
+        logger.info("[trend_following] Bear regime detected — skipping new entries")
+        return
+
+    from utils.market_hours import is_entry_allowed
+    if not is_entry_allowed():
+        logger.info("[trend_following] Outside safe entry window — skipping")
+        return
+
     vix = _get_vix()
     if vix > TREND_VIX_MAX:
         logger.info(f"[TF] VIX={vix:.1f} above threshold ({TREND_VIX_MAX}) — exits only")
@@ -243,6 +253,11 @@ def run(broker: AlpacaBroker, db_conn):
         live_positions = broker.get_positions()
         if is_correlated_position(sym, live_positions):
             logger.info(f"[TF] Skipping {sym} — correlated sector already held")
+            continue
+
+        from utils.earnings_calendar import has_upcoming_earnings
+        if has_upcoming_earnings(sym):
+            logger.info(f"[TF] Skipping {sym} — earnings blackout (within 2 days)")
             continue
 
         mult = _conviction_multiplier(sig["slope"], sig.get("recent_cross", False))

@@ -114,6 +114,42 @@ def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
     return True
 
 
+def _get_sector_scores(etfs: list[str]) -> dict[str, float]:
+    """
+    Return momentum score for each sector ETF relative to SPY.
+    Score = ETF 20-day return minus SPY 20-day return.
+    Positive = outperforming, Negative = underperforming.
+    """
+    scores = {}
+    try:
+        spy = yf.Ticker("SPY")
+        spy_hist = spy.history(period="2mo", interval="1d")
+        gc.collect()
+        if spy_hist.empty or len(spy_hist) < 20:
+            return {etf: 0.0 for etf in etfs}
+        spy_ret = (spy_hist["Close"].iloc[-1] - spy_hist["Close"].iloc[-20]) / spy_hist["Close"].iloc[-20]
+
+        for etf in etfs:
+            try:
+                ticker = yf.Ticker(etf)
+                hist = ticker.history(period="2mo", interval="1d")
+                gc.collect()
+                if hist.empty or len(hist) < 20:
+                    scores[etf] = 0.0
+                    continue
+                ret = (hist["Close"].iloc[-1] - hist["Close"].iloc[-20]) / hist["Close"].iloc[-20]
+                scores[etf] = ret - spy_ret  # relative momentum
+            except Exception:
+                scores[etf] = 0.0
+    except Exception as e:
+        logger.warning(f"[SR] Sector scoring failed: {e}")
+        return {etf: 0.0 for etf in etfs}
+
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    logger.info(f"[SR] Sector heat map: {[(s, f'{v:+.1%}') for s, v in sorted_scores]}")
+    return scores
+
+
 def _score_sectors() -> pd.Series:
     """
     Compute 3-month momentum for each sector ETF via yFinance.
@@ -169,8 +205,19 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     top_sectors = scores.head(SR_TOP_N).index.tolist()
-    logger.info(f"[SR] Top sectors: {[(s, SECTOR_ETFS[s], f'{scores[s]:.1%}') for s in top_sectors]}")
+    logger.info(f"[SR] Top sectors (3m momentum): {[(s, SECTOR_ETFS[s], f'{scores[s]:.1%}') for s in top_sectors]}")
     logger.info(f"[SR] All scores: {scores.to_dict()}")
+
+    # ── Sector heat map filter: only rotate into sectors outperforming SPY (20d) ──
+    rel_scores = _get_sector_scores(top_sectors)
+    outperforming = [s for s in top_sectors if rel_scores.get(s, 0.0) > 0]
+    if not outperforming:
+        logger.info("[SR] Heat map: no top sector is outperforming SPY on 20-day basis — skipping rotation")
+        _check_stops(broker, db_conn)
+        return
+    # Preserve top-N rank but restrict to outperformers
+    top_sectors = outperforming
+    logger.info(f"[SR] Heat map filter — rotating only into outperformers: {top_sectors}")
 
     # Log all signals
     for etf in scores.index:

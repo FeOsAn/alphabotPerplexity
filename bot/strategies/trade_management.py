@@ -27,6 +27,35 @@ from db import log_trade
 
 logger = logging.getLogger("alphabot.trade_management")
 
+
+def _is_post_earnings_window(symbol: str, days: int = 2) -> bool:
+    """Returns True if earnings occurred within the last `days` trading days."""
+    try:
+        import yfinance as yf, gc
+        ticker = yf.Ticker(symbol)
+        cal = ticker.calendar
+        gc.collect()
+        if cal is None or cal.empty:
+            return False
+        if "Earnings Date" in cal.columns:
+            dates = cal["Earnings Date"].dropna()
+        elif hasattr(cal, "index") and "Earnings Date" in cal.index:
+            dates = [cal.loc["Earnings Date"]]
+        else:
+            return False
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc).date()
+        for d in dates:
+            try:
+                earn_date = d.date() if hasattr(d, "date") else d
+                if now - timedelta(days=days) <= earn_date <= now:
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 TRAILING_STOP_PCT   = 0.05   # Trail 5% below peak — same as our hard stop floor
 PARTIAL_TAKE_PCT    = 0.08   # Take 50% profit at +8%
@@ -54,12 +83,18 @@ def clear_symbol(symbol: str):
 def check_trailing_stop(pos: dict) -> bool:
     """
     Returns True if trailing stop has been hit.
-    Trailing stop = peak_price * (1 - TRAILING_STOP_PCT)
+    Trailing stop = peak_price * (1 - stop_pct)
+    Post-earnings (within 2 days), stop is widened 1.5× to give the position
+    room to digest the earnings move before being stopped out.
     """
     sym = pos["symbol"]
     current_price = pos["current_price"]
     peak = update_peak(sym, current_price)
-    trail_level = peak * (1 - TRAILING_STOP_PCT)
+    stop_pct = TRAILING_STOP_PCT
+    if _is_post_earnings_window(sym):
+        stop_pct = TRAILING_STOP_PCT * 1.5
+        logger.info(f"[TM] {sym} post-earnings — stop widened to {stop_pct:.1%}")
+    trail_level = peak * (1 - stop_pct)
     hit = current_price <= trail_level
 
     if hit:

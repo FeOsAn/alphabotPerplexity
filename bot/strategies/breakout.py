@@ -48,6 +48,35 @@ BREAKOUT_UNIVERSE = [
 ]
 
 
+def _confirm_4h_breakout(symbol: str, breakout_level: float) -> bool:
+    """
+    Confirm breakout on 4-hour chart.
+    Returns True if the most recent 4H close (approximated as average of last 4 hourly bars)
+    is above the breakout level. Fail-open on data errors.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        hist_4h = ticker.history(period="5d", interval="1h")
+        gc.collect()
+        if hist_4h.empty:
+            logger.debug(f"[BRK] No 4H data for {symbol} — skipping MTF check")
+            return True
+        recent = hist_4h["Close"].iloc[-4:]
+        if len(recent) < 4:
+            return True
+        last_4h_close = float(recent.mean())
+        confirmed = last_4h_close > breakout_level
+        if not confirmed:
+            logger.info(
+                f"[Breakout] {symbol} daily breakout above ${breakout_level:.2f} "
+                f"NOT confirmed on 4H (4H avg=${last_4h_close:.2f})"
+            )
+        return confirmed
+    except Exception as e:
+        logger.debug(f"[BRK] 4H confirmation error for {symbol}: {e}")
+        return True
+
+
 def _conviction_multiplier(vol_ratio: float, pct_from_high: float) -> float:
     """
     Scale position size by breakout quality.
@@ -200,6 +229,16 @@ def run(broker: AlpacaBroker, db_conn):
     """
     logger.info("=== Breakout Strategy: Scanning for 52-week high breakouts ===")
 
+    from utils.regime import is_bull_market
+    if not is_bull_market():
+        logger.info("[breakout] Bear regime detected — skipping new entries")
+        return
+
+    from utils.market_hours import is_entry_allowed
+    if not is_entry_allowed():
+        logger.info("[breakout] Outside safe entry window — skipping")
+        return
+
     # ── Scan universe one symbol at a time ──────────────────────────────────
     signals: dict[str, dict] = {}
     for sym in BREAKOUT_UNIVERSE:
@@ -278,6 +317,17 @@ def run(broker: AlpacaBroker, db_conn):
         if equity_count >= MAX_TOTAL_EQUITY_POSITIONS:
             logger.info(f"[BRK] Max equity positions ({MAX_TOTAL_EQUITY_POSITIONS}) — stopping entries")
             break
+
+        from utils.earnings_calendar import has_upcoming_earnings
+        if has_upcoming_earnings(sym):
+            logger.info(f"[BRK] Skipping {sym} — earnings blackout (within 2 days)")
+            continue
+
+        # Multi-timeframe confirmation: only enter if 4H also above the breakout level
+        breakout_level = sig["high_52w"]
+        if not _confirm_4h_breakout(sym, breakout_level):
+            logger.info(f"[Breakout] {sym} — skipping, 4H confirmation failed")
+            continue
 
         mult = _conviction_multiplier(sig["vol_ratio"], sig["pct_from_high"])
         notional = portfolio_value * MAX_POSITION_PCT * mult

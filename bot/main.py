@@ -43,7 +43,7 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MARKET_OPEN_BUFFER_MIN, MARKET_CLOSE_BUFFER_MIN, CHECK_INTERVAL_MIN,
 )
-from broker import AlpacaBroker, restore_tags_from_db, retag_all_positions
+from broker import AlpacaBroker, restore_tags_from_db, retag_all_positions, check_pyramid_adds
 from db import init_db, get_connection, log_snapshot
 
 # Import strategies
@@ -53,8 +53,12 @@ from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import momentum, breakout
 from strategies.trade_management import run_global_trade_management
+from reporting.weekly_report import generate_weekly_report
 
 EASTERN = pytz.timezone("America/New_York")
+
+# Track last weekly P&L report fire date — module-level so it persists across cycles
+_last_report_date: str = ""
 
 
 def is_trading_window() -> bool:
@@ -114,10 +118,20 @@ _ai_research_fired_date: str = ""
 
 def run_all_strategies(broker: AlpacaBroker, db_conn):
     """Execute all strategies in sequence."""
-    global _ai_research_fired_date
+    global _ai_research_fired_date, _last_report_date
 
     now_et = datetime.now(EASTERN)
     market_open = broker.is_market_open()
+
+    # ── Weekly P&L report: Monday 9:30–10:00 ET, once per day ────────────────
+    if now_et.weekday() == 0 and 9 <= now_et.hour <= 10:
+        today_str = now_et.strftime("%Y-%m-%d")
+        if _last_report_date != today_str:
+            try:
+                generate_weekly_report(broker)
+                _last_report_date = today_str
+            except Exception as e:
+                logger.error(f"Weekly report error: {e}", exc_info=True)
 
     # ── Pre-market window: gap scanner only ───────────────────────────────────
     if is_premarket_window() and not market_open:
@@ -147,6 +161,23 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
 
     # ── Trade management: trailing stops + partial takes on ALL positions ─────
     run_global_trade_management(broker, db_conn)
+
+    # ── Pyramid entry: check tracked positions for +2% / +4% add triggers ────
+    try:
+        check_pyramid_adds(broker)
+    except Exception as e:
+        logger.error(f"Pyramid add check error: {e}", exc_info=True)
+
+    # ── Circuit breaker: halt new entries on >5% daily drawdown ──────────────
+    from utils.circuit_breaker import check_and_update as check_circuit_breaker
+    try:
+        account = broker.get_account()
+        portfolio_value = float(account["portfolio_value"])
+        if check_circuit_breaker(portfolio_value):
+            logger.warning("[Main] Circuit breaker active — skipping strategy cycle (exits already ran via trade_management)")
+            return
+    except Exception as e:
+        logger.warning(f"[Main] Could not check circuit breaker: {e}")
 
     # ── Market regime check ───────────────────────────────────────────────────
     regime = get_market_regime()

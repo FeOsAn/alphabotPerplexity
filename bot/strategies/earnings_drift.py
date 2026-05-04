@@ -116,6 +116,16 @@ def run(broker: AlpacaBroker, db_conn):
     """Run PEAD strategy — scan for fresh earnings beats and manage positions."""
     logger.info("=== Earnings Drift (PEAD) Strategy: Scanning ===")
 
+    from utils.regime import is_bull_market
+    if not is_bull_market():
+        logger.info("[earnings_drift] Bear regime detected — skipping new entries")
+        return
+
+    from utils.market_hours import is_entry_allowed
+    if not is_entry_allowed():
+        logger.info("[earnings_drift] Outside safe entry window — skipping")
+        return
+
     # --- Exit existing positions ---
     all_positions = broker.get_positions()
     pead_positions = [p for p in all_positions if p["strategy"] == STRATEGY_NAME]

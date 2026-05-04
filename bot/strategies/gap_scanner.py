@@ -208,6 +208,16 @@ def run(broker: AlpacaBroker, db_conn):
     global _scanned_today
     logger.info("=== Gap Scanner Strategy: Running ===")
 
+    from utils.regime import is_bull_market
+    if not is_bull_market():
+        logger.info("[gap_scanner] Bear regime detected — skipping new entries")
+        return
+
+    from utils.market_hours import is_entry_allowed
+    if not is_entry_allowed():
+        logger.info("[gap_scanner] Outside safe entry window — skipping")
+        return
+
     # ── 0. Pre-market gap protection (must run before any other logic) ───────
     check_overnight_gaps(broker, db_conn)
 

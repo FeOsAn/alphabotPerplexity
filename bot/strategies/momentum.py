@@ -177,6 +177,16 @@ def run(broker: AlpacaBroker, db_conn):
         _check_stops(broker, db_conn)
         return
 
+    from utils.regime import is_bull_market
+    if not is_bull_market():
+        logger.info("[momentum] Bear regime detected — skipping new entries")
+        return
+
+    from utils.market_hours import is_entry_allowed
+    if not is_entry_allowed():
+        logger.info("[momentum] Outside safe entry window — skipping")
+        return
+
     logger.info("=== Momentum Strategy: Weekly Rebalance ===")
 
     # ── Score universe one symbol at a time (RAM-safe on Railway 512MB) ─────
@@ -270,6 +280,11 @@ def run(broker: AlpacaBroker, db_conn):
         if equity_count >= MAX_TOTAL_EQUITY_POSITIONS:
             logger.info(f"[MOM] Max equity positions ({MAX_TOTAL_EQUITY_POSITIONS}) — stopping entries")
             break
+
+        from utils.earnings_calendar import has_upcoming_earnings
+        if has_upcoming_earnings(sym):
+            logger.info(f"[MOM] Skipping {sym} — earnings blackout (within 2 days)")
+            continue
 
         mult = _conviction_multiplier(sig["score"])
         notional = portfolio_value * MAX_POSITION_PCT * mult

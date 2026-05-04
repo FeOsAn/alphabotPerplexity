@@ -309,3 +309,75 @@ def is_correlated_position(symbol: str, existing_positions: list[dict]) -> bool:
         return True
 
     return False
+
+
+# ---------------------------------------------------------------- pyramid entry
+# Pyramid entry state: {symbol: {"initial_price": float, "notional": float, "add1_done": bool, "add2_done": bool}}
+_pyramid_state: dict = {}
+
+
+def place_pyramid_order(symbol: str, full_notional: float, current_price: float, broker_instance) -> None:
+    """
+    Pyramid entry: buy 50% now, plan to add 25% at +2%, 25% at +4%.
+    Call this instead of a single full-size order for new entries.
+    The remaining adds are checked in check_pyramid_adds().
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    initial_notional = full_notional * 0.50
+    qty = max(1, int(initial_notional / current_price))
+
+    try:
+        broker_instance.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side="buy",
+            type="market",
+            time_in_force="day"
+        )
+        _pyramid_state[symbol] = {
+            "initial_price": current_price,
+            "full_notional": full_notional,
+            "add1_done": False,
+            "add2_done": False,
+        }
+        logger.info(f"[Pyramid] {symbol} initial entry {qty} shares @ ~${current_price:.2f} (50% = ${initial_notional:,.0f})")
+    except Exception as e:
+        logger.error(f"[Pyramid] Failed initial entry {symbol}: {e}")
+
+
+def check_pyramid_adds(broker_instance) -> None:
+    """
+    Check all tracked pyramid positions and add if +2% or +4% targets hit.
+    Call this once per cycle from main.py.
+    """
+    import logging, yfinance as yf, gc
+    logger = logging.getLogger(__name__)
+
+    for symbol, state in list(_pyramid_state.items()):
+        if state["add1_done"] and state["add2_done"]:
+            del _pyramid_state[symbol]
+            continue
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d", interval="1m")
+            gc.collect()
+            if hist.empty:
+                continue
+            current_price = hist["Close"].iloc[-1]
+            pct_gain = (current_price - state["initial_price"]) / state["initial_price"]
+
+            if not state["add1_done"] and pct_gain >= 0.02:
+                qty = max(1, int(state["full_notional"] * 0.25 / current_price))
+                broker_instance.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
+                _pyramid_state[symbol]["add1_done"] = True
+                logger.info(f"[Pyramid] {symbol} add1 {qty} shares @ ${current_price:.2f} (+{pct_gain:.1%}, 25% add)")
+
+            if not state["add2_done"] and pct_gain >= 0.04:
+                qty = max(1, int(state["full_notional"] * 0.25 / current_price))
+                broker_instance.submit_order(symbol=symbol, qty=qty, side="buy", type="market", time_in_force="day")
+                _pyramid_state[symbol]["add2_done"] = True
+                logger.info(f"[Pyramid] {symbol} add2 {qty} shares @ ${current_price:.2f} (+{pct_gain:.1%}, final 25% add)")
+        except Exception as e:
+            logger.warning(f"[Pyramid] Error checking adds for {symbol}: {e}")
