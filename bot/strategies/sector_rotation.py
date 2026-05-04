@@ -21,8 +21,25 @@ from broker import AlpacaBroker, tag_symbol
 from config import (
     SR_TOP_N, SR_LOOKBACK_DAYS, SR_REBALANCE_DAYS,
     SR_MAX_POSITION_PCT, MAX_TOTAL_EQUITY_POSITIONS,
-    STOP_LOSS_PCT, MIN_CASH_RESERVE_PCT
+    STOP_LOSS_PCT, MIN_CASH_RESERVE_PCT,
+    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT
 )
+
+
+def _conviction_multiplier(momentum: float) -> float:
+    """
+    Scale sector position size by 3-month momentum strength.
+    >15% momentum (like XLE's 17.4%) = 1.25x. Weak <5% = 0.75x.
+    Sector ETFs are capped at 1.25x max — they're already 8% of portfolio each.
+    """
+    if momentum >= 0.15:
+        return SIZING_HIGH_MULT  # 1.25x — very strong sector trend
+    elif momentum >= 0.08:
+        return SIZING_MID_MULT   # 1.0x — solid momentum
+    else:
+        return SIZING_MIN_MULT   # 0.75x — weak, borderline top-3
+
+
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.sector_rotation")
@@ -193,13 +210,14 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[SR] Insufficient cash for {etf}")
             continue
 
-        notional = min(notional_per_sector, cash * 0.9)
+        mult = _conviction_multiplier(float(scores[etf]))
+        notional = min(notional_per_sector * mult, cash * 0.9)
         if notional < 1:
             break
 
         logger.info(
             f"[SR] ENTER {etf} ({SECTOR_ETFS[etf]}) — "
-            f"{scores[etf]:.1%} 3m momentum, ${notional:.0f}"
+            f"{scores[etf]:.1%} 3m momentum, conviction={mult:.2f}x, ${notional:.0f}"
         )
         broker.market_buy(etf, notional, STRATEGY_NAME)
         tag_symbol(etf, STRATEGY_NAME)

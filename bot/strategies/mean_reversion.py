@@ -22,8 +22,26 @@ from broker import AlpacaBroker, tag_symbol
 from config import (
     MR_RSI_PERIOD, MR_RSI_OVERSOLD, MR_RSI_OVERBOUGHT,
     MR_BB_PERIOD, MR_BB_STD, MR_MAX_POSITIONS, MAX_POSITION_PCT,
-    MAX_TOTAL_EQUITY_POSITIONS, MIN_CASH_RESERVE_PCT
+    MAX_TOTAL_EQUITY_POSITIONS, MIN_CASH_RESERVE_PCT,
+    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT, SIZING_MAX_MULT
 )
+
+
+def _conviction_multiplier(rsi: float, vol_elevated: bool, vol_ratio: float) -> float:
+    """
+    Scale position size by how strong the mean-reversion signal is.
+    RSI=18 + vol 2x avg = maximum conviction (1.5x). RSI=31 barely oversold = 0.75x.
+    """
+    if rsi <= 20 and vol_ratio >= 2.0:
+        return SIZING_MAX_MULT   # 1.5x — RSI deeply oversold + massive volume
+    elif rsi <= 24 and vol_elevated:
+        return SIZING_HIGH_MULT  # 1.25x — very oversold with volume confirmation
+    elif rsi <= 28:
+        return SIZING_MID_MULT   # 1.0x — solidly oversold
+    else:
+        return SIZING_MIN_MULT   # 0.75x — barely at threshold (RSI 28-32)
+
+
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.mean_reversion")
@@ -71,6 +89,8 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     ma50 = float(close.tail(50).mean()) if len(close) >= 50 else latest_close
     not_in_freefall = latest_close >= ma50 * 0.85
 
+    vol_ratio = float(volume.iloc[-1] / vol_avg.iloc[-1]) if vol_avg.iloc[-1] > 0 else 1.0
+
     buy_signal = (
         latest_rsi < MR_RSI_OVERSOLD and
         latest_close <= latest_bb_lower * 1.01 and
@@ -88,6 +108,7 @@ def _compute_signals(df: pd.DataFrame) -> dict:
         "bb_lower": latest_bb_lower,
         "bb_mid": latest_bb_mid,
         "vol_elevated": vol_elevated,
+        "vol_ratio": vol_ratio,
         "not_in_freefall": not_in_freefall,
         "buy_signal": buy_signal,
         "sell_signal": sell_signal,
@@ -172,14 +193,15 @@ def run(broker: AlpacaBroker, db_conn):
         if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
             break
 
-        notional = portfolio_value * MAX_POSITION_PCT
+        mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
+        notional = portfolio_value * MAX_POSITION_PCT * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue
 
-        logger.info(f"[MR] ENTER {sym} — RSI: {sig['rsi']:.1f}, BB lower: {sig['bb_lower']:.2f}, not_in_freefall: {sig['not_in_freefall']}")
+        logger.info(f"[MR] ENTER {sym} — RSI: {sig['rsi']:.1f}, BB lower: {sig['bb_lower']:.2f}, vol_ratio: {sig.get('vol_ratio',1):.1f}x, conviction: {mult:.2f}x, notional: ${notional:.0f}")
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", sig["rsi"],
-                   {"rsi": sig["rsi"], "bb_lower": sig["bb_lower"], "vol_elevated": int(sig["vol_elevated"])})
+                   {"rsi": sig["rsi"], "bb_lower": sig["bb_lower"], "vol_elevated": int(sig["vol_elevated"]), "conviction": mult})
         broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
         log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, sig["close"], 0,

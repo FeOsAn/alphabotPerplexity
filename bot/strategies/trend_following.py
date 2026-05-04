@@ -22,8 +22,27 @@ from broker import AlpacaBroker, tag_symbol
 from config import (
     TREND_FAST_EMA, TREND_SLOW_EMA, TREND_VIX_MAX,
     TREND_MAX_POSITIONS, MAX_POSITION_PCT, MAX_TOTAL_POSITIONS,
-    TAKE_PROFIT_PCT, MIN_CASH_RESERVE_PCT
+    TAKE_PROFIT_PCT, MIN_CASH_RESERVE_PCT,
+    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT, SIZING_MAX_MULT
 )
+
+
+def _conviction_multiplier(slope: float, recent_cross: bool) -> float:
+    """
+    Scale position size by trend strength.
+    Steep slope + fresh cross = max conviction (1.5x).
+    Weak slope barely crossing = reduce size (0.75x).
+    """
+    if slope >= 0.03 and recent_cross:
+        return SIZING_MAX_MULT   # 1.5x — strong trend + fresh cross
+    elif slope >= 0.015:
+        return SIZING_HIGH_MULT  # 1.25x — solid momentum
+    elif slope >= 0.005:
+        return SIZING_MID_MULT   # 1.0x — moderate trend
+    else:
+        return SIZING_MIN_MULT   # 0.75x — weak slope, marginal signal
+
+
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.trend_following")
@@ -182,14 +201,15 @@ def run(broker: AlpacaBroker, db_conn):
         if len(broker.get_positions()) >= MAX_TOTAL_POSITIONS:
             break
 
-        notional = portfolio_value * MAX_POSITION_PCT
+        mult = _conviction_multiplier(sig["slope"], sig.get("recent_cross", False))
+        notional = portfolio_value * MAX_POSITION_PCT * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue
 
-        logger.info(f"[TF] ENTER {sym} — EMA cross, slope={sig['slope']:.4f}, VIX={vix:.1f}")
+        logger.info(f"[TF] ENTER {sym} — slope={sig['slope']:.4f}, conviction={mult:.2f}x, notional=${notional:.0f}, VIX={vix:.1f}")
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", sig["slope"],
-                   {"ema_fast": sig["ema_fast"], "ema_slow": sig["ema_slow"], "vix": vix})
+                   {"ema_fast": sig["ema_fast"], "ema_slow": sig["ema_slow"], "vix": vix, "conviction": mult})
         broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
         log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, sig["close"], 0,

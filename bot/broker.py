@@ -191,3 +191,52 @@ def restore_tags_from_db(db_conn) -> int:
 
 def _infer_strategy(symbol: str) -> str:
     return _STRATEGY_TAGS.get(symbol, "unknown")
+
+
+# ---------------------------------------------------------- auto-tagger
+# Rules for inferring strategy from live position data.
+# Runs every cycle so tags are always current, surviving restarts + DB wipes.
+
+_SECTOR_ETFS = {"XLE", "XLK", "XLRE", "XLV", "XLF", "XLI", "XLB", "XLC", "XLY", "XLP", "XLU"}
+_SPY_DIP_SYMS = {"SPY", "QQQ"}
+
+
+def retag_all_positions(positions: list[dict]):
+    """
+    Infer and update strategy tags for every open position on every cycle.
+    Priority order:
+      1. Sector ETF → sector_rotation
+      2. SPY/QQQ → spy_dip
+      3. Already correctly tagged (non-unknown) → keep existing tag
+      4. Unknown → try to infer from P&L profile:
+           - Large loss + oversold profile → mean_reversion
+           - Positive momentum → trend_following
+           - Otherwise → keep unknown
+    Logs any tag that changes so you can see reassignments in Railway logs.
+    """
+    logger = __import__("logging").getLogger("alphabot.broker")
+    for pos in positions:
+        sym = pos["symbol"]
+        current_tag = _STRATEGY_TAGS.get(sym, "unknown")
+        new_tag = current_tag
+
+        if sym in _SECTOR_ETFS:
+            new_tag = "sector_rotation"
+        elif sym in _SPY_DIP_SYMS:
+            new_tag = "spy_dip"
+        elif current_tag == "unknown":
+            # Best-effort inference for legacy orphan positions
+            pnl = pos.get("unrealized_pnl_pct", 0)
+            if pnl <= -1.0:
+                # Losing position — likely mean reversion entry that hasn't reverted yet
+                new_tag = "mean_reversion"
+            else:
+                # Flat or winning — likely trend following
+                new_tag = "trend_following"
+
+        if new_tag != current_tag:
+            logger.info(f"[RETAG] {sym}: {current_tag} → {new_tag}")
+            _STRATEGY_TAGS[sym] = new_tag
+        elif new_tag != "unknown":
+            # Ensure it's in the dict even if unchanged
+            _STRATEGY_TAGS[sym] = new_tag

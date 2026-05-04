@@ -43,7 +43,7 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MARKET_OPEN_BUFFER_MIN, MARKET_CLOSE_BUFFER_MIN, CHECK_INTERVAL_MIN,
 )
-from broker import AlpacaBroker, restore_tags_from_db
+from broker import AlpacaBroker, restore_tags_from_db, retag_all_positions
 from db import init_db, get_connection, log_snapshot
 
 # Import strategies
@@ -139,6 +139,10 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     logger.info("==========================================")
     logger.info(f"Running all strategies — {now_et.strftime('%Y-%m-%d %H:%M:%S ET')}")
     logger.info("==========================================")
+
+    # ── Auto-tag all positions so labels are always current ──────────────────
+    positions = broker.get_positions()
+    retag_all_positions(positions)
 
     # ── Trade management: trailing stops + partial takes on ALL positions ─────
     run_global_trade_management(broker, db_conn)

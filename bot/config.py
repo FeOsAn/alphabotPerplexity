@@ -78,6 +78,17 @@ SR_REBALANCE_DAYS = 21        # Rebalance monthly
 SR_MAX_POSITION_PCT = 0.08    # 8% per sector ETF (larger — ETFs are diversified)
 
 # ============================================================
+# Position Sizing — Conviction Multipliers
+# ============================================================
+# Base notional = MAX_POSITION_PCT * portfolio_value
+# Multiplied by conviction score (0.75x weak signal → 1.5x very high conviction)
+# Hard cap: no single position > MAX_POSITION_PCT * 1.5 of portfolio
+SIZING_MIN_MULT = 0.75   # Weak signal — reduce size
+SIZING_MID_MULT = 1.0    # Standard signal — base size
+SIZING_HIGH_MULT = 1.25  # Strong signal — increase size
+SIZING_MAX_MULT = 1.5    # Very high conviction — max size
+
+# ============================================================
 # Scheduling
 # ============================================================
 MARKET_OPEN_BUFFER_MIN = 15    # Wait 15min after open before trading
