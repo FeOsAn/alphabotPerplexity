@@ -54,6 +54,75 @@ GAP_WATCHLIST = [
 _entry_dates: dict[str, datetime] = {}
 _scanned_today: str = ""  # date string — only scan once per day
 
+GAP_PROTECT_DROP_PCT = 0.04   # 4% adverse pre-market move triggers close
+
+
+def check_overnight_gaps(broker, db_conn):
+    """
+    Pre-market gap protection (runs 8:00–9:25 AM ET).
+
+    For every open position across ALL strategies, fetch the current pre-market
+    price via yFinance.  If a position is down more than GAP_PROTECT_DROP_PCT
+    (4%) from its average entry price, close it immediately before the regular
+    session opens.
+    """
+    now_et = datetime.now(EASTERN)
+    from datetime import time as dtime
+    if not (dtime(8, 0) <= now_et.time() <= dtime(9, 25)):
+        return  # Only runs in pre-market window
+
+    all_positions = broker.get_positions()
+    if not all_positions:
+        return
+
+    logger.info(f"[GAP PROTECT] Checking {len(all_positions)} open position(s) for overnight gap risk")
+
+    for pos in all_positions:
+        sym = pos["symbol"]
+        avg_entry = pos.get("avg_entry", 0)
+        if avg_entry <= 0:
+            continue
+
+        try:
+            ticker = yf.Ticker(sym)
+            # Try pre-market price first, fall back to last available price
+            pre_price = (
+                ticker.info.get("preMarketPrice")
+                or ticker.fast_info.get("last_price")
+            )
+            if pre_price is None:
+                logger.debug(f"[GAP PROTECT] {sym}: no pre-market price available")
+                continue
+
+            pre_price = float(pre_price)
+            if pre_price <= 0:
+                continue
+
+            drop_pct = (pre_price - avg_entry) / avg_entry  # negative = drop
+
+            if drop_pct <= -GAP_PROTECT_DROP_PCT:
+                pct_display = drop_pct * 100  # e.g. -5.2
+                logger.warning(
+                    f"[GAP PROTECT] {sym} down {pct_display:.1f}% pre-market — closing before open"
+                )
+                broker.close_position(sym, "gap_protect")
+                log_trade(
+                    db_conn,
+                    pos.get("strategy", "unknown"),
+                    sym,
+                    "sell_gap_protect",
+                    pos["qty"],
+                    pre_price,
+                    (pre_price - avg_entry) * pos["qty"],
+                )
+            else:
+                logger.debug(
+                    f"[GAP PROTECT] {sym}: pre-market {drop_pct*100:+.1f}% — OK"
+                )
+
+        except Exception as e:
+            logger.debug(f"[GAP PROTECT] Could not check {sym}: {e}")
+
 
 def _is_premarket_window() -> bool:
     """Returns True if we're in the pre-market scanning window (8:00–9:25 AM ET)."""
@@ -138,6 +207,9 @@ def run(broker: AlpacaBroker, db_conn):
     """Run gap scanner — pre-market only, then manage existing positions during market hours."""
     global _scanned_today
     logger.info("=== Gap Scanner Strategy: Running ===")
+
+    # ── 0. Pre-market gap protection (must run before any other logic) ───────
+    check_overnight_gaps(broker, db_conn)
 
     account = broker.get_account()
     portfolio_value = account["portfolio_value"]

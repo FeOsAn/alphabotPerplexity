@@ -328,7 +328,15 @@ def run(broker: AlpacaBroker, db_conn):
     # ── 3. Research loop ──────────────────────────────────────────────────────
     candidates_to_research = [s for s in RESEARCH_WATCHLIST if s not in current_symbols]
 
+    logger.info(
+        f"[AI] Candidates to research: {len(candidates_to_research)} symbols | "
+        f"Available slots: {slots_available} | "
+        f"Full list: {candidates_to_research}"
+    )
+
     approved_trades = []
+    n_passed_research = 0
+    n_passed_checker = 0
 
     for symbol in candidates_to_research:
         if len(approved_trades) >= slots_available:
@@ -340,24 +348,43 @@ def run(broker: AlpacaBroker, db_conn):
         # Fetch data
         context = _get_stock_context(symbol)
         if "error" in context:
+            logger.info(f"[AI Research] {symbol}: REJECTED — could not fetch stock context ({context.get('error')})")
             continue
 
         # Step 1: Research Agent
         thesis = research_agent(client, symbol, context)
         if not thesis:
+            logger.info(f"[AI Research] {symbol}: REJECTED — Research agent returned no result")
             continue
+
+        # Log what Claude actually returned (truncated)
+        raw_thesis_str = json.dumps(thesis)
+        logger.info(
+            f"[AI Research] {symbol}: Claude response (first 500 chars): "
+            f"{raw_thesis_str[:500]}"
+        )
 
         # Skip low-confidence or neutral theses
         if thesis.get("verdict") == "NEUTRAL":
-            logger.info(f"[AI Research] {symbol}: NEUTRAL — skipping")
+            logger.info(f"[AI Research] {symbol}: REJECTED by research — verdict NEUTRAL")
             continue
         if thesis.get("confidence", 0) < MIN_CONFIDENCE:
-            logger.info(f"[AI Research] {symbol}: confidence {thesis.get('confidence')}/10 too low — skipping")
+            logger.info(
+                f"[AI Research] {symbol}: REJECTED by research — "
+                f"confidence {thesis.get('confidence')}/10 < threshold {MIN_CONFIDENCE}"
+            )
             continue
+
+        n_passed_research += 1
+        logger.info(
+            f"[AI Research] {symbol}: PASSED research filter — "
+            f"verdict={thesis['verdict']}, confidence={thesis.get('confidence')}/10"
+        )
 
         # Step 2: Checker Agent
         check = checker_agent(client, symbol, context, thesis)
         if not check:
+            logger.info(f"[AI Research] {symbol}: REJECTED by checker — Checker agent returned no result")
             continue
 
         # Hard gate: all 3 checks must pass + go signal + min confidence
@@ -368,26 +395,43 @@ def run(broker: AlpacaBroker, db_conn):
         ])
 
         if not check["overall_go"]:
-            logger.info(f"[AI Research] {symbol}: Checker issued NO-GO — blocking trade")
+            logger.info(
+                f"[AI Research] {symbol}: REJECTED by checker — "
+                f"overall_go=False | notes: {check.get('checker_notes', '')}"
+            )
             _log_blocked_trade(db_conn, symbol, thesis, check, "checker_no_go")
             continue
 
         if checks_passed < 3:
-            logger.info(f"[AI Research] {symbol}: Only {checks_passed}/3 checks passed — blocking trade")
+            failed_checks = []
+            if not check["check1_factual"]["passed"]:
+                failed_checks.append(f"check1_factual: {check['check1_factual'].get('issues', [])}")
+            if not check["check2_logic"]["passed"]:
+                failed_checks.append(f"check2_logic: {check['check2_logic'].get('issues', [])}")
+            if not check["check3_recency"]["passed"]:
+                failed_checks.append(f"check3_recency: {check['check3_recency'].get('issues', [])}")
+            logger.info(
+                f"[AI Research] {symbol}: REJECTED by checker — "
+                f"only {checks_passed}/3 checks passed | failed: {failed_checks}"
+            )
             _log_blocked_trade(db_conn, symbol, thesis, check, f"only_{checks_passed}_of_3_checks_passed")
             continue
 
         if check["checker_confidence"] < MIN_CHECKER_SCORE:
-            logger.info(f"[AI Research] {symbol}: Checker confidence {check['checker_confidence']}/10 too low")
+            logger.info(
+                f"[AI Research] {symbol}: REJECTED by checker — "
+                f"checker confidence {check['checker_confidence']}/10 < threshold {MIN_CHECKER_SCORE}"
+            )
             _log_blocked_trade(db_conn, symbol, thesis, check, "low_checker_confidence")
             continue
 
         # If checker amended the verdict, use the amendment
         final_verdict = check.get("amended_verdict") or thesis["verdict"]
         if final_verdict == "NEUTRAL":
-            logger.info(f"[AI Research] {symbol}: Checker amended verdict to NEUTRAL — skipping")
+            logger.info(f"[AI Research] {symbol}: REJECTED — Checker amended verdict to NEUTRAL")
             continue
 
+        n_passed_checker += 1
         logger.info(
             f"[AI Research] ✓ {symbol} APPROVED | "
             f"Verdict: {final_verdict} | "
@@ -408,6 +452,7 @@ def run(broker: AlpacaBroker, db_conn):
         time.sleep(2)
 
     # ── 4. Execute approved trades ────────────────────────────────────────────
+    trades_placed = 0
     for trade in approved_trades:
         sym = trade["symbol"]
         verdict = trade["verdict"]
@@ -441,12 +486,31 @@ def run(broker: AlpacaBroker, db_conn):
                        {"checker_confidence": trade["check"]["checker_confidence"],
                         "verdict": verdict})
             cash -= notional
+            trades_placed += 1
 
         elif verdict == "BEARISH":
             # Short selling — only if account has margin/shorting enabled
             logger.info(f"[AI Research] BEARISH signal for {sym} — skipping short (long-only mode)")
 
-    logger.info(f"[AI Research] Cycle complete. {len(approved_trades)} trades approved and executed.")
+    # ── 5. Cycle summary ─────────────────────────────────────────────────────
+    logger.info(
+        f"[AI] Candidates considered: {len(candidates_to_research)} | "
+        f"Passed research: {n_passed_research} | "
+        f"Passed checker: {n_passed_checker} | "
+        f"Trades placed: {trades_placed}"
+    )
+
+    if trades_placed == 0:
+        if len(candidates_to_research) == 0:
+            logger.info("[AI] No trade fired — No symbols passed all filters (watchlist already held)")
+        elif n_passed_research == 0:
+            logger.info("[AI] No trade fired — Claude returned no actionable picks")
+        elif n_passed_checker == 0:
+            logger.info("[AI] No trade fired — Checker rejected all candidates")
+        else:
+            logger.info("[AI] No trade fired — No symbols passed all filters")
+
+    logger.info(f"[AI Research] Cycle complete. {trades_placed} trades placed.")
 
 
 def _log_blocked_trade(db_conn, symbol: str, thesis: dict, check: dict, reason: str):

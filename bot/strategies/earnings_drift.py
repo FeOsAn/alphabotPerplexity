@@ -29,6 +29,35 @@ STRATEGY_NAME = "earnings_drift"
 # Track when we entered each position (symbol -> entry datetime)
 _entry_dates: dict[str, datetime] = {}
 
+# ── Earnings cache: fetched once per calendar day ────────────────────────────
+_earnings_cache: list = []
+_earnings_cache_date: str = ""
+
+
+def _get_earnings_beats(db_conn) -> list:
+    """
+    Return the list of earnings-beat symbols for today, using a daily cache
+    so we hit the yFinance API once per day instead of every 5-minute cycle.
+    """
+    global _earnings_cache, _earnings_cache_date
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if _earnings_cache_date == today and _earnings_cache is not None:
+        logger.info("[PEAD] Using cached earnings data (fetched today)")
+        return _earnings_cache
+
+    logger.info("[PEAD] Fetching fresh earnings data")
+    results = []
+    for sym in PEAD_WATCHLIST:
+        surprise = _get_earnings_surprise(sym)
+        if surprise:
+            results.append(surprise)
+            logger.info(f"[PEAD] Earnings beat found: {sym} +{surprise['surprise_pct']:.1f}% surprise")
+
+    _earnings_cache = results
+    _earnings_cache_date = today
+    return _earnings_cache
+
 
 def _get_earnings_surprise(symbol: str) -> Optional[dict]:
     """
@@ -131,14 +160,9 @@ def run(broker: AlpacaBroker, db_conn):
     cash = account["cash"]
     current_symbols = {p["symbol"] for p in broker.get_positions()}
 
-    beats = []
-    for sym in PEAD_WATCHLIST:
-        if sym in current_symbols:
-            continue
-        surprise = _get_earnings_surprise(sym)
-        if surprise:
-            beats.append(surprise)
-            logger.info(f"[PEAD] Earnings beat found: {sym} +{surprise['surprise_pct']:.1f}% surprise")
+    # Use cached results (refreshed at most once per day)
+    all_beats = _get_earnings_beats(db_conn)
+    beats = [b for b in all_beats if b["symbol"] not in current_symbols]
 
     if not beats:
         logger.info("[PEAD] No fresh earnings beats found today")

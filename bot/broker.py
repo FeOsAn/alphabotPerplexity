@@ -240,3 +240,72 @@ def retag_all_positions(positions: list[dict]):
         elif new_tag != "unknown":
             # Ensure it's in the dict even if unchanged
             _STRATEGY_TAGS[sym] = new_tag
+
+
+# ---------------------------------------------------------------- sector correlation
+_SECTOR_MAP = {
+    # Energy
+    "XLE": "energy", "XOM": "energy", "CVX": "energy", "COP": "energy", "EOG": "energy", "SLB": "energy",
+    # Technology
+    "XLK": "tech", "AAPL": "tech", "MSFT": "tech", "NVDA": "tech", "AVGO": "tech", "AMD": "tech",
+    "CRM": "tech", "NOW": "tech", "PANW": "tech", "ADBE": "tech", "ORCL": "tech",
+    # Financials
+    "XLF": "financials", "JPM": "financials", "BAC": "financials", "GS": "financials",
+    "MS": "financials", "V": "financials", "MA": "financials",
+    # Healthcare
+    "XLV": "healthcare", "JNJ": "healthcare", "LLY": "healthcare", "ABBV": "healthcare",
+    "MRK": "healthcare", "ISRG": "healthcare",
+    # Industrials
+    "XLI": "industrials", "CAT": "industrials", "HON": "industrials", "GE": "industrials",
+    "RTX": "industrials", "LMT": "industrials",
+    # Consumer
+    "XLY": "consumer", "AMZN": "consumer", "TSLA": "consumer", "HD": "consumer", "MCD": "consumer",
+    # Communication
+    "XLC": "comms", "META": "comms", "GOOGL": "comms", "NFLX": "comms",
+    # Real estate
+    "XLRE": "realestate",
+    # Materials
+    "XLB": "materials",
+    # Utilities
+    "XLU": "utilities",
+}
+
+_SECTOR_LIMIT = 2  # max positions per sector before blocking a new entry
+
+
+def is_correlated_position(symbol: str, existing_positions: list[dict]) -> bool:
+    """
+    Returns True if adding *symbol* would create over-concentrated sector exposure.
+
+    Blocks entry when the candidate symbol is in the same sector as an existing
+    position AND there are already _SECTOR_LIMIT (2) positions in that sector.
+    Sector ETFs (XLE, XLK, etc.) count as 1 toward the sector limit like any
+    other holding.
+
+    Examples
+    --------
+    Holding XLE + XOM (2 energy) → a 3rd energy name is blocked → returns True.
+    Holding XLE alone (1 energy) → XOM would be a 2nd → returns False.
+    Symbol not in _SECTOR_MAP → unknown sector, never blocked → returns False.
+    """
+    _logger = __import__("logging").getLogger("alphabot.broker")
+
+    new_sector = _SECTOR_MAP.get(symbol)
+    if new_sector is None:
+        # Sector unknown — allow through (no data to block on)
+        return False
+
+    # Count how many existing positions share the same sector
+    sector_count = sum(
+        1 for p in existing_positions
+        if _SECTOR_MAP.get(p["symbol"]) == new_sector
+    )
+
+    if sector_count >= _SECTOR_LIMIT:
+        _logger.info(
+            f"[CORR] {symbol} ({new_sector}) blocked — already {sector_count} "
+            f"{new_sector} positions open (limit {_SECTOR_LIMIT})"
+        )
+        return True
+
+    return False

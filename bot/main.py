@@ -51,6 +51,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from strategies import mean_reversion, trend_following, ai_research
 from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
+from strategies import momentum, breakout
 from strategies.trade_management import run_global_trade_management
 
 EASTERN = pytz.timezone("America/New_York")
@@ -175,6 +176,8 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         (gap_scanner.run,     "Gap scanner"),
         (earnings_drift.run,  "Earnings drift"),
         (sector_rotation.run, "Sector rotation"),
+        (momentum.run,        "Momentum"),       # internally checks _should_rebalance() for weekly cadence
+        (breakout.run,        "Breakout"),
     ]
 
     for fn, name in strategies:

@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 import ta
 import yfinance as yf
-from broker import AlpacaBroker, tag_symbol
+from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
     MR_RSI_PERIOD, MR_RSI_OVERSOLD, MR_RSI_OVERBOUGHT,
     MR_BB_PERIOD, MR_BB_STD, MR_MAX_POSITIONS, MAX_POSITION_PCT,
@@ -192,6 +192,12 @@ def run(broker: AlpacaBroker, db_conn):
         total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
         if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
             break
+
+        # Skip if a position in the same sector is already held (correlation control)
+        live_positions = broker.get_positions()
+        if is_correlated_position(sym, live_positions):
+            logger.info(f"[MR] Skipping {sym} — correlated sector already held")
+            continue
 
         mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
         notional = portfolio_value * MAX_POSITION_PCT * mult

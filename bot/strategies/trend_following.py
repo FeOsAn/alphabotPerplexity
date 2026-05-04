@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import ta
-from broker import AlpacaBroker, tag_symbol
+from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
     TREND_FAST_EMA, TREND_SLOW_EMA, TREND_VIX_MAX,
     TREND_MAX_POSITIONS, MAX_POSITION_PCT, MAX_TOTAL_POSITIONS,
@@ -50,6 +50,7 @@ STRATEGY_NAME = "trend_following"
 
 STOP_LOSS_PCT = 0.05   # Tighter 5% stop for trend following
 MAX_NEW_ENTRIES_PER_SCAN = 2  # Stagger entries
+ADX_MIN = 25.0   # Only enter when ADX(14) confirms a strong trend (filters whipsaws)
 
 # Trimmed to 20 names — trend following needs strong momentum stocks with clean
 # EMA crossovers. These are the most trend-friendly large-caps. Reduces RAM per scan.
@@ -87,8 +88,27 @@ def _spy_above_ma() -> bool:
     return True  # Default to True if unavailable
 
 
+def _compute_adx(highs: pd.Series, lows: pd.Series, closes: pd.Series, period: int = 14) -> float:
+    """Manual ADX(14) — fallback path when ta.trend.ADXIndicator misbehaves."""
+    tr1 = highs - lows
+    tr2 = (highs - closes.shift(1)).abs()
+    tr3 = (lows - closes.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    up_move = highs - highs.shift(1)
+    down_move = lows.shift(1) - lows
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+    atr = tr.ewm(span=period, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr
+    minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.ewm(span=period, adjust=False).mean()
+    val = adx.iloc[-1]
+    return float(val) if pd.notna(val) else 0.0
+
+
 def _compute_signals(df: pd.DataFrame) -> dict:
-    """EMA crossover with volume confirmation."""
+    """EMA crossover with volume + ADX(14) trend strength confirmation."""
     if df is None or len(df) < TREND_SLOW_EMA + 10:
         return {}
 
@@ -97,11 +117,22 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     df.columns = [c.lower() for c in df.columns]
     df = df.sort_index()
 
+    high   = df["high"]
+    low    = df["low"]
     close  = df["close"]
     volume = df["volume"]
 
     ema_fast = ta.trend.EMAIndicator(close, window=TREND_FAST_EMA).ema_indicator()
     ema_slow = ta.trend.EMAIndicator(close, window=TREND_SLOW_EMA).ema_indicator()
+
+    # ADX(14) trend strength — primary whipsaw filter
+    try:
+        adx_series = ta.trend.ADXIndicator(high=high, low=low, close=close, window=14).adx()
+        adx_val = float(adx_series.iloc[-1])
+        if pd.isna(adx_val):
+            adx_val = _compute_adx(high, low, close, period=14)
+    except Exception:
+        adx_val = _compute_adx(high, low, close, period=14)
 
     vol_avg = volume.rolling(20).mean()
     vol_ok  = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 0.8)
@@ -133,6 +164,7 @@ def _compute_signals(df: pd.DataFrame) -> dict:
         "price_above_trend": price_above_trend,
         "exit_cross": exit_cross,
         "slope": slope,
+        "adx": adx_val,
         "buy_signal": buy_signal,
     }
 
@@ -201,19 +233,31 @@ def run(broker: AlpacaBroker, db_conn):
         if len(broker.get_positions()) >= MAX_TOTAL_POSITIONS:
             break
 
+        # ADX(14) gate — reject weak/whipsawing trends (the EMA crossover lied to us 73% of the time)
+        adx = sig.get("adx", 0.0)
+        if adx < ADX_MIN:
+            logger.info(f"[TF] Skipping {sym} — ADX {adx:.1f} < {ADX_MIN:.0f} (weak trend)")
+            continue
+
+        # Correlation control — don't pile on the same sector
+        live_positions = broker.get_positions()
+        if is_correlated_position(sym, live_positions):
+            logger.info(f"[TF] Skipping {sym} — correlated sector already held")
+            continue
+
         mult = _conviction_multiplier(sig["slope"], sig.get("recent_cross", False))
         notional = portfolio_value * MAX_POSITION_PCT * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue
 
-        logger.info(f"[TF] ENTER {sym} — slope={sig['slope']:.4f}, conviction={mult:.2f}x, notional=${notional:.0f}, VIX={vix:.1f}")
+        logger.info(f"[TF] ENTER {sym} — slope={sig['slope']:.4f}, ADX={adx:.1f}, conviction={mult:.2f}x, notional=${notional:.0f}, VIX={vix:.1f}")
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", sig["slope"],
-                   {"ema_fast": sig["ema_fast"], "ema_slow": sig["ema_slow"], "vix": vix, "conviction": mult})
+                   {"ema_fast": sig["ema_fast"], "ema_slow": sig["ema_slow"], "vix": vix, "adx": adx, "conviction": mult})
         broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
         log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, sig["close"], 0,
-                  metadata={"notional": notional, "slope": sig["slope"], "vix": vix})
+                  metadata={"notional": notional, "slope": sig["slope"], "vix": vix, "adx": adx})
         cash -= notional
         current_tf_count += 1
         new_entries += 1
