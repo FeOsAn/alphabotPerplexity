@@ -120,6 +120,17 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     """Execute all strategies in sequence."""
     global _ai_research_fired_date, _last_report_date
 
+    try:
+        from utils.adaptive_filters import get_thresholds
+        t = get_thresholds()
+        logger.info(
+            f"[Regime] {t['regime']} — thresholds active: "
+            f"RSI_max={t['momentum_rsi_max']}, BRK_vol={t['breakout_vol_min']}x, "
+            f"MR_oversold={t['mr_rsi_oversold']}"
+        )
+    except Exception as e:
+        logger.warning(f"[Regime] Could not assess: {e}")
+
     now_et = datetime.now(EASTERN)
     market_open = broker.is_market_open()
 

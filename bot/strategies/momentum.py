@@ -129,17 +129,19 @@ def _compute_score(sym: str) -> Optional[dict]:
 
 def _passes_entry_filters(sig: dict) -> bool:
     """All four entry filters must pass."""
+    from utils.adaptive_filters import get_thresholds
+    t = get_thresholds()
     if not sig.get("above_ma50", False):
         logger.debug(f"[MOM] {sig['symbol']}: filtered — below MA50 (price={sig['price']:.2f})")
         return False
-    if sig.get("rsi", 100) >= 80:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= 80 (overbought)")
+    if sig.get("rsi", 100) >= t["momentum_rsi_max"]:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= {t['momentum_rsi_max']} (overbought)")
         return False
     if sig.get("vol_ratio", 0) < 0.8:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 0.8x average")
         return False
-    if sig.get("score", 0) <= 0:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} not positive")
+    if sig.get("score", 0) < t["momentum_score_min"]:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")
         return False
     return True
 

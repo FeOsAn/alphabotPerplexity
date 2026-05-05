@@ -91,8 +91,11 @@ def _compute_signals(df: pd.DataFrame) -> dict:
 
     vol_ratio = float(volume.iloc[-1] / vol_avg.iloc[-1]) if vol_avg.iloc[-1] > 0 else 1.0
 
+    from utils.adaptive_filters import get_thresholds
+    oversold_threshold = get_thresholds()["mr_rsi_oversold"]
+
     buy_signal = (
-        latest_rsi < MR_RSI_OVERSOLD and
+        latest_rsi < oversold_threshold and
         latest_close <= latest_bb_lower * 1.01 and
         vol_elevated and
         not_in_freefall

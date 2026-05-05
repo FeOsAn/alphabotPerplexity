@@ -243,10 +243,12 @@ def run(broker: AlpacaBroker, db_conn):
         if len(broker.get_positions()) >= MAX_TOTAL_POSITIONS:
             break
 
-        # ADX(14) gate — reject weak/whipsawing trends (the EMA crossover lied to us 73% of the time)
+        # ADX(14) gate — reject weak/whipsawing trends (adaptive by regime)
+        from utils.adaptive_filters import get_thresholds
+        adx_min = get_thresholds()["tf_adx_min"]
         adx = sig.get("adx", 0.0)
-        if adx < ADX_MIN:
-            logger.info(f"[TF] Skipping {sym} — ADX {adx:.1f} < {ADX_MIN:.0f} (weak trend)")
+        if adx < adx_min:
+            logger.info(f"[TF] Skipping {sym} — ADX {adx:.1f} < {adx_min:.0f} (weak trend)")
             continue
 
         # Correlation control — don't pile on the same sector

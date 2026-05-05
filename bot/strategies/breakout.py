@@ -140,10 +140,12 @@ def _compute_signals(sym: str) -> Optional[dict]:
         price_20d = float(close.iloc[-21]) if len(close) >= 21 else float(close.iloc[0])
         slope_20d = (price_now - price_20d) / price_20d if price_20d > 0 else 0.0
 
-        # Evaluate entry conditions
-        cond_near_high = pct_from_high >= 0.92   # within 8% of 52w high (was 5%)
-        cond_volume = vol_ratio >= 1.2             # 20% above avg volume (was 50%)
-        cond_rsi = 55 <= rsi <= 78
+        # Evaluate entry conditions (adaptive — driven by regime)
+        from utils.adaptive_filters import get_thresholds
+        t = get_thresholds()
+        cond_near_high = pct_from_high >= t["breakout_proximity"]
+        cond_volume = vol_ratio >= t["breakout_vol_min"]
+        cond_rsi = 55 <= rsi <= t["breakout_rsi_max"]
         cond_ma50 = above_ma50
         cond_slope = slope_20d >= 0.02
 
