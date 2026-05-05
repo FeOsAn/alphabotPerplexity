@@ -95,10 +95,6 @@ def is_premarket_window() -> bool:
     return dtime(8, 0) <= now_et.time() <= dtime(9, 25)
 
 
-def is_ai_research_window() -> bool:
-    """9:45–10:30 AM ET — AI research fires once daily in this window."""
-    now_et = datetime.now(EASTERN)
-    return dtime(9, 45) <= now_et.time() <= dtime(10, 30)
 
 
 def get_spy_price() -> float:
@@ -130,8 +126,6 @@ def get_market_regime() -> str:
     return "bull"
 
 
-# Track AI research daily fire
-_ai_research_fired_date: str = ""
 
 # Track last risk-metrics fire date (logged once daily after 10 AM ET)
 _last_metrics_date: str = ""
@@ -139,7 +133,7 @@ _last_metrics_date: str = ""
 
 def run_all_strategies(broker: AlpacaBroker, db_conn):
     """Execute all strategies in sequence."""
-    global _ai_research_fired_date, _last_report_date, _last_metrics_date
+    global _last_report_date, _last_metrics_date
 
     try:
         from utils.adaptive_filters import get_thresholds
@@ -267,22 +261,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         finally:
             gc.collect()  # Free memory between each strategy to stay under Railway 512MB
 
-    # ── AI Research: once daily 9:45–10:30 ET ────────────────────────────────
-    today_str = now_et.strftime("%Y-%m-%d")
-    if is_ai_research_window() and _ai_research_fired_date != today_str:
-        logger.info("==========================================")
-        logger.info("Running AI Research Strategy (daily window)")
-        logger.info("==========================================")
-        try:
-            ai_research.run(broker, db_conn)
-            _ai_research_fired_date = today_str
-            logger.info(f"AI Research fired for {today_str}")
-        except Exception as e:
-            logger.error(f"AI Research error: {e}", exc_info=True)
-    elif not is_ai_research_window():
-        logger.info(f"AI Research: outside window (ET={now_et.strftime('%H:%M')}, window=09:45–10:30)")
-    else:
-        logger.info(f"AI Research: already fired today ({today_str})")
+    # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
+    # Exit checks run every cycle. New research fires once daily inside the strategy.
+    try:
+        ai_research.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"AI Research error: {e}", exc_info=True)
 
     logger.info("Strategy run complete")
 
