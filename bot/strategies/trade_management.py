@@ -17,7 +17,14 @@ TRAILING STOP:
 PARTIAL PROFIT TAKING:
   At +PARTIAL_TAKE_PCT, sell half the position and let the rest run.
   This locks in real gains while keeping upside exposure.
+  The remaining half stays open with a ratchet trailing stop that locks
+  in profit as the position climbs — we ride the winner, not cap it.
   Tracked per-symbol to avoid double-selling.
+
+DUST CLEANUP:
+  After a partial take the remaining stub may be too small to matter.
+  Any position below MIN_POSITION_VALUE ($500) where a partial take has
+  already fired gets closed entirely rather than left as dead weight.
 """
 
 import logging
@@ -60,6 +67,7 @@ def _is_post_earnings_window(symbol: str, days: int = 2) -> bool:
 TRAILING_STOP_PCT   = 0.05   # Trail 5% below peak — same as our hard stop floor
 PARTIAL_TAKE_PCT    = 0.08   # Take 50% profit at +8%
 PARTIAL_TAKE_RATIO  = 0.50   # Sell 50% of position
+MIN_POSITION_VALUE  = 500    # Close entire position if stub is below $500 after partial take
 
 # Per-strategy base stop loss (fraction). Used as the floor before ratchet kicks in.
 _STRATEGY_BASE_STOP = {
@@ -176,6 +184,8 @@ def check_partial_take(pos: dict, broker: AlpacaBroker, db_conn, strategy: str) 
     """
     If position is up PARTIAL_TAKE_PCT and we haven't taken partial profits yet,
     sell half. Returns True if partial exit was executed.
+    The remaining half stays open — the ratchet trailing stop will ride it up
+    and lock in profit as the stock climbs. We don't cap upside here.
     """
     sym = pos["symbol"]
 
@@ -195,7 +205,7 @@ def check_partial_take(pos: dict, broker: AlpacaBroker, db_conn, strategy: str) 
 
     logger.info(
         f"[PARTIAL] {sym} ({strategy}): up {pnl_pct:.1f}% — "
-        f"selling {PARTIAL_TAKE_RATIO*100:.0f}% ({sell_qty:.4f} shares), letting rest run"
+        f"selling {PARTIAL_TAKE_RATIO*100:.0f}% ({sell_qty:.4f} shares), letting rest run with ratchet stop"
     )
 
     try:
@@ -233,12 +243,36 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
         pnl_pct = pos["unrealized_pnl_pct"]
         strategy = pos.get("strategy", "unknown")
         current_price = pos["current_price"]
+        market_value = float(pos.get("market_value", 0))
         peak = _peak_prices.get(sym, current_price)
 
         logger.info(
             f"  {sym} ({strategy}): P&L={pnl_pct:+.1f}% | "
-            f"price=${current_price:.2f} | peak=${peak:.2f}"
+            f"price=${current_price:.2f} | value=${market_value:.0f} | peak=${peak:.2f}"
         )
+
+        # 0. Dust cleanup — if a partial take already fired and the remaining
+        #    stub is below MIN_POSITION_VALUE, close the whole thing.
+        #    No point holding $50 with a trailing stop — it's irrelevant money.
+        if sym in _partial_taken and market_value < MIN_POSITION_VALUE:
+            logger.info(
+                f"[TRADE MGT] DUST CLOSE {sym}: stub=${market_value:.0f} "
+                f"< ${MIN_POSITION_VALUE} after partial take — closing"
+            )
+            try:
+                broker.close_position(sym, strategy)
+                log_trade(db_conn, strategy, sym, "sell_dust_close",
+                          pos["qty"], pos["current_price"], pos["unrealized_pnl"],
+                          metadata={
+                              "reason": "dust_close",
+                              "market_value": market_value,
+                              "min_position_value": MIN_POSITION_VALUE,
+                              "pnl_pct": pnl_pct,
+                          })
+                clear_symbol(sym)
+            except Exception as e:
+                logger.error(f"[TRADE MGT] Failed dust close for {sym}: {e}")
+            continue
 
         # 1. Check partial profit taking first (before stop checks)
         if check_partial_take(pos, broker, db_conn, strategy):
