@@ -280,7 +280,10 @@ def start_health_server():
         def log_message(self, *args):
             pass  # suppress access logs
 
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    class ReusableHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
+    server = ReusableHTTPServer(("0.0.0.0", port), HealthHandler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     logger.info(f"Health check server started on port {port}")
