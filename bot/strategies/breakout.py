@@ -141,8 +141,8 @@ def _compute_signals(sym: str) -> Optional[dict]:
         slope_20d = (price_now - price_20d) / price_20d if price_20d > 0 else 0.0
 
         # Evaluate entry conditions
-        cond_near_high = pct_from_high >= 0.95
-        cond_volume = vol_ratio >= 1.5
+        cond_near_high = pct_from_high >= 0.92   # within 8% of 52w high (was 5%)
+        cond_volume = vol_ratio >= 1.2             # 20% above avg volume (was 50%)
         cond_rsi = 55 <= rsi <= 78
         cond_ma50 = above_ma50
         cond_slope = slope_20d >= 0.02

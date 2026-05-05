@@ -132,8 +132,8 @@ def _passes_entry_filters(sig: dict) -> bool:
     if not sig.get("above_ma50", False):
         logger.debug(f"[MOM] {sig['symbol']}: filtered — below MA50 (price={sig['price']:.2f})")
         return False
-    if sig.get("rsi", 100) >= 75:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= 75 (overbought)")
+    if sig.get("rsi", 100) >= 80:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= 80 (overbought)")
         return False
     if sig.get("vol_ratio", 0) < 0.8:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 0.8x average")
