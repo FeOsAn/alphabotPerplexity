@@ -6,6 +6,8 @@ Printed to logs (Railway shows logs in dashboard).
 import logging
 from datetime import datetime, timezone, timedelta
 
+from utils.risk_metrics import compute_metrics
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +69,34 @@ def generate_weekly_report(broker_instance) -> str:
 
         cash_pct = (cash / portfolio_value * 100) if portfolio_value > 0 else 0
 
+        # Risk metrics from Alpaca portfolio history
+        metrics = {}
+        try:
+            from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
+            metrics = compute_metrics(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL)
+        except Exception as e:
+            logger.warning(f"[WeeklyReport] Could not compute risk metrics: {e}")
+
+        if metrics and "error" not in metrics:
+            metrics_section = (
+                f"╠══════════════════════════════════════════════════════════╣\n"
+                f"║  RISK METRICS (last {metrics.get('days_analysed', 0)}d)\n"
+                f"║  Sharpe:           {metrics.get('sharpe', 0):>+8.2f}\n"
+                f"║  Sortino:          {metrics.get('sortino', 0):>+8.2f}\n"
+                f"║  Max Drawdown:     {metrics.get('max_drawdown_pct', 0):>+8.2f}%\n"
+                f"║  Calmar:           {metrics.get('calmar', 0):>+8.2f}\n"
+                f"║  Ann. Return:      {metrics.get('ann_return_pct', 0):>+8.2f}%\n"
+                f"║  Ann. Volatility:  {metrics.get('ann_volatility_pct', 0):>8.2f}%\n"
+                f"║  Win Rate:         {metrics.get('win_rate_pct', 0):>8.1f}%\n"
+                f"║  Profit Factor:    {metrics.get('profit_factor', 0):>+8.2f}\n"
+                f"║  Daily VaR (95%):  {metrics.get('daily_var_95_pct', 0):>+8.2f}%\n"
+            )
+        else:
+            metrics_section = (
+                f"╠══════════════════════════════════════════════════════════╣\n"
+                f"║  RISK METRICS: {metrics.get('error', 'unavailable') if metrics else 'unavailable'}\n"
+            )
+
         report = f"""
 ╔══════════════════════════════════════════════════════════╗
 ║           ALPHABOT WEEKLY P&L REPORT                     ║
@@ -78,7 +108,7 @@ def generate_weekly_report(broker_instance) -> str:
 ╠══════════════════════════════════════════════════════════╣
 ║  OPEN POSITIONS ({len(positions)})                                   ║
 {chr(10).join(pos_lines) if pos_lines else '  No open positions'}
-╠══════════════════════════════════════════════════════════╣
+{metrics_section}╠══════════════════════════════════════════════════════════╣
 ║  CLOSED ORDERS LAST 7 DAYS: {len(orders)}                          ║
 ╚══════════════════════════════════════════════════════════╝
 """

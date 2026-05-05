@@ -52,6 +52,7 @@ from strategies import mean_reversion, trend_following, ai_research
 from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import momentum, breakout, short_hedge
+from strategies import pairs_trading
 from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
 
@@ -115,10 +116,13 @@ def get_market_regime() -> str:
 # Track AI research daily fire
 _ai_research_fired_date: str = ""
 
+# Track last risk-metrics fire date (logged once daily after 10 AM ET)
+_last_metrics_date: str = ""
+
 
 def run_all_strategies(broker: AlpacaBroker, db_conn):
     """Execute all strategies in sequence."""
-    global _ai_research_fired_date, _last_report_date
+    global _ai_research_fired_date, _last_report_date, _last_metrics_date
 
     try:
         from utils.adaptive_filters import get_thresholds
@@ -143,6 +147,18 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 _last_report_date = today_str
             except Exception as e:
                 logger.error(f"Weekly report error: {e}", exc_info=True)
+
+    # ── Daily risk metrics: log once per day after 10 AM ET ──────────────────
+    if now_et.hour >= 10:
+        today_str = now_et.strftime("%Y-%m-%d")
+        if _last_metrics_date != today_str:
+            try:
+                from utils.risk_metrics import compute_metrics
+                from config import ALPACA_BASE_URL
+                compute_metrics(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL)
+                _last_metrics_date = today_str
+            except Exception as e:
+                logger.warning(f"[RiskMetrics] Daily log error: {e}")
 
     # ── Pre-market window: gap scanner only ───────────────────────────────────
     if is_premarket_window() and not market_open:
@@ -202,6 +218,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             (vix_reversal.run,    "VIX reversal"),   # VIX reversal still runs in bear — it's designed for it
             (gap_scanner.run,     "Gap scanner"),     # exits only
             (short_hedge.run,     "Short hedge"),     # inverse ETFs — gated by adaptive regime
+            (pairs_trading.run,   "Pairs trading"),   # market-neutral — runs in any regime
         ]:
             try:
                 fn(broker, db_conn)
@@ -222,6 +239,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         (momentum.run,        "Momentum"),       # internally checks _should_rebalance() for weekly cadence
         (breakout.run,        "Breakout"),
         (short_hedge.run,     "Short hedge"),    # inverse ETFs — internally gated by adaptive regime
+        (pairs_trading.run,   "Pairs trading"),  # market-neutral — long/short pairs via cointegration
     ]
 
     for fn, name in strategies:

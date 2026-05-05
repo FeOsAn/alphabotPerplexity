@@ -345,6 +345,16 @@ def run(broker: AlpacaBroker, db_conn):
         logger.info(f"\n{'='*50}")
         logger.info(f"[AI Research] Researching {symbol}...")
 
+        # Pre-filter: skip if recent news sentiment is strongly negative
+        try:
+            from utils.news_sentiment import is_sentiment_bullish
+            from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+            if not is_sentiment_bullish(symbol, ALPACA_API_KEY, ALPACA_SECRET_KEY):
+                logger.info(f"[AI Research] {symbol}: skipping — negative news sentiment")
+                continue
+        except Exception as e:
+            logger.debug(f"[AI Research] {symbol}: sentiment check failed ({e}) — proceeding anyway")
+
         # Fetch data
         context = _get_stock_context(symbol)
         if "error" in context:
