@@ -27,12 +27,12 @@ UNIVERSE = [
 # ============================================================
 # Risk Management
 # ============================================================
-MAX_POSITION_PCT = 0.05       # Max 5% of portfolio per position
+MAX_POSITION_PCT = 0.08       # Max 8% of portfolio per position (~$8k on $100k)
 MAX_TOTAL_EQUITY_POSITIONS = 30  # Max equity positions managed by bot
 MAX_TOTAL_POSITIONS = 35      # Hard cap including all existing positions
 STOP_LOSS_PCT = 0.05          # 5% stop loss per position (tightened)
 TAKE_PROFIT_PCT = 0.20        # 20% take profit target
-MIN_CASH_RESERVE_PCT = 0.15  # Keep at least 15% cash
+MIN_CASH_RESERVE_PCT = 0.10  # Keep at least 10% cash (was 15% — too conservative)
 
 # ============================================================
 # Strategy Parameters
@@ -75,7 +75,7 @@ PEAD_WATCHLIST = [
 SR_TOP_N = 3                  # Hold top N sectors
 SR_LOOKBACK_DAYS = 63         # ~3 months of trading days
 SR_REBALANCE_DAYS = 21        # Rebalance monthly
-SR_MAX_POSITION_PCT = 0.08    # 8% per sector ETF (larger — ETFs are diversified)
+SR_MAX_POSITION_PCT = 0.10    # 10% per sector ETF (was 8%)
 
 # ============================================================
 # Position Sizing — Conviction Multipliers

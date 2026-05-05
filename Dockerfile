@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY bot/ ./bot/
 COPY api/ ./api/
 
-# cache-bust: 2026-05-04-v7
+# cache-bust: 2026-05-05-v8
 # Default: run the trading bot
 # Railway will use the start command from railway.toml
 CMD ["python", "bot/main.py"]
