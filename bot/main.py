@@ -57,13 +57,13 @@ from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
 
 EASTERN = pytz.timezone("America/New_York")
-BERLIN  = pytz.timezone("Europe/Berlin")  # user's timezone
+LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
 
 def now_str() -> str:
-    """Always log both ET and Berlin time to avoid timezone confusion."""
-    et   = datetime.now(EASTERN)
-    bst  = datetime.now(BERLIN)
-    return f"{et.strftime('%H:%M ET')} / {bst.strftime('%H:%M Berlin')}"
+    """Always log both ET and London time to avoid timezone confusion."""
+    et     = datetime.now(EASTERN)
+    london = datetime.now(LONDON)
+    return f"{et.strftime('%H:%M ET')} / {london.strftime('%H:%M London')}"
 
 def market_closes_in() -> str:
     """Human-readable time until market close."""
