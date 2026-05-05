@@ -283,20 +283,18 @@ def start_health_server():
     class ReusableHTTPServer(HTTPServer):
         allow_reuse_address = True
 
-    try:
-        server = ReusableHTTPServer(("0.0.0.0", port), HealthHandler)
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        logger.info(f"Health check server started on port {port}")
-    except OSError as e:
-        logger.warning(f"Health server could not bind to port {port}: {e} — retrying on port {port+1}")
+    for attempt in range(5):
         try:
-            server = ReusableHTTPServer(("0.0.0.0", port + 1), HealthHandler)
+            server = ReusableHTTPServer(("0.0.0.0", port), HealthHandler)
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
-            logger.info(f"Health check server started on fallback port {port+1}")
-        except OSError as e2:
-            logger.error(f"Health server failed on both ports — continuing without it: {e2}")
+            logger.info(f"Health check server started on port {port} (attempt {attempt+1})")
+            break
+        except OSError as e:
+            logger.warning(f"Health server port {port} busy (attempt {attempt+1}/5): {e} — retrying in 2s")
+            time.sleep(2)
+    else:
+        logger.error(f"Health server could not bind to port {port} after 5 attempts — continuing anyway")
 
 
 def main():
