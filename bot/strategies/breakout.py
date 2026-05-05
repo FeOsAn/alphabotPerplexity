@@ -202,6 +202,8 @@ def _check_exits(broker: AlpacaBroker, db_conn, signals: dict):
                 db_conn, STRATEGY_NAME, sym, "sell_stop",
                 pos["qty"], pos["current_price"], pos["unrealized_pnl"],
             )
+            from utils.cooldown import set_cooldown
+            set_cooldown(sym)
             continue
 
         # Condition 2: breakout failure — price fell away from 52w high
@@ -311,6 +313,11 @@ def run(broker: AlpacaBroker, db_conn):
         if brk_count >= BREAKOUT_MAX_POSITIONS:
             break
 
+        from utils.cooldown import is_on_cooldown
+        if is_on_cooldown(sym):
+            logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
+            continue
+
         # Portfolio equity cap
         equity_count = len([
             p for p in broker.get_positions()
@@ -332,7 +339,9 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["vol_ratio"], sig["pct_from_high"])
-        notional = portfolio_value * MAX_POSITION_PCT * mult
+        from utils.position_sizer import get_position_size_pct
+        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
+        notional = portfolio_value * size_pct * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:

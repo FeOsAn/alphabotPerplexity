@@ -96,19 +96,26 @@ def _assess_regime() -> tuple[str, dict]:
             "mom_20d_pct": round(mom_20d * 100, 2),
         }
 
-        if price > ma50 and price > ma200 and vix_proxy < 20 and mom_20d > 0.02:
+        # Count bearish signals
+        bearish_signals = sum([
+            price < ma50,
+            price < ma200,
+            vix_proxy > 25,
+            mom_20d < 0,
+        ])
+
+        # Classify based on signal count + severity
+        if price < ma200 or vix_proxy > 35 or mom_20d < -0.03:
+            regime = "BEAR_STRONG"  # any single extreme trigger
+        elif bearish_signals >= 2:
+            regime = "BEAR_MILD"    # need at least 2 signals to flip bear
+        elif price > ma50 and price > ma200 and vix_proxy < 20 and mom_20d > 0.02:
             regime = "BULL_STRONG"
-        elif price > ma50 and vix_proxy < 25 and mom_20d > 0:
-            regime = "BULL_NORMAL"
-        elif price < ma200 or vix_proxy > 35 or mom_20d < -0.03:
-            regime = "BEAR_STRONG"
-        elif price < ma50 or vix_proxy > 25 or mom_20d < 0:
-            regime = "BEAR_MILD"
         else:
             regime = "BULL_NORMAL"
 
         logger.info(
-            f"[AdaptiveFilters] Regime={regime} | "
+            f"[AdaptiveFilters] Regime={regime} (bearish_signals={bearish_signals}/4) | "
             f"SPY=${price:.2f} MA50=${ma50:.2f} MA200=${ma200:.2f} | "
             f"VIX~{vix_proxy:.1f} | Mom20d={mom_20d:+.1%}"
         )

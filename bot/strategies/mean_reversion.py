@@ -165,6 +165,8 @@ def run(broker: AlpacaBroker, db_conn):
             broker.close_position(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "sell_stop",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
+            from utils.cooldown import set_cooldown
+            set_cooldown(sym)
             continue
 
         # Take profit / mean reversion exit
@@ -200,6 +202,10 @@ def run(broker: AlpacaBroker, db_conn):
             break
         if sym in current_symbols:
             continue
+        from utils.cooldown import is_on_cooldown
+        if is_on_cooldown(sym):
+            logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
+            continue
         if current_mr_count >= MR_MAX_POSITIONS:
             break
         total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
@@ -218,7 +224,9 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
-        notional = portfolio_value * MAX_POSITION_PCT * mult
+        from utils.position_sizer import get_position_size_pct
+        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
+        notional = portfolio_value * size_pct * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue

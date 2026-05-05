@@ -238,6 +238,10 @@ def run(broker: AlpacaBroker, db_conn):
             break
         if sym in current_symbols:
             continue
+        from utils.cooldown import is_on_cooldown
+        if is_on_cooldown(sym):
+            logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
+            continue
         if current_tf_count >= TREND_MAX_POSITIONS:
             break
         if len(broker.get_positions()) >= MAX_TOTAL_POSITIONS:
@@ -263,7 +267,9 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["slope"], sig.get("recent_cross", False))
-        notional = portfolio_value * MAX_POSITION_PCT * mult
+        from utils.position_sizer import get_position_size_pct
+        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
+        notional = portfolio_value * size_pct * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue
@@ -296,6 +302,8 @@ def _check_exits_and_stops(broker: AlpacaBroker, db_conn, signals: dict):
             broker.close_position(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "sell_stop",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
+            from utils.cooldown import set_cooldown
+            set_cooldown(sym)
             continue
 
         # Take profit

@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from strategies import mean_reversion, trend_following, ai_research
 from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
-from strategies import momentum, breakout
+from strategies import momentum, breakout, short_hedge
 from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
 
@@ -201,6 +201,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             (spy_dip.run,         "SPY dip"),
             (vix_reversal.run,    "VIX reversal"),   # VIX reversal still runs in bear — it's designed for it
             (gap_scanner.run,     "Gap scanner"),     # exits only
+            (short_hedge.run,     "Short hedge"),     # inverse ETFs — gated by adaptive regime
         ]:
             try:
                 fn(broker, db_conn)
@@ -220,6 +221,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         (sector_rotation.run, "Sector rotation"),
         (momentum.run,        "Momentum"),       # internally checks _should_rebalance() for weekly cadence
         (breakout.run,        "Breakout"),
+        (short_hedge.run,     "Short hedge"),    # inverse ETFs — internally gated by adaptive regime
     ]
 
     for fn, name in strategies:

@@ -91,6 +91,11 @@ def _compute_score(sym: str) -> Optional[dict]:
         price_21d = float(close.iloc[-22]) if len(close) >= 22 else float(close.iloc[0])
         price_63d = float(close.iloc[-64]) if len(close) >= 64 else float(close.iloc[0])
 
+        # Prior-month anchor: price 42 trading days ago (used for ret_1m_prior)
+        price_42d = float(close.iloc[-43]) if len(close) >= 43 else price_21d
+        price_21d_val = float(close.iloc[-22]) if len(close) >= 22 else price_now
+        ret_1m_prior = (price_21d_val - price_42d) / price_42d if price_42d > 0 else 0.0
+
         # Momentum score: 3-month return minus 1-month return
         ret_3m = (price_now - price_63d) / price_63d if price_63d > 0 else 0.0
         ret_1m = (price_now - price_21d) / price_21d if price_21d > 0 else 0.0
@@ -115,6 +120,7 @@ def _compute_score(sym: str) -> Optional[dict]:
             "score": score,
             "ret_3m": ret_3m,
             "ret_1m": ret_1m,
+            "ret_1m_prior": ret_1m_prior,
             "rsi": rsi,
             "above_ma50": above_ma50,
             "vol_ratio": vol_ratio,
@@ -143,6 +149,12 @@ def _passes_entry_filters(sig: dict) -> bool:
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")
         return False
+    ret_1m = sig.get("ret_1m", 0)
+    ret_1m_prior = sig.get("ret_1m_prior", 0)
+    accelerating = ret_1m > ret_1m_prior or (ret_1m > 0 and ret_1m_prior <= 0)
+    if not accelerating:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — decelerating (1m={ret_1m:.2%} vs prior={ret_1m_prior:.2%})")
+        return False
     return True
 
 
@@ -163,6 +175,8 @@ def _check_stops(broker: AlpacaBroker, db_conn):
                 db_conn, STRATEGY_NAME, pos["symbol"], "sell_stop",
                 pos["qty"], pos["current_price"], pos["unrealized_pnl"],
             )
+            from utils.cooldown import set_cooldown
+            set_cooldown(pos["symbol"])
 
 
 def run(broker: AlpacaBroker, db_conn):
@@ -274,6 +288,11 @@ def run(broker: AlpacaBroker, db_conn):
             logger.debug(f"[MOM] {sym}: already held — skipping entry")
             continue
 
+        from utils.cooldown import is_on_cooldown
+        if is_on_cooldown(sym):
+            logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
+            continue
+
         # Portfolio-level guards
         equity_count = len([
             p for p in broker.get_positions()
@@ -289,7 +308,9 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["score"])
-        notional = portfolio_value * MAX_POSITION_PCT * mult
+        from utils.position_sizer import get_position_size_pct
+        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
+        notional = portfolio_value * size_pct * mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:

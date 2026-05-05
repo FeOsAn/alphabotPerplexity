@@ -61,9 +61,67 @@ TRAILING_STOP_PCT   = 0.05   # Trail 5% below peak — same as our hard stop flo
 PARTIAL_TAKE_PCT    = 0.08   # Take 50% profit at +8%
 PARTIAL_TAKE_RATIO  = 0.50   # Sell 50% of position
 
+# Per-strategy base stop loss (fraction). Used as the floor before ratchet kicks in.
+_STRATEGY_BASE_STOP = {
+    "momentum":        0.06,
+    "breakout":        0.05,
+    "mean_reversion":  0.05,
+    "trend_following": 0.05,
+    "ai_research":     0.08,
+    "gap_scanner":     0.06,
+    "spy_dip":         0.04,
+    "vix_reversal":    0.03,
+}
+
+
+def _base_stop_for(strategy: str) -> float:
+    return _STRATEGY_BASE_STOP.get(strategy, TRAILING_STOP_PCT)
+
 # ── In-memory state ────────────────────────────────────────────────────────────
 _peak_prices: dict[str, float] = {}        # symbol -> highest price seen
 _partial_taken: set[str] = set()           # symbols where partial exit already fired
+_ratchet_stops: dict[str, float] = {}      # symbol -> locked stop pct (e.g. 0.05 = +5%)
+
+
+def _get_ratchet_stop(symbol: str, current_pnl_pct: float, base_stop_pct: float) -> float:
+    """
+    Returns the effective stop loss % (as a fraction; negative = below entry).
+    Ratchets up as position gains. Never moves the stop down.
+    current_pnl_pct: e.g. 8.5 (percent)
+    base_stop_pct: e.g. 0.05 (fraction)
+    Returns: effective stop as fraction, e.g. 0.0 means stop at breakeven
+    """
+    RATCHET_LEVELS = [
+        (25.0, 0.20),   # pnl >= 25% -> stop at +20%
+        (20.0, 0.15),   # pnl >= 20% -> stop at +15%
+        (15.0, 0.10),   # pnl >= 15% -> stop at +10%
+        (10.0, 0.05),   # pnl >= 10% -> stop at +5%
+        (5.0,  0.00),   # pnl >= 5%  -> stop at breakeven
+    ]
+
+    new_ratchet = None
+    for threshold_pct, lock_pct in RATCHET_LEVELS:
+        if current_pnl_pct >= threshold_pct:
+            new_ratchet = lock_pct
+            break
+
+    if new_ratchet is None:
+        # Below +5%, use normal stop loss (negative) unless already ratcheted up
+        current_ratchet = _ratchet_stops.get(symbol)
+        if current_ratchet is not None:
+            return current_ratchet
+        return -base_stop_pct
+
+    # Only ratchet UP, never down
+    current_ratchet = _ratchet_stops.get(symbol, -base_stop_pct)
+    if new_ratchet > current_ratchet:
+        _ratchet_stops[symbol] = new_ratchet
+        logger.info(
+            f"[Ratchet] {symbol} P&L={current_pnl_pct:+.1f}% → "
+            f"stop ratcheted to {new_ratchet:+.0%}"
+        )
+
+    return _ratchet_stops.get(symbol, -base_stop_pct)
 
 
 def update_peak(symbol: str, current_price: float) -> float:
@@ -78,6 +136,7 @@ def clear_symbol(symbol: str):
     """Remove tracking state when a position is fully closed."""
     _peak_prices.pop(symbol, None)
     _partial_taken.discard(symbol)
+    _ratchet_stops.pop(symbol, None)
 
 
 def check_trailing_stop(pos: dict) -> bool:
@@ -194,11 +253,49 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={"reason": "trailing_stop", "peak_price": peak})
                 clear_symbol(sym)
+                from utils.cooldown import set_cooldown
+                set_cooldown(sym)
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
 
-        # 3. Hard floor stop — catches any position down 7%+ regardless
+        # 3. Ratchet stop — locks in profit as position gains, never moves down
+        base_stop_pct = _base_stop_for(strategy)
+        effective_stop = _get_ratchet_stop(sym, pnl_pct, base_stop_pct)
+        if pnl_pct / 100 < effective_stop:
+            if effective_stop >= 0:
+                logger.info(
+                    f"[TM] {sym} RATCHET STOP at {effective_stop:+.0%} "
+                    f"(P&L={pnl_pct:+.1f}%)"
+                )
+                reason = "ratchet_stop"
+                action = "sell_ratchet_stop"
+            else:
+                logger.info(
+                    f"[TM] {sym} STOP LOSS at {pnl_pct:+.1f}% "
+                    f"(stop={effective_stop:.0%})"
+                )
+                reason = "base_stop"
+                action = "sell_stop"
+            try:
+                broker.close_position(sym, strategy)
+                log_trade(db_conn, strategy, sym, action,
+                          pos["qty"], pos["current_price"], pos["unrealized_pnl"],
+                          metadata={
+                              "reason": reason,
+                              "effective_stop_pct": effective_stop,
+                              "base_stop_pct": base_stop_pct,
+                              "pnl_pct_at_stop": pnl_pct,
+                          })
+                clear_symbol(sym)
+                if reason == "base_stop":
+                    from utils.cooldown import set_cooldown
+                    set_cooldown(sym)
+            except Exception as e:
+                logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
+            continue
+
+        # 4. Hard floor stop — catches any position down 7%+ regardless
         # (safety net in case trailing stop tracking reset after deploy)
         if pnl_pct <= -7.0:
             logger.info(f"[TRADE MGT] HARD FLOOR STOP {sym} @ {pnl_pct:.1f}% — closing")
@@ -208,5 +305,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={"reason": "hard_floor_stop"})
                 clear_symbol(sym)
+                from utils.cooldown import set_cooldown
+                set_cooldown(sym)
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
