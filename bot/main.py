@@ -352,7 +352,6 @@ def main():
     now_et = datetime.now(EASTERN)
     logger.info(f"Time: {now_str()} | "
                 f"Pre-market: {is_premarket_window()} | "
-                f"AI window: {is_ai_research_window()} | "
                 f"Trading: {is_trading_window()}")
 
     # Schedules
