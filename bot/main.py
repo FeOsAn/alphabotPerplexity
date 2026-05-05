@@ -57,6 +57,23 @@ from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
 
 EASTERN = pytz.timezone("America/New_York")
+BERLIN  = pytz.timezone("Europe/Berlin")  # user's timezone
+
+def now_str() -> str:
+    """Always log both ET and Berlin time to avoid timezone confusion."""
+    et   = datetime.now(EASTERN)
+    bst  = datetime.now(BERLIN)
+    return f"{et.strftime('%H:%M ET')} / {bst.strftime('%H:%M Berlin')}"
+
+def market_closes_in() -> str:
+    """Human-readable time until market close."""
+    now_et = datetime.now(EASTERN)
+    close  = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    diff   = close - now_et
+    if diff.total_seconds() <= 0:
+        return "CLOSED"
+    h, m = divmod(int(diff.total_seconds()) // 60, 60)
+    return f"{h}h{m:02d}m remaining"
 
 # Track last weekly P&L report fire date — module-level so it persists across cycles
 _last_report_date: str = ""
@@ -179,7 +196,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         return
 
     logger.info("==========================================")
-    logger.info(f"Running all strategies — {now_et.strftime('%Y-%m-%d %H:%M:%S ET')}")
+    logger.info(f"Running all strategies — {now_str()} | Market: {market_closes_in()}")
     logger.info("==========================================")
 
     # ── Auto-tag all positions so labels are always current ──────────────────
@@ -349,7 +366,7 @@ def main():
     logger.info(f"Restored {restored} strategy tag(s) from trade history")
 
     now_et = datetime.now(EASTERN)
-    logger.info(f"Time: {now_et.strftime('%Y-%m-%d %H:%M:%S ET')} | "
+    logger.info(f"Time: {now_str()} | "
                 f"Pre-market: {is_premarket_window()} | "
                 f"AI window: {is_ai_research_window()} | "
                 f"Trading: {is_trading_window()}")
