@@ -72,21 +72,25 @@ PEAD_WATCHLIST = [
 ]
 
 # Sector Rotation strategy
-SR_TOP_N = 3                  # Hold top N sectors
+SR_TOP_N = 5                  # was 3 — hold top 5 sectors for more exposure
 SR_LOOKBACK_DAYS = 63         # ~3 months of trading days
 SR_REBALANCE_DAYS = 21        # Rebalance monthly
-SR_MAX_POSITION_PCT = 0.10    # 10% per sector ETF
+SR_MAX_POSITION_PCT = 0.08    # 8% per sector ETF (individual names can go higher)
+SR_MAX_ETF_SLOTS = 3          # Cap ETF positions at 3 if individual signals are firing
+                               # ETFs are backup exposure, not the main bet
 
 # ============================================================
 # Position Sizing — Conviction Multipliers
 # ============================================================
 # Base notional = MAX_POSITION_PCT * portfolio_value
-# Multiplied by conviction score (0.75x weak signal → 1.5x very high conviction)
-# Hard cap: no single position > MAX_POSITION_PCT * 1.5 of portfolio
-SIZING_MIN_MULT = 0.75   # Weak signal — reduce size
-SIZING_MID_MULT = 1.0    # Standard signal — base size
-SIZING_HIGH_MULT = 1.25  # Strong signal — increase size
-SIZING_MAX_MULT = 1.5    # Very high conviction — max size
+# Multiplied by conviction score. Widened range so the best signals get
+# meaningfully more capital than weak ones.
+# Hard cap: no single position > MAX_POSITION_PCT * 2.0 of portfolio
+SIZING_MIN_MULT  = 0.5   # Weak signal — half size (was 0.75)
+SIZING_MID_MULT  = 1.0   # Standard signal — base size
+SIZING_HIGH_MULT = 1.5   # Strong signal (was 1.25)
+SIZING_MAX_MULT  = 2.0   # Exceptional conviction — double size (was 1.5)
+                          # e.g. AMD: 3m=+104%, at 52w high, RSI 80, vol 1.4x = 2.0x
 
 # ============================================================
 # Scheduling

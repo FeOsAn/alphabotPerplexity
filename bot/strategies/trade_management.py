@@ -67,7 +67,17 @@ def _is_post_earnings_window(symbol: str, days: int = 2) -> bool:
 TRAILING_STOP_PCT   = 0.05   # Trail 5% below peak — same as our hard stop floor
 PARTIAL_TAKE_PCT    = 0.08   # Take 50% profit at +8%
 PARTIAL_TAKE_RATIO  = 0.50   # Sell 50% of position
-MIN_POSITION_VALUE  = 500    # Close entire position if stub is below $500 after partial take
+MIN_POSITION_VALUE   = 500    # Close stub if below $500 after partial take
+
+# Trailing take profit — replaces the old hard 25% exit.
+# Instead of capping upside at 25%, we ride the winner until momentum
+# genuinely exhausts. Exit triggers when BOTH:
+#   1. Position is up >= TRAIL_TAKE_ACTIVATE_PCT (40% — was 25%)
+#   2. Price pulls back >= TRAIL_TAKE_DRAWDOWN_PCT from the peak (8%)
+# This way AVGO +38% doesn't get closed — it keeps running until it
+# actually rolls over.
+TRAIL_TAKE_ACTIVATE_PCT  = 0.40  # Start protecting profit once up 40%
+TRAIL_TAKE_DRAWDOWN_PCT  = 0.08  # Exit if pulls back 8% from peak after activation
 
 # Per-strategy base stop loss (fraction). Used as the floor before ratchet kicks in.
 _STRATEGY_BASE_STOP = {
@@ -274,7 +284,40 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 logger.error(f"[TRADE MGT] Failed dust close for {sym}: {e}")
             continue
 
-        # 1. Check partial profit taking first (before stop checks)
+        # 1. Trailing take profit — ride winners until momentum exhausts.
+        #    Activates once up TRAIL_TAKE_ACTIVATE_PCT (40%). After that,
+        #    if price pulls back TRAIL_TAKE_DRAWDOWN_PCT (8%) from the peak,
+        #    close the entire position. This replaces the old hard 25% exit.
+        if pnl_pct >= TRAIL_TAKE_ACTIVATE_PCT * 100:
+            peak_price = _peak_prices.get(sym, current_price)
+            drawdown_from_peak = (peak_price - current_price) / peak_price if peak_price > 0 else 0
+            if drawdown_from_peak >= TRAIL_TAKE_DRAWDOWN_PCT:
+                logger.info(
+                    f"[TRADE MGT] TRAILING TAKE PROFIT {sym}: "
+                    f"P&L={pnl_pct:+.1f}% peak=${peak_price:.2f} "
+                    f"drawdown={drawdown_from_peak:.1%} >= {TRAIL_TAKE_DRAWDOWN_PCT:.0%} — closing"
+                )
+                try:
+                    broker.close_position(sym, strategy)
+                    log_trade(db_conn, strategy, sym, "sell_trail_take",
+                              pos["qty"], current_price, pos["unrealized_pnl"],
+                              metadata={
+                                  "reason": "trailing_take_profit",
+                                  "pnl_pct": pnl_pct,
+                                  "peak_price": peak_price,
+                                  "drawdown_from_peak_pct": round(drawdown_from_peak * 100, 2),
+                              })
+                    clear_symbol(sym)
+                except Exception as e:
+                    logger.error(f"[TRADE MGT] Failed trailing take profit for {sym}: {e}")
+                continue
+            else:
+                logger.debug(
+                    f"[TRADE MGT] {sym} trailing take active: "
+                    f"P&L={pnl_pct:+.1f}% drawdown={drawdown_from_peak:.1%} — still riding"
+                )
+
+        # 2. Check partial profit taking first (before stop checks)
         if check_partial_take(pos, broker, db_conn, strategy):
             continue  # partial exit done, re-check next cycle with updated qty
 

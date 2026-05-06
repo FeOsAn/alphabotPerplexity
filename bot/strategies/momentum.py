@@ -61,16 +61,30 @@ def _should_rebalance() -> bool:
     return (datetime.now() - _last_rebalance).days >= MOMENTUM_REBALANCE_DAYS
 
 
-def _conviction_multiplier(score: float) -> float:
-    """Scale position size by momentum score magnitude."""
-    if score >= 0.15:
-        return SIZING_MAX_MULT   # 1.5x — very strong multi-month momentum
-    elif score >= 0.08:
-        return SIZING_HIGH_MULT  # 1.25x — solid momentum
-    elif score >= 0.04:
-        return SIZING_MID_MULT   # 1.0x — moderate score
-    else:
-        return SIZING_MIN_MULT   # 0.75x — borderline positive
+def _conviction_multiplier(score: float, rsi: float = 50, vol_ratio: float = 1.0) -> float:
+    """
+    Scale position size by signal quality across three dimensions:
+      - score: straight 3m return (higher = stronger trend)
+      - rsi: momentum confirmation (mid-range RSI = healthy trend)
+      - vol_ratio: institutional participation
+
+    Thresholds use the widened 0.5x–2.0x range from config.
+    """
+    # Base score tier
+    if score >= 0.50:      base = SIZING_MAX_MULT   # 2.0x — +50% in 3m, exceptional
+    elif score >= 0.25:    base = SIZING_HIGH_MULT  # 1.5x — +25% in 3m, strong
+    elif score >= 0.10:    base = SIZING_MID_MULT   # 1.0x — +10% in 3m, solid
+    elif score >= 0.03:    base = 0.75              # modest but positive
+    else:                  base = SIZING_MIN_MULT   # 0.5x — barely positive
+
+    # Boost for healthy RSI (50–70 = ideal momentum zone, not exhausted)
+    rsi_boost = 0.25 if 50 <= rsi <= 72 else 0.0
+
+    # Boost for above-average volume (institutional conviction)
+    vol_boost = 0.25 if vol_ratio >= 1.2 else 0.0
+
+    mult = min(SIZING_MAX_MULT, base + rsi_boost + vol_boost)
+    return mult
 
 
 def _compute_score(sym: str) -> Optional[dict]:
@@ -323,7 +337,7 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[MOM] Skipping {sym} — earnings blackout (within 2 days)")
             continue
 
-        mult = _conviction_multiplier(sig["score"])
+        mult = _conviction_multiplier(sig["score"], sig.get("rsi", 50), sig.get("vol_ratio", 1.0))
         from utils.position_sizer import get_position_size_pct
         size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
         notional = portfolio_value * size_pct * mult

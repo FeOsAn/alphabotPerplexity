@@ -88,12 +88,16 @@ def _check_news_freshness(symbol: str, news: list) -> dict:
             ages.append((age_hours, n.get("title", "")))
 
     if not ages:
+        # yFinance returns articles but none have a timestamp — treat as fresh.
+        # This is a data provider quirk, not a sign the news is old.
+        # The Research Agent will note the uncertainty and adjust confidence.
+        untitled = [n.get("title", "") for n in news[:1]]
         return {
-            "fresh": False,
-            "newest_age_hours": 9999,
-            "newest_headline": "",
-            "oldest_in_context_hours": 9999,
-            "reason": "no timestamped news — cannot assess freshness",
+            "fresh": True,
+            "newest_age_hours": 12,  # conservative assumption: 12h old
+            "newest_headline": untitled[0] if untitled else "(no title)",
+            "oldest_in_context_hours": 12,
+            "reason": "news has no timestamps — treating as recent (yFinance quirk)",
         }
 
     ages.sort(key=lambda x: x[0])  # ascending = freshest first
@@ -165,8 +169,10 @@ def _get_stock_context(symbol: str) -> dict:
                 else:
                     pct_move_since = None
             else:
-                age_h          = 9999
-                pub_date       = "unknown"
+                # No timestamp from yFinance — assume ~12h old rather than 9999h.
+                # This prevents valid articles from being treated as ancient.
+                age_h          = 12
+                pub_date       = "unknown (assumed recent)"
                 pct_move_since = None
             url = n.get("link", "")
             if title:
