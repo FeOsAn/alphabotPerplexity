@@ -13,26 +13,17 @@ from datetime import datetime, timezone, timedelta
 logger = logging.getLogger(__name__)
 
 _cooldowns: dict[str, datetime] = {}  # symbol -> allowed_reentry_after
-COOLDOWN_HOURS = 2  # was 24 — cut to 2h, bull market doesn't need a full day lock
+COOLDOWN_HOURS = 0  # Disabled — cooldown was blocking valid re-entries in bull markets
 
 
 def set_cooldown(symbol: str) -> None:
-    """Call when a stop-loss fires on a symbol."""
-    until = datetime.now(timezone.utc) + timedelta(hours=COOLDOWN_HOURS)
-    _cooldowns[symbol] = until
-    logger.info(f"[Cooldown] {symbol} blocked for {COOLDOWN_HOURS}h (until {until.strftime('%H:%M UTC')})")
+    """No-op — cooldown disabled."""
+    logger.debug(f"[Cooldown] {symbol} stop fired — cooldown disabled, re-entry allowed immediately")
 
 
 def is_on_cooldown(symbol: str) -> bool:
-    """Returns True if symbol is still in cooldown period."""
-    until = _cooldowns.get(symbol)
-    if until is None:
-        return False
-    if datetime.now(timezone.utc) >= until:
-        del _cooldowns[symbol]
-        logger.debug(f"[Cooldown] {symbol} cooldown expired")
-        return False
-    return True
+    """Always False — cooldown disabled."""
+    return False
 
 
 def get_all_cooldowns() -> dict[str, str]:
