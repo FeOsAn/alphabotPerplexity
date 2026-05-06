@@ -103,15 +103,17 @@ def _compute_score(sym: str) -> Optional[dict]:
         price_21d = float(close.iloc[-22]) if len(close) >= 22 else float(close.iloc[0])
         price_63d = float(close.iloc[-64]) if len(close) >= 64 else float(close.iloc[0])
 
-        # Prior-month anchor: price 42 trading days ago (used for ret_1m_prior)
-        price_42d = float(close.iloc[-43]) if len(close) >= 43 else price_21d
-        price_21d_val = float(close.iloc[-22]) if len(close) >= 22 else price_now
-        ret_1m_prior = (price_21d_val - price_42d) / price_42d if price_42d > 0 else 0.0
-
-        # Momentum score: 3-month return minus 1-month return
+        # Momentum score: straight 3-month return.
+        # The classic "3m minus 1m" formula was penalising stocks in strong
+        # rally conditions (1m > 3m everywhere during the tariff-relief rip).
+        # Straight 3m captures trend without inverting in fast markets.
         ret_3m = (price_now - price_63d) / price_63d if price_63d > 0 else 0.0
         ret_1m = (price_now - price_21d) / price_21d if price_21d > 0 else 0.0
-        score = ret_3m - ret_1m
+        score = ret_3m  # was ret_3m - ret_1m
+
+        # Acceleration: 1m return should be positive (stock trending up recently)
+        price_42d = float(close.iloc[-43]) if len(close) >= 43 else price_21d
+        ret_1m_prior = (price_21d - price_42d) / price_42d if price_42d > 0 else 0.0
 
         # MA50
         ma50 = float(close.tail(50).mean()) if len(close) >= 50 else None
@@ -121,9 +123,11 @@ def _compute_score(sym: str) -> Optional[dict]:
         rsi_series = ta.momentum.RSIIndicator(close, window=14).rsi()
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
-        # Volume ratio
-        vol_avg_20 = float(volume.tail(20).mean()) if len(volume) >= 20 else float(volume.mean())
-        vol_last = float(volume.iloc[-1])
+        # Volume ratio — use the PREVIOUS completed day (iloc[-2]), not today's
+        # partial bar. During market hours iloc[-1] is incomplete and always
+        # looks like 0.1x average, which kills every entry signal.
+        vol_avg_20 = float(volume.tail(21).iloc[:-1].mean()) if len(volume) >= 21 else float(volume.mean())
+        vol_last = float(volume.iloc[-2]) if len(volume) >= 2 else float(volume.iloc[-1])
         vol_ratio = vol_last / vol_avg_20 if vol_avg_20 > 0 else 0.0
 
         return {
@@ -155,17 +159,17 @@ def _passes_entry_filters(sig: dict) -> bool:
     if sig.get("rsi", 100) >= t["momentum_rsi_max"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= {t['momentum_rsi_max']} (overbought)")
         return False
+    # Volume: require prev day >= 0.8x average (not 1.1x — that was too tight)
     if sig.get("vol_ratio", 0) < 0.8:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 0.8x average")
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 0.8x")
         return False
+    # Score: straight 3m return must be positive
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")
         return False
-    ret_1m = sig.get("ret_1m", 0)
-    ret_1m_prior = sig.get("ret_1m_prior", 0)
-    accelerating = ret_1m > ret_1m_prior or (ret_1m > 0 and ret_1m_prior <= 0)
-    if not accelerating:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — decelerating (1m={ret_1m:.2%} vs prior={ret_1m_prior:.2%})")
+    # 1m return must be positive — stock is trending up in the last month
+    if sig.get("ret_1m", 0) <= 0:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — 1m return negative ({sig['ret_1m']:.2%})")
         return False
     return True
 

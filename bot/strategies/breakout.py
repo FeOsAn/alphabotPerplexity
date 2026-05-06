@@ -142,9 +142,10 @@ def _compute_signals(sym: str) -> Optional[dict]:
         rsi_series = ta.momentum.RSIIndicator(close, window=14).rsi()
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
-        # Volume ratio: last day vs 20-day average
-        vol_avg_20 = float(volume.tail(20).mean()) if len(volume) >= 20 else float(volume.mean())
-        vol_last = float(volume.iloc[-1])
+        # Volume ratio — use previous completed day (iloc[-2]), not today's partial bar.
+        # During market hours iloc[-1] is incomplete and always reads ~0.1x average.
+        vol_avg_20 = float(volume.tail(21).iloc[:-1].mean()) if len(volume) >= 21 else float(volume.mean())
+        vol_last = float(volume.iloc[-2]) if len(volume) >= 2 else float(volume.iloc[-1])
         vol_ratio = vol_last / vol_avg_20 if vol_avg_20 > 0 else 0.0
 
         # 20-day slope: (price_now - price_20d_ago) / price_20d_ago
