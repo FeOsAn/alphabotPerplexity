@@ -349,6 +349,18 @@ def main():
     restored = restore_tags_from_db(db_conn)
     logger.info(f"Restored {restored} strategy tag(s) from trade history")
 
+    # Force immediate recalibration on startup — don't use stale cached thresholds
+    from utils.adaptive_filters import force_recalibrate, get_thresholds
+    force_recalibrate()
+    t = get_thresholds()
+    logger.info(
+        f"[Startup] Calibrated | regime={t.get('regime')} | "
+        f"RSI_max={t.get('momentum_rsi_max'):.1f} "
+        f"score_min={t.get('momentum_score_min'):+.3f} "
+        f"vol_min={t.get('breakout_vol_min'):.2f} "
+        f"max_pos={t.get('max_new_positions_per_cycle')}"
+    )
+
     now_et = datetime.now(EASTERN)
     logger.info(f"Time: {now_str()} | "
                 f"Pre-market: {is_premarket_window()} | "
