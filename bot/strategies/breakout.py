@@ -40,11 +40,22 @@ BREAKOUT_MAX_POSITIONS = 4
 STOP_LOSS_PCT = 0.05            # 5% trailing stop — tight for fast-fail detection
 BREAKOUT_FAIL_PCT = 0.08        # Exit if price falls >8% below 52w high
 
+# Expanded universe — same stocks as momentum for maximum overlap opportunity.
+# Breakout fetches 1y daily + 5d hourly per symbol, released immediately after.
+# 40 symbols is still safe on Railway 512MB.
 BREAKOUT_UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META",
-    "TSLA", "AVGO", "AMD", "NFLX", "GOOGL",
-    "CRM", "NOW", "PANW", "ISRG", "V",
-    "MA", "SPGI", "CME", "CAT", "TXN",
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
+    # High-growth tech
+    "AMD", "CRM", "NOW", "PANW", "ADBE", "NFLX", "INTU", "ORCL",
+    # Financials
+    "V", "MA", "JPM", "GS", "AXP", "SPGI", "CME",
+    # Healthcare
+    "LLY", "UNH", "ISRG", "ABBV", "VRTX",
+    # Industrials
+    "CAT", "GE", "RTX", "LMT",
+    # Consumer
+    "COST", "HD", "MCD", "BKNG", "UBER",
 ]
 
 

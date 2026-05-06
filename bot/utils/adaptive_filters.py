@@ -12,25 +12,27 @@ logger = logging.getLogger(__name__)
 
 # ── Regime thresholds ────────────────────────────────────────────────────────
 REGIME_THRESHOLDS = {
+    # In a strong bull market, be aggressive — don't filter out good entries
     "BULL_STRONG": {
-        "momentum_rsi_max": 82,
+        "momentum_rsi_max": 85,        # was 82 — overbought in a bull run is fine
         "momentum_score_min": 0.0,
-        "breakout_vol_min": 1.1,
-        "breakout_proximity": 0.90,
-        "breakout_rsi_max": 80,
-        "mr_rsi_oversold": 35,
-        "tf_adx_min": 22,
-        "max_new_positions_per_cycle": 3,
+        "breakout_vol_min": 1.0,       # was 1.1 — any above-avg vol is fine
+        "breakout_proximity": 0.88,    # was 0.90 — allow slightly further from high
+        "breakout_rsi_max": 82,        # was 80
+        "mr_rsi_oversold": 38,         # was 35 — more mean-reversion opportunities
+        "tf_adx_min": 20,              # was 22 — lower ADX threshold = more trend entries
+        "max_new_positions_per_cycle": 5,  # was 3
     },
+    # Normal bull market — still aggressive, just slightly more selective
     "BULL_NORMAL": {
-        "momentum_rsi_max": 78,
-        "momentum_score_min": 0.0,
-        "breakout_vol_min": 1.2,
-        "breakout_proximity": 0.92,
-        "breakout_rsi_max": 78,
-        "mr_rsi_oversold": 32,
-        "tf_adx_min": 25,
-        "max_new_positions_per_cycle": 2,
+        "momentum_rsi_max": 80,        # was 78
+        "momentum_score_min": 0.0,     # no minimum score filter in bull
+        "breakout_vol_min": 1.1,       # was 1.2 — don't demand high vol
+        "breakout_proximity": 0.90,    # was 0.92 — allow slightly wider
+        "breakout_rsi_max": 80,        # was 78
+        "mr_rsi_oversold": 35,         # was 32
+        "tf_adx_min": 22,              # was 25 — catch earlier trend moves
+        "max_new_positions_per_cycle": 4,  # was 2 — deploy faster
     },
     "BEAR_MILD": {
         "momentum_rsi_max": 65,

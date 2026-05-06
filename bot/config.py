@@ -27,12 +27,12 @@ UNIVERSE = [
 # ============================================================
 # Risk Management
 # ============================================================
-MAX_POSITION_PCT = 0.08       # Max 8% of portfolio per position (~$8k on $100k)
-MAX_TOTAL_EQUITY_POSITIONS = 30  # Max equity positions managed by bot
-MAX_TOTAL_POSITIONS = 35      # Hard cap including all existing positions
-STOP_LOSS_PCT = 0.05          # 5% stop loss per position (tightened)
-TAKE_PROFIT_PCT = 0.20        # 20% take profit target
-MIN_CASH_RESERVE_PCT = 0.10  # Keep at least 10% cash (was 15% — too conservative)
+MAX_POSITION_PCT = 0.10          # was 8% — raised to 10% so each position is meaningful
+MAX_TOTAL_EQUITY_POSITIONS = 12  # was 30 — focus on 12 best ideas, not 30 mediocre ones
+MAX_TOTAL_POSITIONS = 15         # hard cap
+STOP_LOSS_PCT = 0.05             # 5% stop loss per position
+TAKE_PROFIT_PCT = 0.20           # 20% take profit target
+MIN_CASH_RESERVE_PCT = 0.05     # was 10% — keep only 5% cash, deploy the rest
 
 # ============================================================
 # Strategy Parameters
@@ -41,7 +41,7 @@ MIN_CASH_RESERVE_PCT = 0.10  # Keep at least 10% cash (was 15% — too conservat
 # Momentum strategy
 MOMENTUM_LOOKBACK = 120        # ~6 months (safe under yFinance ~179 day limit)
 MOMENTUM_SKIP = 21             # Skip last month (reversal avoidance)
-MOMENTUM_TOP_N = 10            # Hold top-N momentum stocks
+MOMENTUM_TOP_N = 6             # was 10 — top 6 highest-conviction names
 MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month
 
 # Mean Reversion strategy
@@ -75,7 +75,7 @@ PEAD_WATCHLIST = [
 SR_TOP_N = 3                  # Hold top N sectors
 SR_LOOKBACK_DAYS = 63         # ~3 months of trading days
 SR_REBALANCE_DAYS = 21        # Rebalance monthly
-SR_MAX_POSITION_PCT = 0.10    # 10% per sector ETF (was 8%)
+SR_MAX_POSITION_PCT = 0.10    # 10% per sector ETF
 
 # ============================================================
 # Position Sizing — Conviction Multipliers

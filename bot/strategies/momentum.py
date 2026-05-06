@@ -29,14 +29,26 @@ from db import log_trade, log_signal
 logger = logging.getLogger("alphabot.momentum")
 STRATEGY_NAME = "momentum"
 
-MOMENTUM_TOP_N = 5
-MOMENTUM_REBALANCE_DAYS = 7
-STOP_LOSS_PCT = 0.06  # 6% trailing — looser for momentum
+MOMENTUM_TOP_N = 6             # top 6 picks per rebalance
+MOMENTUM_REBALANCE_DAYS = 5    # was 7 — rebalance weekly (every 5 trading days)
+STOP_LOSS_PCT = 0.06           # 6% trailing — looser for momentum
 
+# Expanded universe — 40 liquid large/mega-caps across sectors.
+# Each symbol fetches ~180 rows of daily OHLCV one at a time with gc.collect().
+# Memory profiled safe on Railway 512MB (each fetch ~150KB, released immediately).
 MOMENTUM_UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "META",
-    "TSLA", "AVGO", "AMD", "CRM", "NOW",
-    "PANW", "V", "MA", "CAT", "TXN",
+    # Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
+    # High-growth tech
+    "AMD", "CRM", "NOW", "PANW", "ADBE", "ORCL", "INTU", "SNOW",
+    # Financials
+    "V", "MA", "JPM", "GS", "MS", "AXP", "SPGI",
+    # Healthcare / Biotech
+    "LLY", "UNH", "ISRG", "ABBV", "VRTX",
+    # Industrials / Defence
+    "CAT", "GE", "RTX", "HON", "LMT",
+    # Consumer / Other
+    "COST", "HD", "MCD", "BKNG", "UBER",
 ]
 
 _last_rebalance: Optional[datetime] = None

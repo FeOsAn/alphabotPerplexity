@@ -1,7 +1,11 @@
 """
 Re-entry cooldown tracker.
-After a stop-loss fires, blocks re-entry for 24 hours.
-In-memory — resets on restart (acceptable, Railway restarts are intentional).
+After a stop-loss fires, blocks re-entry for COOLDOWN_HOURS.
+
+Reduced from 24h → 2h. The original 24h was too conservative:
+- In a bull market it blocks perfectly valid re-entries all day
+- The stop loss already protected capital on the exit
+- A 2h gap is enough to avoid immediately buying back into a broken name
 """
 import logging
 from datetime import datetime, timezone, timedelta
@@ -9,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 logger = logging.getLogger(__name__)
 
 _cooldowns: dict[str, datetime] = {}  # symbol -> allowed_reentry_after
-COOLDOWN_HOURS = 24
+COOLDOWN_HOURS = 2  # was 24 — cut to 2h, bull market doesn't need a full day lock
 
 
 def set_cooldown(symbol: str) -> None:
