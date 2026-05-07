@@ -39,6 +39,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("alphabot.main")
 
+# Suppress yFinance 404 noise — ETFs have no fundamentals, that's expected
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MARKET_OPEN_BUFFER_MIN, MARKET_CLOSE_BUFFER_MIN, CHECK_INTERVAL_MIN,

@@ -85,11 +85,13 @@ def check_overnight_gaps(broker, db_conn):
 
         try:
             ticker = yf.Ticker(sym)
-            # Try pre-market price first, fall back to last available price
-            pre_price = (
-                ticker.info.get("preMarketPrice")
-                or ticker.fast_info.get("last_price")
-            )
+            # Use fast_info only — ticker.info triggers a full fundamentals
+            # fetch that 404s on ETFs (XLK, XLE, XLRE etc.) and is slow.
+            # fast_info is lightweight, works for all symbol types.
+            try:
+                pre_price = ticker.fast_info.get("last_price")
+            except Exception:
+                pre_price = None
             if pre_price is None:
                 logger.debug(f"[GAP PROTECT] {sym}: no pre-market price available")
                 continue
