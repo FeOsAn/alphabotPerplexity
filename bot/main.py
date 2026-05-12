@@ -58,6 +58,8 @@ from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
 from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
+from utils import news_scanner
+from strategies import event_driven
 
 EASTERN = pytz.timezone("America/New_York")
 LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
@@ -264,6 +266,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         finally:
             gc.collect()  # Free memory between each strategy to stay under Railway 512MB
 
+    # ── Event-driven: consume news_scanner EVENT_QUEUE ───────────────────────
+    try:
+        event_driven.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"Event-driven error: {e}", exc_info=True)
+
     # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
     # Exit checks run every cycle. New research fires once daily inside the strategy.
     try:
@@ -368,6 +376,13 @@ def main():
     logger.info(f"Time: {now_str()} | "
                 f"Pre-market: {is_premarket_window()} | "
                 f"Trading: {is_trading_window()}")
+
+    # Start real-time news scanner (background thread)
+    news_scanner.start(
+        os.environ.get("ALPACA_API_KEY", ""),
+        os.environ.get("ALPACA_SECRET_KEY", "")
+    )
+    logger.info("News scanner started — event-driven strategy armed")
 
     # Schedules
     schedule.every(CHECK_INTERVAL_MIN).minutes.do(run_all_strategies, broker, db_conn)
