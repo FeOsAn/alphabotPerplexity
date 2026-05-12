@@ -293,19 +293,50 @@ def run(broker: AlpacaBroker, db_conn):
     cash = account["cash"]
 
     # ── Exit positions no longer in top picks ────────────────────────────────
+    # Anti-churn guard: only replace an existing position if a new candidate
+    # (not currently held) scores meaningfully better. Threshold is 15% relative
+    # improvement, or 25% if the existing position is currently profitable.
+    score_map = {s["symbol"]: s["score"] for s in raw_scores}
+    held_syms = {p["symbol"] for p in mom_positions}
+    candidate_new_picks = [s for s in top_picks_data if s["symbol"] not in held_syms]
+    best_new_score = max((s["score"] for s in candidate_new_picks), default=None)
+    best_new_symbol = (
+        max(candidate_new_picks, key=lambda x: x["score"])["symbol"]
+        if candidate_new_picks else None
+    )
+
     for pos in mom_positions:
-        if pos["symbol"] not in top_picks:
+        if pos["symbol"] in top_picks:
+            continue
+
+        current_score = score_map.get(pos["symbol"])
+        is_profitable = pos["unrealized_pnl_pct"] > 0
+        required_mult = 1.25 if is_profitable else 1.15
+        required_pct  = 25 if is_profitable else 15
+
+        if (
+            current_score is not None
+            and best_new_score is not None
+            and best_new_score < current_score * required_mult
+        ):
             logger.info(
-                f"[MOM] EXIT {pos['symbol']} — rotated out of top {MOMENTUM_TOP_N} "
-                f"(pnl={pos['unrealized_pnl_pct']:.1f}%)"
+                f"[MOM] Keeping {pos['symbol']} (score {current_score:.4f}) — "
+                f"new pick {best_new_symbol} (score {best_new_score:.4f}) "
+                f"not {required_pct}% better"
             )
-            order = broker.close_position(pos["symbol"], STRATEGY_NAME)
-            if order:
-                log_trade(
-                    db_conn, STRATEGY_NAME, pos["symbol"], "sell",
-                    pos["qty"], pos["current_price"], pos["unrealized_pnl"],
-                )
-                cash += pos["market_value"]
+            continue
+
+        logger.info(
+            f"[MOM] EXIT {pos['symbol']} — rotated out of top {MOMENTUM_TOP_N} "
+            f"(pnl={pos['unrealized_pnl_pct']:.1f}%)"
+        )
+        order = broker.close_position(pos["symbol"], STRATEGY_NAME)
+        if order:
+            log_trade(
+                db_conn, STRATEGY_NAME, pos["symbol"], "sell",
+                pos["qty"], pos["current_price"], pos["unrealized_pnl"],
+            )
+            cash += pos["market_value"]
 
     # Refresh positions after exits
     all_positions = broker.get_positions()

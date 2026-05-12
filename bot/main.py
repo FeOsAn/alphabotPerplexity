@@ -135,10 +135,171 @@ def get_market_regime() -> str:
 # Track last risk-metrics fire date (logged once daily after 10 AM ET)
 _last_metrics_date: str = ""
 
+# ── Daily P&L recap / gap-protection / circuit-breaker state ─────────────────
+_recap_sent_date: str = ""
+_gap_protection_run_date: str = ""
+_circuit_breaker_active: bool = False
+_circuit_breaker_reset_date: str = ""
+
+
+def send_daily_recap(broker: AlpacaBroker):
+    """Send daily P&L summary to ntfy after market close."""
+    import requests as _requests
+    try:
+        account = broker.trading.get_account()
+        equity = float(account.equity)
+        prev_close = float(account.last_equity)
+        day_pnl = equity - prev_close
+        day_pct = (day_pnl / prev_close) * 100 if prev_close else 0
+        cash_pct = (float(account.cash) / equity) * 100 if equity else 0
+
+        positions = broker.trading.get_all_positions()
+        pos_lines = []
+        for p in positions[:5]:  # top 5
+            pnl = float(p.unrealized_plpc) * 100
+            pos_lines.append(f"{p.symbol} {pnl:+.1f}%")
+
+        emoji = "📈" if day_pnl >= 0 else "📉"
+        body = (
+            f"Portfolio: ${equity:,.0f} ({day_pnl:+,.0f}, {day_pct:+.2f}%) {emoji}\n"
+            f"Cash: {cash_pct:.0f}% idle\n"
+            f"Positions: {', '.join(pos_lines) if pos_lines else 'None'}\n"
+            f"Go hit your goals 💪"
+        )
+
+        _requests.post(
+            "https://ntfy.sh/perplexitybotnr1foa_goat",
+            data=body.encode("utf-8"),
+            headers={
+                "Title": f"AlphaBot Daily — {day_pct:+.2f}%",
+                "Priority": "default",
+                "Tags": "chart_with_upwards_trend",
+            },
+            timeout=10,
+        )
+        logger.info(f"[Recap] ntfy sent — P&L {day_pnl:+,.0f} ({day_pct:+.2f}%)")
+    except Exception as e:
+        logger.error(f"[Recap] ntfy failed: {e}")
+
+
+def run_gap_protection(broker: AlpacaBroker):
+    """Pre-market gap protection: close positions down >4% from prev close."""
+    GAP_THRESHOLD = 0.04
+    try:
+        positions = broker.trading.get_all_positions()
+        for pos in positions:
+            sym = pos.symbol
+            if sym in ("SDS", "SQQQ", "SPXS", "SOXS", "UVXY"):
+                continue
+            try:
+                qty = float(pos.qty)
+                if qty <= 0:
+                    continue  # skip shorts
+                ticker = yf.Ticker(sym)
+                fi = ticker.fast_info
+                current = getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None)
+                prev_close = getattr(fi, "previous_close", None)
+                if not current or not prev_close:
+                    continue
+                gap_pct = (current - prev_close) / prev_close
+                if gap_pct <= -GAP_THRESHOLD:
+                    logger.warning(
+                        f"[GapProtect] {sym} gapped down {gap_pct:.1%} pre-market "
+                        f"(prev_close=${prev_close:.2f} → now=${current:.2f}) — closing position"
+                    )
+                    from alpaca.trading.requests import MarketOrderRequest
+                    from alpaca.trading.enums import OrderSide, TimeInForce
+                    req = MarketOrderRequest(
+                        symbol=sym, qty=int(abs(qty)),
+                        side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
+                    )
+                    broker.trading.submit_order(req)
+            except Exception as e:
+                logger.error(f"[GapProtect] Error checking {sym}: {e}")
+    except Exception as e:
+        logger.error(f"[GapProtect] Failed: {e}")
+
+
+def check_circuit_breaker(broker: AlpacaBroker):
+    """
+    Sets _circuit_breaker_active if portfolio down >3% on the day.
+    Auto-resets if portfolio recovers to better than -2%.
+    """
+    global _circuit_breaker_active
+    try:
+        account = broker.trading.get_account()
+        equity = float(account.equity)
+        last_equity = float(account.last_equity)
+        if last_equity <= 0:
+            return
+        day_pct = (equity - last_equity) / last_equity
+        if day_pct <= -0.03 and not _circuit_breaker_active:
+            _circuit_breaker_active = True
+            logger.error(
+                f"[CircuitBreaker] TRIGGERED — portfolio down {day_pct:.2%} today. "
+                f"Halting new entries."
+            )
+        elif day_pct > -0.02 and _circuit_breaker_active:
+            _circuit_breaker_active = False
+            logger.info(
+                f"[CircuitBreaker] RESET — portfolio recovered to {day_pct:.2%}, "
+                f"resuming new entries."
+            )
+    except Exception as e:
+        logger.warning(f"[CircuitBreaker] Check failed: {e}")
+
 
 def run_all_strategies(broker: AlpacaBroker, db_conn):
     """Execute all strategies in sequence."""
     global _last_report_date, _last_metrics_date
+    global _recap_sent_date, _gap_protection_run_date
+    global _circuit_breaker_active, _circuit_breaker_reset_date
+
+    now_utc = datetime.utcnow()
+    today_utc = now_utc.strftime("%Y-%m-%d")
+    weekday = now_utc.weekday()
+
+    # ── Reset circuit breaker at start of each new trading day (13:30 UTC) ────
+    if (now_utc.hour == 13 and now_utc.minute >= 30 and weekday < 5
+            and _circuit_breaker_reset_date != today_utc):
+        if _circuit_breaker_active:
+            logger.info("[CircuitBreaker] New trading day — resetting active flag")
+        _circuit_breaker_active = False
+        _circuit_breaker_reset_date = today_utc
+
+    # ── Pre-market gap protection: 13:00–13:10 UTC (8:00–8:10 AM ET), weekdays ─
+    if (now_utc.hour == 13 and now_utc.minute < 10 and weekday < 5
+            and _gap_protection_run_date != today_utc):
+        try:
+            run_gap_protection(broker)
+        except Exception as e:
+            logger.error(f"[GapProtect] Outer failure: {e}")
+        _gap_protection_run_date = today_utc
+
+    # ── Daily P&L recap: 20:30 UTC (16:30 ET / 21:30 BST), weekdays only ─────
+    # Fires after market close, so checked here BEFORE any early-return paths.
+    if (now_utc.hour == 20 and now_utc.minute >= 30 and weekday < 5
+            and _recap_sent_date != today_utc):
+        try:
+            send_daily_recap(broker)
+        except Exception as e:
+            logger.error(f"[Recap] Outer failure: {e}")
+        _recap_sent_date = today_utc
+
+    # ── Circuit breaker check (3% daily drawdown halts new entries) ──────────
+    try:
+        check_circuit_breaker(broker)
+    except Exception as e:
+        logger.warning(f"[CircuitBreaker] Outer failure: {e}")
+
+    if _circuit_breaker_active:
+        logger.info("[CircuitBreaker] ACTIVE — skipping new entries, running exits only")
+        try:
+            from strategies.trade_management import run_global_trade_management
+            run_global_trade_management(broker, db_conn)
+        except Exception as e:
+            logger.error(f"[CircuitBreaker] Exits-only trade_management failed: {e}", exc_info=True)
+        return
 
     try:
         from utils.adaptive_filters import get_thresholds

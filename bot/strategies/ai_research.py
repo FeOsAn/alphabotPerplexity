@@ -46,6 +46,16 @@ NEWS_MAX_AGE_HOURS  = 48    # Reject symbol if it has NO news at all in last 48h
                             # Older news that is still relevant is NOT penalised by age alone
 PRICED_IN_MOVE_PCT  = 3.0   # If stock moved >3% in thesis direction since news → likely priced in
 
+# Session-wide hit-rate counter (persists for the life of the process)
+_session_stats = {
+    "evaluated":         0,
+    "passed_research":   0,
+    "passed_checker":    0,
+    "passed_auditor":    0,
+    "trades_placed":     0,
+}
+
+
 # Watchlist — high-profile stocks with lots of news coverage
 RESEARCH_WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
@@ -641,6 +651,7 @@ def run(broker: AlpacaBroker, db_conn):
 
         logger.info(f"\n{'='*50}")
         logger.info(f"[AI Research] Processing {symbol}...")
+        _session_stats["evaluated"] += 1
 
         # ── Gate 0: VADER sentiment pre-filter ───────────────────────────────
         try:
@@ -699,6 +710,7 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         n_passed_research += 1
+        _session_stats["passed_research"] += 1
         logger.info(
             f"[AI Research] {symbol}: Gate 2 PASSED — "
             f"verdict={thesis['verdict']}, confidence={thesis.get('confidence')}/10"
@@ -753,6 +765,7 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         n_passed_checker += 1
+        _session_stats["passed_checker"] += 1
         logger.info(
             f"[AI Research] {symbol}: Gate 3 PASSED — "
             f"verdict={final_verdict} | research={thesis['confidence']}/10 | "
@@ -777,6 +790,7 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         n_passed_auditor += 1
+        _session_stats["passed_auditor"] += 1
         logger.info(
             f"[AI Research] ✓✓✓ {symbol}: ALL 4 GATES PASSED — "
             f"verdict={final_verdict} | "
@@ -840,6 +854,7 @@ def run(broker: AlpacaBroker, db_conn):
                         "auditor_pass": True})
             cash -= notional
             trades_placed += 1
+            _session_stats["trades_placed"] += 1
 
         elif verdict == "BEARISH":
             logger.info(f"[AI Research] BEARISH signal for {sym} — skipping short (long-only mode)")
@@ -869,6 +884,15 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info("[AI] No trade fired — No candidates cleared all 4 gates")
 
     logger.info(f"[AI Research] Cycle complete. {trades_placed} trade(s) placed.")
+
+    logger.info(
+        f"[AI Research] Session stats: "
+        f"{_session_stats['evaluated']} evaluated → "
+        f"{_session_stats['passed_research']} passed research → "
+        f"{_session_stats['passed_checker']} passed checker → "
+        f"{_session_stats['passed_auditor']} passed auditor → "
+        f"{_session_stats['trades_placed']} trade placed"
+    )
 
 
 def _log_blocked_trade(db_conn, symbol: str, thesis: dict, check: dict, reason: str):
