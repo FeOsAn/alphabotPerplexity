@@ -29,14 +29,31 @@ DEPLOY_UNIVERSE = [
 
 
 def _score_symbol(sym: str) -> float:
-    """Quick 1-month momentum score. Returns float, 0.0 on error."""
+    """
+    Blended score: 60% one-month return + 40% pre-market gap.
+    Uses fast_info for pre-market price to stay RAM-safe.
+    Returns float, 0.0 on any error.
+    """
     try:
         ticker = yf.Ticker(sym)
+
+        # 1-month return
         hist = ticker.history(period="1mo", interval="1d", auto_adjust=True)
         if hist.empty or len(hist) < 2:
             return 0.0
-        score = (hist["Close"].iloc[-1] - hist["Close"].iloc[0]) / hist["Close"].iloc[0]
-        return float(score)
+        one_month = (hist["Close"].iloc[-1] - hist["Close"].iloc[0]) / hist["Close"].iloc[0]
+
+        # Pre-market gap (current price vs yesterday's close)
+        fi = ticker.fast_info
+        current = getattr(fi, "last_price", None)
+        prev_close = getattr(fi, "previous_close", None)
+        if current and prev_close and prev_close > 0:
+            premarket_gap = (current - prev_close) / prev_close
+        else:
+            premarket_gap = 0.0
+
+        blended = (one_month * 0.6) + (premarket_gap * 0.4)
+        return float(blended)
     except Exception:
         return 0.0
     finally:
