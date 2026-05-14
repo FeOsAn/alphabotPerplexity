@@ -19,7 +19,7 @@ Hold period: 2–8 weeks (swing trading).
 Max 5 concurrent AI-research positions.
 
 EXIT CHECKS run every cycle (no time gate) — stops / take profits always enforced.
-NEW RESEARCH fires once daily anytime between 9:45 AM and 3:30 PM ET.
+NEW RESEARCH fires once daily anytime between 9:30 AM and 3:45 PM ET.
 """
 
 import os
@@ -61,6 +61,7 @@ RESEARCH_WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
     "NFLX", "AMD", "CRM", "PLTR", "SHOP", "UBER", "ABNB",
     "COIN", "SNOW", "NET", "DDOG", "MDB", "SMCI",
+    "AVGO", "ORCL", "NOW", "ADBE",
 ]
 
 
@@ -563,7 +564,7 @@ def run(broker: AlpacaBroker, db_conn):
     """
     Run AI research strategy.
     ALWAYS: exit checks on existing AI positions (stop loss / take profit).
-    ONCE DAILY (9:45 AM – 3:30 PM ET): new research cycle with 4-gate approval.
+    ONCE DAILY (9:30 AM – 3:45 PM ET): new research cycle with 4-gate approval.
     """
     import pytz
     EASTERN = pytz.timezone("America/New_York")
@@ -598,16 +599,16 @@ def run(broker: AlpacaBroker, db_conn):
             log_trade(db_conn, STRATEGY_NAME, sym, "sell_tp",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
 
-    # ── 2. New research window: 9:45 AM – 3:30 PM ET, once daily ─────────────
+    # ── 2. New research window: 9:30 AM – 3:45 PM ET, once daily ─────────────
     from datetime import time as dtime
-    in_window  = dtime(9, 45) <= now_et.time() <= dtime(15, 30)
+    in_window  = dtime(9, 30) <= now_et.time() <= dtime(15, 45)
     today_str  = now_et.strftime("%Y-%m-%d")
     already_fired = getattr(run, "_fired_date", "") == today_str
 
     if not in_window:
         logger.info(
             f"[AI Research] Outside research window "
-            f"({now_et.strftime('%H:%M ET')}, window=09:45–15:30) — exits only"
+            f"({now_et.strftime('%H:%M ET')}, window=09:30–15:45) — exits only"
         )
         return
 

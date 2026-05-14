@@ -60,6 +60,7 @@ from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
+from strategies import cash_deployer
 
 EASTERN = pytz.timezone("America/New_York")
 LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
@@ -371,6 +372,13 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         check_pyramid_adds(broker)
     except Exception as e:
         logger.error(f"Pyramid add check error: {e}", exc_info=True)
+
+    # ── Cash deployment floor: deploy idle cash at market open if >35% ───────
+    # Self-gates to 13:30–14:00 UTC weekdays, once daily. Safe to call every cycle.
+    try:
+        cash_deployer.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"Cash deployer error: {e}", exc_info=True)
 
     # ── Circuit breaker: halt new entries on >5% daily drawdown ──────────────
     from utils.circuit_breaker import check_and_update as check_circuit_breaker

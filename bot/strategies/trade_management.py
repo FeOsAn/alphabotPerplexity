@@ -28,7 +28,7 @@ DUST CLEANUP:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from broker import AlpacaBroker
 from db import log_trade
 
@@ -371,6 +371,99 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
+
+        # 3b. Dead money timeout — exit flat positions held >5 days.
+        #     A position drifting between -1.5% and +1.5% for 5+ days is dead
+        #     capital that could be redeployed. Entry date inferred from the
+        #     most recent BUY in the trades table for this symbol.
+        DEAD_MONEY_DAYS = 5
+        DEAD_MONEY_MIN_PCT = -1.5   # -1.5% (pnl_pct is in percent units here)
+        DEAD_MONEY_MAX_PCT = 1.5    # +1.5%
+        try:
+            qty_signed = float(pos.get("qty", 0))
+            if qty_signed > 0 and DEAD_MONEY_MIN_PCT <= pnl_pct <= DEAD_MONEY_MAX_PCT:
+                entry_dt = None
+                if db_conn is not None:
+                    try:
+                        cur = db_conn.cursor()
+                        cur.execute(
+                            "SELECT created_at FROM trades "
+                            "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (sym,),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            raw = row[0] if not hasattr(row, "keys") else row["created_at"]
+                            try:
+                                entry_dt = datetime.fromisoformat(raw)
+                            except Exception:
+                                entry_dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+                    except Exception as e:
+                        logger.debug(f"[TradeMgt] Dead money DB lookup failed for {sym}: {e}")
+                if entry_dt is not None:
+                    if entry_dt.tzinfo is None:
+                        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                    age_days = (datetime.now(timezone.utc) - entry_dt).days
+                    if age_days >= DEAD_MONEY_DAYS:
+                        logger.info(
+                            f"[TRADE MGT] DEAD MONEY EXIT {sym}: held {age_days}d "
+                            f"at {pnl_pct:+.2f}% — redeploying capital"
+                        )
+                        try:
+                            broker.close_position(sym, strategy)
+                            log_trade(db_conn, strategy, sym, "sell_dead_money",
+                                      pos["qty"], current_price, pos["unrealized_pnl"],
+                                      metadata={
+                                          "reason": "dead_money_timeout",
+                                          "age_days": age_days,
+                                          "pnl_pct": pnl_pct,
+                                      })
+                            clear_symbol(sym)
+                            continue
+                        except Exception as e:
+                            logger.error(f"[TRADE MGT] Dead money close failed for {sym}: {e}")
+        except Exception as e:
+            logger.debug(f"[TradeMgt] Dead money check error for {sym}: {e}")
+
+        # 3c. Sector ETF cap — trim long ETF positions exceeding 5% of equity.
+        #     Sector ETFs are diversification tools, not concentration plays.
+        SECTOR_ETFS = {
+            "XLK", "XLE", "XLRE", "XLF", "XLV", "XLI", "XLY",
+            "XLP", "XLB", "XLU", "XLC", "GDX", "IAU", "TLT", "HYG",
+        }
+        ETF_MAX_PCT = 0.05  # 5% of portfolio
+        try:
+            qty_signed = float(pos.get("qty", 0))
+            if qty_signed > 0 and sym in SECTOR_ETFS:
+                account = broker.get_account()
+                equity = float(account["equity"])
+                position_value = abs(market_value)
+                max_value = equity * ETF_MAX_PCT
+                if equity > 0 and position_value > max_value * 1.1:  # 10% buffer
+                    excess_value = position_value - max_value
+                    if current_price > 0:
+                        trim_qty = int(excess_value / current_price)
+                        if trim_qty >= 1:
+                            logger.info(
+                                f"[TRADE MGT] ETF CAP TRIM {sym}: ${position_value:.0f} "
+                                f"(>{ETF_MAX_PCT:.0%} of ${equity:.0f}) — selling {trim_qty} shares"
+                            )
+                            try:
+                                broker.market_sell(sym, trim_qty, strategy)
+                                log_trade(db_conn, strategy, sym, "sell_etf_cap",
+                                          trim_qty, current_price, 0.0,
+                                          metadata={
+                                              "reason": "etf_cap_trim",
+                                              "position_value": position_value,
+                                              "max_value": max_value,
+                                              "trim_qty": trim_qty,
+                                          })
+                                continue
+                            except Exception as e:
+                                logger.error(f"[TRADE MGT] ETF cap trim failed for {sym}: {e}")
+        except Exception as e:
+            logger.debug(f"[TradeMgt] ETF cap check error for {sym}: {e}")
 
         # 4. Hard floor stop — catches any position down 7%+ regardless
         # (safety net in case trailing stop tracking reset after deploy)
