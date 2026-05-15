@@ -96,6 +96,46 @@ def run(broker, db_conn=None):
             )
             return
 
+        # Market health gate — only deploy into a green, calm market
+        spy_ok = False
+        vix_ok = False
+        try:
+            spy_ticker = yf.Ticker("SPY")
+            spy_hist = spy_ticker.history(period="2d", interval="1d", auto_adjust=True)
+            if len(spy_hist) >= 2:
+                spy_today = spy_hist["Close"].iloc[-1]
+                spy_prev = spy_hist["Close"].iloc[-2]
+                spy_change = (spy_today - spy_prev) / spy_prev
+                spy_ok = spy_change >= 0.003  # SPY up at least 0.3%
+                logger.info(f"[CashDeploy] SPY day change: {spy_change:.2%} — {'OK' if spy_ok else 'SKIP'}")
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"[CashDeploy] SPY check failed: {e} — skipping deployment")
+            return
+
+        try:
+            vix_ticker = yf.Ticker("^VIX")
+            vix_fi = vix_ticker.fast_info
+            vix_level = getattr(vix_fi, "last_price", None)
+            if vix_level:
+                vix_ok = float(vix_level) < 20.0
+                logger.info(f"[CashDeploy] VIX: {vix_level:.1f} — {'OK' if vix_ok else 'SKIP'}")
+            else:
+                vix_ok = True  # can't read VIX, don't block on it
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"[CashDeploy] VIX check failed: {e} — allowing deployment")
+            vix_ok = True  # fail open on VIX
+
+        if not spy_ok:
+            logger.info(f"[CashDeploy] Market conditions unfavourable (SPY not up 0.3%) — skipping deployment today")
+            return
+        if not vix_ok:
+            logger.info(f"[CashDeploy] VIX elevated (≥20) — skipping deployment today")
+            return
+
+        logger.info("[CashDeploy] Market health gate passed — proceeding with deployment")
+
         logger.info(
             f"[CashDeploy] Cash {cash_pct:.1%} > {CASH_FLOOR_PCT:.0%} — scanning for top picks"
         )
