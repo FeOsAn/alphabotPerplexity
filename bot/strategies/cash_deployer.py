@@ -1,7 +1,7 @@
 """
 Cash deployment floor.
 If cash > 35% of portfolio at market open, buy the top 2 momentum signals at half-size.
-Runs once per day, 13:30–14:00 UTC (9:30–10:00 ET), weekdays only.
+Runs once per day, 13:30–15:30 UTC (9:30–11:30 ET), weekdays only.
 """
 import gc
 import logging
@@ -20,8 +20,8 @@ _deployed_date = ""
 
 # Symbols to consider — top liquid momentum names (keep list short for RAM)
 DEPLOY_UNIVERSE = [
-    "NVDA", "MSFT", "META", "GOOGL", "AAPL", "AMZN",
-    "AVGO", "AMD", "CRM", "PANW", "CRWD", "PLTR",
+    "AVGO", "NVDA", "AMD", "MSFT", "META", "GOOGL", "AAPL", "AMZN",
+    "CRM", "PANW", "CRWD", "PLTR",
     "JPM", "GS", "MS", "BAC",
     "XOM", "CVX",
     "TSLA", "UBER",
@@ -75,7 +75,8 @@ def run(broker, db_conn=None):
         if weekday >= 5:
             return
         minutes_now = now.hour * 60 + now.minute
-        if not (13 * 60 + 30 <= minutes_now <= 14 * 60):
+        # Wider window: 13:30–15:30 UTC (9:30–11:30 ET) to survive Railway rebuild lag
+        if not (13 * 60 + 30 <= minutes_now <= 15 * 60 + 30):
             return
         if _deployed_date == today:
             return

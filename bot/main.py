@@ -302,6 +302,14 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             logger.error(f"[CircuitBreaker] Exits-only trade_management failed: {e}", exc_info=True)
         return
 
+    # ── Cash deployment floor: self-gates to 13:30–15:30 UTC weekdays, once daily ──
+    # Called BEFORE market_open / is_trading_window guards so it fires reliably
+    # even during the 15-min post-open buffer or on Railway rebuild lag.
+    try:
+        cash_deployer.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"Cash deployer error: {e}", exc_info=True)
+
     try:
         from utils.adaptive_filters import get_thresholds
         t = get_thresholds()
@@ -372,13 +380,6 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         check_pyramid_adds(broker)
     except Exception as e:
         logger.error(f"Pyramid add check error: {e}", exc_info=True)
-
-    # ── Cash deployment floor: deploy idle cash at market open if >35% ───────
-    # Self-gates to 13:30–14:00 UTC weekdays, once daily. Safe to call every cycle.
-    try:
-        cash_deployer.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"Cash deployer error: {e}", exc_info=True)
 
     # ── Circuit breaker: halt new entries on >5% daily drawdown ──────────────
     from utils.circuit_breaker import check_and_update as check_circuit_breaker
