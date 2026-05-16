@@ -8,17 +8,18 @@ Only runs 9:35–10:30 AM ET for entries. Exits run all day.
 """
 import gc
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as _time
+import pytz as _pytz
 
 logger = logging.getLogger(__name__)
+
+_ET = _pytz.timezone("America/New_York")
 
 MAX_POSITIONS = 5
 POSITION_PCT = 0.03
 TAKE_PROFIT = 0.04
 STOP_LOSS = -0.02
 GAP_DOWN_MIN = 0.02
-ENTRY_WINDOW_START = (13, 35)   # 9:35 AM ET = 13:35 UTC
-ENTRY_WINDOW_END = (14, 30)     # 10:30 AM ET = 14:30 UTC
 
 VWAP_UNIVERSE = [
     "AAPL", "MSFT", "NVDA", "AMD", "META", "GOOGL", "AMZN", "TSLA",
@@ -31,6 +32,30 @@ VWAP_UNIVERSE = [
 _active_positions: dict = {}
 _scanned_today: set = set()
 _scan_date: str = ""
+_state_restored: bool = False
+
+
+def _restore_state(broker):
+    """Rebuild _active_positions from broker on startup (intraday only)."""
+    global _state_restored
+    if _state_restored:
+        return
+    _state_restored = True
+    try:
+        positions = broker.get_positions()
+        for pos in positions:
+            sym = pos["symbol"]
+            tag = pos.get("strategy", "") or ""
+            if "vwap" in tag.lower() and sym not in _active_positions:
+                qty = float(pos.get("qty", 0))
+                _active_positions[sym] = {
+                    "entry_price": float(pos.get("avg_entry", 0)),
+                    "vwap_at_entry": float(pos.get("avg_entry", 0)),
+                    "qty": int(abs(qty)),
+                }
+                logger.info(f"[VWAPReclaim] Restored position: {sym}")
+    except Exception as e:
+        logger.warning(f"[VWAPReclaim] State restore failed: {e}")
 
 
 def _get_intraday_data(symbol: str) -> dict:
@@ -45,12 +70,15 @@ def _get_intraday_data(symbol: str) -> dict:
         if hist is None or len(hist) < 4:
             return {}
 
-        now_utc = datetime.now(timezone.utc)
-        today_str = now_utc.strftime("%Y-%m-%d")
+        now_et = datetime.now(_ET)
+        today_str_et = now_et.strftime("%Y-%m-%d")
 
         try:
-            mask_today = hist.index.strftime("%Y-%m-%d") == today_str
-            today_bars = hist[mask_today]
+            if hasattr(hist.index, "tz_convert"):
+                bar_dates = hist.index.tz_convert("America/New_York").strftime("%Y-%m-%d")
+            else:
+                bar_dates = hist.index.strftime("%Y-%m-%d")
+            today_bars = hist[bar_dates == today_str_et]
         except Exception:
             today_bars = hist.tail(20)
 
@@ -65,8 +93,7 @@ def _get_intraday_data(symbol: str) -> dict:
         current = float(today_bars["Close"].iloc[-1])
 
         try:
-            mask_prev = hist.index.strftime("%Y-%m-%d") != today_str
-            prev_bars = hist[mask_prev]
+            prev_bars = hist[bar_dates != today_str_et]
         except Exception:
             prev_bars = hist.head(max(0, len(hist) - len(today_bars)))
 
@@ -89,21 +116,19 @@ def _get_intraday_data(symbol: str) -> dict:
 
 
 def _is_entry_window() -> bool:
-    now = datetime.now(timezone.utc)
-    if now.weekday() >= 5:
+    """Entry window: 9:35–10:30 AM ET, weekdays only."""
+    now_et = datetime.now(_ET)
+    if now_et.weekday() >= 5:
         return False
-    start_min = ENTRY_WINDOW_START[0] * 60 + ENTRY_WINDOW_START[1]
-    end_min = ENTRY_WINDOW_END[0] * 60 + ENTRY_WINDOW_END[1]
-    now_min = now.hour * 60 + now.minute
-    return start_min <= now_min <= end_min
+    t = now_et.time()
+    return _time(9, 35) <= t <= _time(10, 30)
 
 
 def _manage_positions(broker):
     """Check take profit, stop loss, EOD exit for VWAP positions."""
     import yfinance as yf
-    now = datetime.now(timezone.utc)
-    eod_min = 19 * 60 + 55  # 3:55 PM ET = 19:55 UTC
-    now_min = now.hour * 60 + now.minute
+    now_et = datetime.now(_ET)
+    eod = now_et.time() >= _time(15, 55)
 
     for sym, pos in list(_active_positions.items()):
         try:
@@ -119,7 +144,7 @@ def _manage_positions(broker):
                 reason = f"TAKE_PROFIT {pnl_pct:+.2%}"
             elif pnl_pct <= STOP_LOSS:
                 reason = f"STOP_LOSS {pnl_pct:+.2%}"
-            elif now_min >= eod_min:
+            elif eod:
                 reason = f"EOD_EXIT {pnl_pct:+.2%}"
             if reason:
                 try:
@@ -157,6 +182,31 @@ def _get_equity(broker) -> float:
 def run(broker, db_conn=None):
     """Main entry — scan for VWAP reclaim setups and manage existing positions."""
     global _scan_date, _scanned_today
+
+    _restore_state(broker)
+
+    # Circuit breaker gate
+    try:
+        from main import _circuit_breaker_active
+        if _circuit_breaker_active:
+            logger.info("[VWAPReclaim] Circuit breaker active — skipping")
+            if _active_positions:
+                _manage_positions(broker)
+            return
+    except ImportError:
+        pass
+
+    # Regime gate
+    try:
+        from utils.regime_weights import get_multiplier
+        mult = get_multiplier("vwap_reclaim")
+        if mult == 0.0:
+            logger.info("[VWAPReclaim] Regime weight 0.0 — skipping entries")
+            if _active_positions:
+                _manage_positions(broker)
+            return
+    except Exception:
+        pass
 
     if _active_positions:
         _manage_positions(broker)

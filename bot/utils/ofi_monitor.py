@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 _ofi_history: dict = defaultdict(lambda: deque(maxlen=100))
 _ofi_lock = threading.Lock()
 _watched_symbols: set = set()
+_subscribed_symbols: set = set()
 _running = False
 _ws_thread = None
+_ws_ref = None  # latest WebSocketApp for periodic resubscribe
 
 OFI_ALERT_THRESHOLD = -0.6
 OFI_WINDOW = 10
@@ -65,8 +67,32 @@ def update_watched(broker):
         logger.debug(f"[OFI] Could not update watched symbols: {e}")
 
 
+def _refresh_subscriptions(ws):
+    """Subscribe to any new watched symbols (called periodically, not from on_message)."""
+    global _subscribed_symbols
+    try:
+        new_syms = _watched_symbols - _subscribed_symbols
+        if new_syms and ws is not None:
+            ws.send(json.dumps({"action": "subscribe", "quotes": list(new_syms)}))
+            _subscribed_symbols.update(new_syms)
+            logger.info(f"[OFI] Subscribed to new symbols: {new_syms}")
+    except Exception as e:
+        logger.debug(f"[OFI] _refresh_subscriptions error: {e}")
+
+
+def _periodic_resubscribe_loop(ws):
+    """Background loop calling _refresh_subscriptions every 30s while ws alive."""
+    while _running and ws is not None:
+        try:
+            _refresh_subscriptions(ws)
+        except Exception:
+            pass
+        time.sleep(30)
+
+
 def _ws_worker():
     """WebSocket worker streaming quotes for watched symbols."""
+    global _ws_ref, _subscribed_symbols
     try:
         import websocket
     except ImportError:
@@ -81,12 +107,18 @@ def _ws_worker():
     WS_URL = "wss://stream.data.alpaca.markets/v2/iex"
 
     def on_open(ws):
+        global _subscribed_symbols
         try:
             ws.send(json.dumps({"action": "auth", "key": api_key, "secret": secret}))
             time.sleep(0.5)
             syms = list(_watched_symbols) if _watched_symbols else ["SPY"]
             ws.send(json.dumps({"action": "subscribe", "quotes": syms}))
+            _subscribed_symbols = set(syms)
             logger.info(f"[OFI] Subscribed to quotes for: {syms}")
+            # Start the periodic resubscribe loop
+            t = threading.Thread(target=_periodic_resubscribe_loop, args=(ws,),
+                                 daemon=True, name="ofi_resubscribe")
+            t.start()
         except Exception as e:
             logger.error(f"[OFI] on_open error: {e}")
 
@@ -107,15 +139,6 @@ def _ws_worker():
                     imbalance = (bid_size - ask_size) / total
                     with _ofi_lock:
                         _ofi_history[sym].append(imbalance)
-                    try:
-                        watched = set(_watched_symbols)
-                        with _ofi_lock:
-                            tracked = set(_ofi_history.keys())
-                        new_syms = list(watched - tracked)
-                        if new_syms:
-                            ws.send(json.dumps({"action": "subscribe", "quotes": new_syms}))
-                    except Exception:
-                        pass
         except Exception as e:
             logger.debug(f"[OFI] Message parse error: {e}")
 

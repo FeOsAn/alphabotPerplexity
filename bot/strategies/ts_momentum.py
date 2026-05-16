@@ -51,6 +51,25 @@ MAX_POSITIONS = 8         # max 8 concurrent TS momentum positions
 
 _last_rebalance: str = ""   # "YYYY-MM" — rebalance once per month
 _ts_positions: dict = {}    # symbol -> side
+_state_restored: bool = False
+
+
+def _restore_state(broker):
+    """Rebuild _ts_positions from broker on startup."""
+    global _state_restored
+    if _state_restored:
+        return
+    _state_restored = True
+    try:
+        positions = broker.get_positions()
+        for pos in positions:
+            sym = pos["symbol"]
+            tag = pos.get("strategy", "") or ""
+            if ("ts_momentum" in tag.lower() or "tsmomentum" in tag.lower()) and sym not in _ts_positions:
+                _ts_positions[sym] = "long"
+                logger.info(f"[TSMomentum] Restored position: {sym}")
+    except Exception as e:
+        logger.warning(f"[TSMomentum] State restore failed: {e}")
 
 
 def _get_12m_return(symbol: str) -> float:
@@ -82,6 +101,8 @@ def run(broker, db_conn=None):
     """
     global _last_rebalance
 
+    _restore_state(broker)
+
     now = datetime.now(timezone.utc)
     month_key = now.strftime("%Y-%m")
 
@@ -98,8 +119,9 @@ def run(broker, db_conn=None):
 
     try:
         account = broker.get_account()
-        equity = float(account.equity)
-        existing_positions = {p.symbol: p for p in broker.get_all_positions()}
+        equity = float(account.get("equity") or account.get("portfolio_value") or 100000.0)
+        positions = broker.get_positions()
+        existing_positions = {p["symbol"]: p for p in positions}
     except Exception as e:
         logger.error(f"[TSMomentum] Account fetch failed: {e}")
         return
@@ -133,7 +155,7 @@ def run(broker, db_conn=None):
         if sym not in target_longs:
             try:
                 broker.submit_order(
-                    symbol=sym, qty=abs(int(float(existing_positions[sym].qty))),
+                    symbol=sym, qty=abs(int(float(existing_positions[sym]["qty"]))),
                     side="sell", type="market", time_in_force="day"
                 )
                 logger.info(f"[TSMomentum] Exit {sym} (no longer in top {MAX_POSITIONS})")

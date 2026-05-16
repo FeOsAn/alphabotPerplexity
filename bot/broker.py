@@ -102,6 +102,31 @@ class AlpacaBroker:
         logger.info(f"[{strategy}] SELL {qty} {symbol} — order {order.id}")
         return {"id": str(order.id), "symbol": symbol, "side": "sell", "qty": qty, "strategy": strategy}
 
+    def submit_order(self, symbol: str, qty, side: str, type: str = "market", time_in_force: str = "day"):
+        """
+        Unified order submission wrapper used by event_driven, earnings_nlp, ts_momentum, vwap_reclaim.
+        Translates keyword-arg call to the correct alpaca-py request objects.
+        """
+        try:
+            qty = abs(float(qty))
+            if qty < 0.001:
+                logger.warning(f"[Broker] submit_order: qty {qty} too small for {symbol}, skipping")
+                return None
+            order_side = OrderSide.BUY if side.lower() in ("buy", "long") else OrderSide.SELL
+            tif = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.GTC
+            req = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=order_side,
+                time_in_force=tif,
+            )
+            result = self.trading.submit_order(req)
+            logger.info(f"[Broker] submit_order: {side} {qty} {symbol} → {result.id if result else 'no result'}")
+            return result
+        except Exception as e:
+            logger.error(f"[Broker] submit_order failed for {symbol}: {e}")
+            return None
+
     def close_position(self, symbol: str, strategy: str = "manual") -> Optional[dict]:
         try:
             order = self.trading.close_position(symbol)
@@ -169,12 +194,11 @@ def restore_tags_from_db(db_conn) -> int:
     """
     try:
         rows = db_conn.execute("""
-            SELECT symbol, strategy
-            FROM trades
+            SELECT symbol, strategy FROM trades t1
             WHERE side = 'buy'
+              AND created_at = (SELECT MAX(created_at) FROM trades t2
+                                WHERE t2.symbol = t1.symbol AND t2.side = 'buy')
             GROUP BY symbol
-            HAVING MAX(created_at)
-            ORDER BY created_at DESC
         """).fetchall()
         count = 0
         for row in rows:

@@ -26,18 +26,20 @@ _event_positions: set = set()  # Track open event-driven positions
 
 
 def _get_price_move(symbol: str, broker) -> float:
-    """Return today's intraday % move for symbol."""
+    """Return today's intraday % move for symbol using yfinance."""
+    import yfinance as yf
+    import gc
     try:
-        bars = broker.get_bars(symbol, "1Day", limit=2)
-        if bars and len(bars) >= 1:
-            bar = bars[-1]
-            prev_close = getattr(bar, "vwap", None) or getattr(bar, "open", None)
-            current = broker.get_latest_price(symbol)
-            if prev_close and current:
-                return abs(current - prev_close) / prev_close
-    except Exception as e:
-        logger.debug(f"[event_driven] Price move check failed for {symbol}: {e}")
-    return 0.0
+        fi = yf.Ticker(symbol).fast_info
+        current = getattr(fi, "last_price", None)
+        prev_close = getattr(fi, "previous_close", None)
+        if current and prev_close and prev_close > 0:
+            return abs(current - prev_close) / prev_close
+        return 0.0
+    except Exception:
+        return 0.0
+    finally:
+        gc.collect()
 
 
 def _research_event(symbol: str, headline: str, category: str) -> dict:
@@ -95,12 +97,10 @@ Rules:
 def _is_market_open(broker) -> bool:
     """Check if market is currently open."""
     try:
-        clock = broker.get_clock()
-        return clock.is_open
+        return broker.is_market_open()
     except Exception:
-        # Fallback: check ET time
-        from datetime import datetime
         import pytz
+        from datetime import datetime
         et = pytz.timezone("America/New_York")
         now = datetime.now(et)
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
@@ -112,7 +112,7 @@ def _get_portfolio_value(broker) -> float:
     """Get current portfolio equity."""
     try:
         account = broker.get_account()
-        return float(account.equity)
+        return float(account.get("equity") or account.get("portfolio_value") or 100000.0)
     except Exception:
         return 100000.0
 
@@ -120,8 +120,9 @@ def _get_portfolio_value(broker) -> float:
 def _execute_trade(symbol: str, direction: str, broker, db_conn, portfolio_value: float):
     """Execute the event-driven trade."""
     try:
+        import yfinance as yf
         trade_value = portfolio_value * POSITION_PCT
-        price = broker.get_latest_price(symbol)
+        price = getattr(yf.Ticker(symbol).fast_info, "last_price", None)
         if not price or price <= 0:
             logger.warning(f"[event_driven] Cannot get price for {symbol}")
             return
@@ -154,6 +155,25 @@ def run(broker, db_conn):
     Consume EVENT_QUEUE and process events.
     Called every strategy cycle from run_all_strategies().
     """
+    # Circuit breaker gate
+    try:
+        from main import _circuit_breaker_active
+        if _circuit_breaker_active:
+            logger.info("[event_driven] Circuit breaker active — skipping")
+            return
+    except ImportError:
+        pass
+
+    # Regime gate
+    try:
+        from utils.regime_weights import get_multiplier
+        mult = get_multiplier("event_driven")
+        if mult == 0.0:
+            logger.info("[event_driven] Regime weight 0.0 — skipping entries")
+            return
+    except Exception:
+        pass
+
     if EVENT_QUEUE.empty():
         return
 

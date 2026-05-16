@@ -175,9 +175,9 @@ def _assess_regime() -> tuple[str, dict]:
         mom_20d  = (price - float(close.iloc[-21])) / float(close.iloc[-21]) if len(close) >= 21 else 0.0
 
         try:
-            vixy_h   = yf.Ticker("VIXY").history(period="5d")
+            vix_h    = yf.Ticker("^VIX").history(period="5d")
             gc.collect()
-            vix_proxy = float(vixy_h["Close"].iloc[-1]) if not vixy_h.empty else 20.0
+            vix_proxy = float(vix_h["Close"].iloc[-1]) if not vix_h.empty else 20.0
         except Exception:
             vix_proxy = 20.0
 

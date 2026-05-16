@@ -163,10 +163,11 @@ def _compute_regime() -> tuple:
     else:
         regime, conf = "BEAR_STRONG", min(0.95, 0.7 + abs(norm) * 0.25)
 
+    vix_str = f"{signals['vix']:.1f}" if 'vix' in signals else '?'
+    spy_str = f"{signals.get('spy_1m', 0):.2%}"
     logger.info(
         f"[RegimeDetector] score={score:.2f}/weight={weight:.1f} → norm={norm:.3f} "
-        f"→ {regime} (conf {conf:.2f}) | VIX={signals.get('vix', '?'):.1f} "
-        f"SPY_1m={signals.get('spy_1m', 0):.2%}"
+        f"→ {regime} (conf {conf:.2f}) | VIX={vix_str} SPY_1m={spy_str}"
     )
     return regime, conf
 

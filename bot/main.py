@@ -121,8 +121,23 @@ def get_spy_price() -> float:
 
 def get_market_regime() -> str:
     """
-    Market regime filter — SPY above 50-day MA = bull, below = bear.
+    Market regime filter — delegates to regime_detector (HMM) when confident,
+    falls back to SPY-MA50 check otherwise.
     """
+    try:
+        from utils.regime_detector import get_regime as _rd_get_regime
+        regime, confidence = _rd_get_regime()
+        if confidence >= 0.5 and regime:
+            # Map HMM regimes onto bull/bear used by main.py
+            if regime in ("BEAR_STRONG", "BEAR_MILD"):
+                logger.info(f"Market regime (HMM): {regime} → bear (conf {confidence:.2f})")
+                return "bear"
+            if regime in ("BULL_STRONG", "BULL_NORMAL", "CHOPPY"):
+                logger.info(f"Market regime (HMM): {regime} → bull (conf {confidence:.2f})")
+                return "bull"
+    except Exception:
+        pass
+    # Fallback: SPY-MA50 check
     try:
         spy = yf.Ticker("SPY")
         hist = spy.history(period="3mo")
@@ -265,9 +280,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     today_utc = now_utc.strftime("%Y-%m-%d")
     weekday = now_utc.weekday()
 
-    # ── Reset circuit breaker at start of each new trading day (13:30 UTC) ────
-    if (now_utc.hour == 13 and now_utc.minute >= 30 and weekday < 5
-            and _circuit_breaker_reset_date != today_utc):
+    # ── Reset circuit breaker at start of each new trading day (after 13:30 UTC) ──
+    # Fires on the first cycle of the day at/after 13:30 UTC even if the exact
+    # 13:30-13:59 window was missed (e.g. bot restart at 14:00).
+    if (weekday < 5
+            and _circuit_breaker_reset_date != today_utc
+            and (now_utc.hour > 13 or (now_utc.hour == 13 and now_utc.minute >= 30))):
         if _circuit_breaker_active:
             logger.info("[CircuitBreaker] New trading day — resetting active flag")
         _circuit_breaker_active = False
@@ -383,17 +401,6 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         check_pyramid_adds(broker)
     except Exception as e:
         logger.error(f"Pyramid add check error: {e}", exc_info=True)
-
-    # ── Circuit breaker: halt new entries on >5% daily drawdown ──────────────
-    from utils.circuit_breaker import check_and_update as check_circuit_breaker
-    try:
-        account = broker.get_account()
-        portfolio_value = float(account["portfolio_value"])
-        if check_circuit_breaker(portfolio_value):
-            logger.warning("[Main] Circuit breaker active — skipping strategy cycle (exits already ran via trade_management)")
-            return
-    except Exception as e:
-        logger.warning(f"[Main] Could not check circuit breaker: {e}")
 
     # ── Market regime check ───────────────────────────────────────────────────
     regime = get_market_regime()

@@ -122,6 +122,8 @@ def _fetch_calendar_for_symbol(sym: str, horizon_days: int = 14) -> list:
 def refresh():
     """Fetch 14-day earnings calendar for all symbols in parallel."""
     global _last_refresh
+    # Set timestamp FIRST to prevent concurrent worker runs treating us as stale
+    _last_refresh = datetime.now(timezone.utc).isoformat()
     universe = _get_universe()
     if not universe:
         logger.warning("[EarningsCalendar] Empty universe — skipping refresh")

@@ -7,8 +7,8 @@ import os
 # ============================================================
 # API KEYS — set these via environment variables or .env file
 # ============================================================
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "PKLLH3DOI2OWUQ4HKGS4QCRD7M")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "5yxUCTa9VpXhRG6uKLWGAUS2TajyK9mUQPzRtskgemPV")
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 # ============================================================

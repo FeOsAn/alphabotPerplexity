@@ -73,6 +73,31 @@ EARNINGS_UNIVERSE = [
 _active_positions: dict = {}   # symbol -> {entry_price, entry_date, side, qty}
 _processed_earnings: set = set()  # "SYMBOL_YYYY-MM-DD" — avoid double-entry
 _last_earnings_scan = 0        # unix timestamp of last scan
+_state_restored: bool = False
+
+
+def _restore_state(broker):
+    """Rebuild _active_positions from broker on startup."""
+    global _state_restored
+    if _state_restored:
+        return
+    _state_restored = True
+    try:
+        positions = broker.get_positions()
+        for pos in positions:
+            sym = pos["symbol"]
+            tag = pos.get("strategy", "") or ""
+            if "earnings" in tag.lower() and sym not in _active_positions:
+                qty = float(pos.get("qty", 0))
+                _active_positions[sym] = {
+                    "entry_price": float(pos.get("avg_entry", 0)),
+                    "entry_date": datetime.now(timezone.utc) - timedelta(days=1),
+                    "side": "long" if qty > 0 else "short",
+                    "qty": int(abs(qty)),
+                }
+                logger.info(f"[EarningsNLP] Restored position: {sym}")
+    except Exception as e:
+        logger.warning(f"[EarningsNLP] State restore failed: {e}")
 
 
 def _conviction_size(confidence: float) -> float:
@@ -311,7 +336,8 @@ Rules:
 
 def _get_portfolio_value(broker) -> float:
     try:
-        return float(broker.get_account().equity)
+        account = broker.get_account()
+        return float(account.get("equity") or account.get("portfolio_value") or 100000.0)
     except Exception:
         return 100000.0
 
@@ -370,6 +396,8 @@ def run(broker, db_conn=None):
     """
     global _last_earnings_scan
 
+    _restore_state(broker)
+
     # Always manage open positions first
     if _active_positions:
         _manage_open_positions(broker)
@@ -384,6 +412,16 @@ def run(broker, db_conn=None):
     if len(_active_positions) >= MAX_POSITIONS:
         logger.info(f"[EarningsNLP] At max positions ({MAX_POSITIONS}) — skipping scan")
         return
+
+    # Global portfolio cap
+    try:
+        from config import MAX_TOTAL_EQUITY_POSITIONS
+        all_positions = broker.get_positions()
+        if len(all_positions) >= MAX_TOTAL_EQUITY_POSITIONS:
+            logger.info(f"[EarningsNLP] Portfolio cap {MAX_TOTAL_EQUITY_POSITIONS} reached — skipping new entries")
+            return
+    except Exception:
+        pass
 
     logger.info("[EarningsNLP] Scanning for earnings events...")
 

@@ -22,6 +22,7 @@ EVENT_QUEUE: queue.Queue = queue.Queue(maxsize=200)
 # Deduplication: symbol -> last event timestamp
 _dedup: dict = {}
 _DEDUP_WINDOW_SEC = 1800  # 30 min
+_dedup_lock = threading.Lock()
 
 # Monitored universe
 WATCHED_SYMBOLS = [
@@ -30,7 +31,7 @@ WATCHED_SYMBOLS = [
     # Biotech catalysts
     "MRNA", "BNTX", "NVAX", "REGN", "BIIB", "GILD", "VRTX", "SGEN",
     # High-vol tech
-    "NVDA", "AMD", "SMCI", "PLTR", "PALANTIR", "META", "GOOGL", "MSFT", "AAPL",
+    "NVDA", "AMD", "SMCI", "PLTR", "META", "GOOGL", "MSFT", "AAPL",
     "TSLA", "AMZN", "NFLX", "CRM", "SNOW", "DDOG", "CRWD", "ZS", "OKTA",
     # Financials
     "GS", "MS", "JPM", "BAC", "C", "WFC", "BLK", "SCHW",
@@ -87,13 +88,20 @@ def _classify_headline(text: str) -> Optional[str]:
 
 
 def _should_enqueue(symbol: str) -> bool:
-    """Dedup: skip if same symbol triggered within the window."""
+    """Dedup: skip if same symbol triggered within the window. Thread-safe."""
     now = time.time()
-    last = _dedup.get(symbol, 0)
-    if now - last < _DEDUP_WINDOW_SEC:
-        return False
-    _dedup[symbol] = now
-    return True
+    with _dedup_lock:
+        last = _dedup.get(symbol, 0)
+        if now - last < _DEDUP_WINDOW_SEC:
+            return False
+        _dedup[symbol] = now
+        # Prune stale entries when dict grows large
+        if len(_dedup) > 500:
+            cutoff = now - _DEDUP_WINDOW_SEC * 2
+            stale = [k for k, v in _dedup.items() if v < cutoff]
+            for k in stale:
+                del _dedup[k]
+        return True
 
 
 def _enqueue_event(symbol: str, headline: str, category: str, source: str = "alpaca"):
