@@ -1,5 +1,5 @@
 """
-AlphaBot — Main entry point
+AlphaBot — Main entry point  (v41)
 Multi-factor algorithmic trading bot for Alpaca Markets
 Runs 24/7 on Railway. Handles all strategies + API server.
 """
@@ -18,8 +18,10 @@ import gc
 import logging
 import schedule
 import yfinance as yf
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 import pytz
+
+VERSION = "v41"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -47,7 +49,7 @@ from config import (
     MARKET_OPEN_BUFFER_MIN, MARKET_CLOSE_BUFFER_MIN, CHECK_INTERVAL_MIN,
 )
 from broker import AlpacaBroker, restore_tags_from_db, retag_all_positions, check_pyramid_adds
-from db import init_db, get_connection, log_snapshot
+from db import init_db, get_connection, log_snapshot, get_state, set_state
 
 # Import strategies
 sys.path.insert(0, os.path.dirname(__file__))
@@ -56,7 +58,7 @@ from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
-from strategies.trade_management import run_global_trade_management
+from strategies.trade_management import run_global_trade_management, restore_trade_management_state
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
@@ -66,6 +68,8 @@ from strategies import vwap_reclaim
 from utils import regime_detector
 from utils import earnings_calendar
 from utils import ofi_monitor
+from utils import yf_cache
+from utils import notify
 
 EASTERN = pytz.timezone("America/New_York")
 LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
@@ -161,11 +165,66 @@ _recap_sent_date: str = ""
 _gap_protection_run_date: str = ""
 _circuit_breaker_active: bool = False
 _circuit_breaker_reset_date: str = ""
+_last_snapshot_ts: float = 0.0  # epoch seconds — guards back-to-back snapshots
+
+
+def _persist_cb_state(db_conn):
+    """Persist circuit breaker globals to the bot_state table."""
+    try:
+        set_state(db_conn, "circuit_breaker_active", "1" if _circuit_breaker_active else "0")
+        set_state(db_conn, "circuit_breaker_reset_date", _circuit_breaker_reset_date or "")
+    except Exception as e:
+        logger.warning(f"[CircuitBreaker] Persist failed: {e}")
+
+
+def _persist_daily_state(db_conn):
+    """Persist daily one-shot dates (recap, gap protection, metrics, report)."""
+    try:
+        set_state(db_conn, "recap_sent_date",          _recap_sent_date or "")
+        set_state(db_conn, "gap_protection_run_date",  _gap_protection_run_date or "")
+        set_state(db_conn, "last_report_date",         _last_report_date or "")
+        set_state(db_conn, "last_metrics_date",        _last_metrics_date or "")
+    except Exception as e:
+        logger.warning(f"[State] Persist daily dates failed: {e}")
+
+
+def _restore_state(db_conn):
+    """Restore persisted state from bot_state on startup."""
+    global _circuit_breaker_active, _circuit_breaker_reset_date
+    global _recap_sent_date, _gap_protection_run_date
+    global _last_report_date, _last_metrics_date
+    try:
+        cb = get_state(db_conn, "circuit_breaker_active")
+        if cb is not None:
+            _circuit_breaker_active = (cb == "1")
+        cb_reset = get_state(db_conn, "circuit_breaker_reset_date")
+        if cb_reset:
+            _circuit_breaker_reset_date = cb_reset
+
+        recap = get_state(db_conn, "recap_sent_date")
+        if recap:
+            _recap_sent_date = recap
+        gp = get_state(db_conn, "gap_protection_run_date")
+        if gp:
+            _gap_protection_run_date = gp
+        rep = get_state(db_conn, "last_report_date")
+        if rep:
+            _last_report_date = rep
+        met = get_state(db_conn, "last_metrics_date")
+        if met:
+            _last_metrics_date = met
+
+        logger.info(
+            f"[State] Restored: CB={_circuit_breaker_active} (reset={_circuit_breaker_reset_date}) | "
+            f"recap={_recap_sent_date} gap={_gap_protection_run_date} "
+            f"report={_last_report_date} metrics={_last_metrics_date}"
+        )
+    except Exception as e:
+        logger.warning(f"[State] Restore failed: {e}")
 
 
 def send_daily_recap(broker: AlpacaBroker) -> bool:
     """Send daily P&L summary to ntfy after market close."""
-    import requests as _requests
     try:
         account = broker.get_account()
         equity = float(account["equity"])
@@ -188,18 +247,17 @@ def send_daily_recap(broker: AlpacaBroker) -> bool:
             f"Go hit your goals 💪"
         )
 
-        _requests.post(
-            "https://ntfy.sh/perplexitybotnr1foa_goat",
-            data=body.encode("utf-8"),
-            headers={
-                "Title": f"AlphaBot Daily — {day_pct:+.2f}%",
-                "Priority": "default",
-                "Tags": "chart_with_upwards_trend",
-            },
-            timeout=10,
+        ok = notify.send(
+            title=f"AlphaBot Daily — {day_pct:+.2f}%",
+            body=body,
+            priority="default",
+            tags="chart_with_upwards_trend",
         )
-        logger.info(f"[Recap] ntfy sent — P&L {day_pnl:+,.0f} ({day_pct:+.2f}%)")
-        return True
+        if ok:
+            logger.info(f"[Recap] ntfy sent — P&L {day_pnl:+,.0f} ({day_pct:+.2f}%)")
+        else:
+            logger.warning("[Recap] ntfy send returned non-200")
+        return ok
     except Exception as e:
         logger.error(f"[Recap] ntfy failed: {e}")
         return False
@@ -237,16 +295,26 @@ def run_gap_protection(broker: AlpacaBroker):
                         side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
                     )
                     broker.trading.submit_order(req)
+                    try:
+                        notify.send(
+                            title=f"🛡️ Gap Protection: {sym} closed",
+                            body=f"{sym} gapped {gap_pct:+.1%} pre-market — closed before open.",
+                            priority="high",
+                            tags="shield",
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"[GapProtect] Error checking {sym}: {e}")
     except Exception as e:
         logger.error(f"[GapProtect] Failed: {e}")
 
 
-def check_circuit_breaker(broker: AlpacaBroker):
+def check_circuit_breaker(broker: AlpacaBroker, db_conn=None):
     """
     Sets _circuit_breaker_active if portfolio down >3% on the day.
     Auto-resets if portfolio recovers to better than -2%.
+    Persists changes to the bot_state table so they survive restarts.
     """
     global _circuit_breaker_active
     try:
@@ -262,12 +330,34 @@ def check_circuit_breaker(broker: AlpacaBroker):
                 f"[CircuitBreaker] TRIGGERED — portfolio down {day_pct:.2%} today. "
                 f"Halting new entries."
             )
+            if db_conn is not None:
+                _persist_cb_state(db_conn)
+            try:
+                notify.send(
+                    title="🚨 Circuit Breaker TRIGGERED",
+                    body=f"Portfolio down {day_pct:.2%} today. New entries halted.",
+                    priority="high",
+                    tags="rotating_light",
+                )
+            except Exception as e:
+                logger.warning(f"[CircuitBreaker] ntfy failed: {e}")
         elif day_pct > -0.02 and _circuit_breaker_active:
             _circuit_breaker_active = False
             logger.info(
                 f"[CircuitBreaker] RESET — portfolio recovered to {day_pct:.2%}, "
                 f"resuming new entries."
             )
+            if db_conn is not None:
+                _persist_cb_state(db_conn)
+            try:
+                notify.send(
+                    title="✅ Circuit Breaker Reset",
+                    body=f"Portfolio recovered to {day_pct:.2%}. Trading resumed.",
+                    priority="default",
+                    tags="white_check_mark",
+                )
+            except Exception as e:
+                logger.warning(f"[CircuitBreaker] ntfy reset failed: {e}")
     except Exception as e:
         logger.warning(f"[CircuitBreaker] Check failed: {e}")
 
@@ -278,7 +368,13 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     global _recap_sent_date, _gap_protection_run_date
     global _circuit_breaker_active, _circuit_breaker_reset_date
 
-    now_utc = datetime.utcnow()
+    # Clear per-cycle yfinance memoize at the top of every run
+    try:
+        yf_cache.clear_cycle_cache()
+    except Exception:
+        pass
+
+    now_utc = datetime.now(timezone.utc)
     today_utc = now_utc.strftime("%Y-%m-%d")
     weekday = now_utc.weekday()
 
@@ -292,6 +388,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             logger.info("[CircuitBreaker] New trading day — resetting active flag")
         _circuit_breaker_active = False
         _circuit_breaker_reset_date = today_utc
+        _persist_cb_state(db_conn)
 
     # ── Pre-market gap protection: 13:00–13:10 UTC (8:00–8:10 AM ET), weekdays ─
     if (now_utc.hour == 13 and now_utc.minute < 10 and weekday < 5
@@ -301,15 +398,17 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.error(f"[GapProtect] Outer failure: {e}")
         _gap_protection_run_date = today_utc
+        _persist_daily_state(db_conn)
 
-    # ── Daily P&L recap: 20:30–21:59 UTC (16:30 ET / 21:30 BST), weekdays only ─
+    # ── Daily P&L recap: 20:30–22:59 UTC, weekdays only (wider window for late restarts) ─
     # Fires after market close, so checked here BEFORE any early-return paths.
-    if (((now_utc.hour == 20 and now_utc.minute >= 30) or now_utc.hour == 21)
+    if (((now_utc.hour == 20 and now_utc.minute >= 30) or now_utc.hour in (21, 22))
             and weekday < 5 and _recap_sent_date != today_utc):
         try:
             success = send_daily_recap(broker)
             if success:
                 _recap_sent_date = today_utc
+                _persist_daily_state(db_conn)
             else:
                 logger.warning("[Recap] Send failed — will retry next cycle")
         except Exception as e:
@@ -317,7 +416,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
 
     # ── Circuit breaker check (3% daily drawdown halts new entries) ──────────
     try:
-        check_circuit_breaker(broker)
+        check_circuit_breaker(broker, db_conn)
     except Exception as e:
         logger.warning(f"[CircuitBreaker] Outer failure: {e}")
 
@@ -351,6 +450,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             try:
                 generate_weekly_report(broker)
                 _last_report_date = today_str
+                _persist_daily_state(db_conn)
             except Exception as e:
                 logger.error(f"Weekly report error: {e}", exc_info=True)
 
@@ -361,8 +461,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             try:
                 from utils.risk_metrics import compute_metrics
                 from config import ALPACA_BASE_URL
-                compute_metrics(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL)
+                compute_metrics(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, db_conn=db_conn)
                 _last_metrics_date = today_str
+                _persist_daily_state(db_conn)
             except Exception as e:
                 logger.warning(f"[RiskMetrics] Daily log error: {e}")
 
@@ -448,8 +549,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             fn(broker, db_conn)
         except Exception as e:
             logger.error(f"{name} error: {e}", exc_info=True)
-        finally:
-            gc.collect()
+
+    # Single gc.collect() after the whole loop — was per-iteration before (CPU burn)
+    gc.collect()
 
     # ── Event-driven: consume news_scanner EVENT_QUEUE ───────────────────────
     try:
@@ -487,6 +589,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
 
 def take_snapshot(broker: AlpacaBroker, db_conn):
     """Record portfolio snapshot for performance tracking."""
+    global _last_snapshot_ts
+    # Dedup: skip if we snapshotted in the last 30 minutes (QW9)
+    now_ts = time.time()
+    if now_ts - _last_snapshot_ts < 30 * 60:
+        logger.debug("[Snapshot] Skipping — last snapshot < 30min ago")
+        return
     try:
         acct = broker.get_account()
         spy_price = get_spy_price()
@@ -498,6 +606,7 @@ def take_snapshot(broker: AlpacaBroker, db_conn):
             pnl_today=acct["pnl_today"],
             spy_price=spy_price,
         )
+        _last_snapshot_ts = now_ts
         logger.info(
             f"Snapshot: Portfolio ${acct['portfolio_value']:,.2f} | "
             f"P&L Today: ${acct['pnl_today']:+,.2f} ({acct['pnl_today_pct']:+.2f}%) | "
@@ -543,8 +652,24 @@ def start_health_server():
         logger.error(f"Health server could not bind to port {port} after 5 attempts — continuing anyway")
 
 
+def _scheduled_recap(broker: AlpacaBroker, db_conn):
+    """Schedule-driven recap wrapper — fires at 20:35 UTC via schedule lib."""
+    global _recap_sent_date
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _recap_sent_date == today_utc:
+        return
+    if datetime.now(timezone.utc).weekday() >= 5:
+        return
+    try:
+        if send_daily_recap(broker):
+            _recap_sent_date = today_utc
+            _persist_daily_state(db_conn)
+    except Exception as e:
+        logger.error(f"[Recap] Scheduled fire error: {e}")
+
+
 def main():
-    logger.info("=== AlphaBot Starting ===")
+    logger.info(f"=== AlphaBot Starting ({VERSION}) ===")
 
     start_health_server()  # Must bind to $PORT or Railway kills the container
 
@@ -562,6 +687,29 @@ def main():
     # Restore strategy tags from DB so positions aren't labelled 'unknown' after restart
     restored = restore_tags_from_db(db_conn)
     logger.info(f"Restored {restored} strategy tag(s) from trade history")
+
+    # Restore circuit breaker + daily one-shot dates from bot_state (H2 + M22)
+    _restore_state(db_conn)
+
+    # Hydrate trailing-stop / ratchet / partial-taken state from DB (H4)
+    try:
+        restore_trade_management_state(broker, db_conn)
+    except Exception as e:
+        logger.warning(f"[Startup] trade_management restore failed: {e}")
+
+    # Hydrate pairs_trading._active_pairs from open positions (M23)
+    try:
+        from strategies.pairs_trading import restore_active_pairs
+        restore_active_pairs(broker, db_conn)
+    except Exception as e:
+        logger.debug(f"[Startup] pairs restore failed: {e}")
+
+    # Sanity check — fail loudly at startup if a critical import is missing (QW12)
+    try:
+        from utils.news_sentiment import is_sentiment_bullish
+        assert callable(is_sentiment_bullish), "news_sentiment.is_sentiment_bullish missing"
+    except Exception as e:
+        logger.error(f"[Startup] is_sentiment_bullish import failed: {e}")
 
     # Force immediate recalibration on startup — don't use stale cached thresholds
     from utils.adaptive_filters import force_recalibrate, get_thresholds
@@ -604,6 +752,8 @@ def main():
     schedule.every(CHECK_INTERVAL_MIN).minutes.do(run_all_strategies, broker, db_conn)
     schedule.every(60).minutes.do(take_snapshot, broker, db_conn)
     schedule.every().day.at("21:05").do(take_snapshot, broker, db_conn)  # 21:05 UTC = 16:05 ET
+    # Dedicated recap fire — survives edge cases where the polling window misses (M17)
+    schedule.every().day.at("20:35").do(_scheduled_recap, broker, db_conn)
 
     take_snapshot(broker, db_conn)
 

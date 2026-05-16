@@ -193,7 +193,10 @@ def run(broker: AlpacaBroker, db_conn):
     buy_candidates = [(sym, sig) for sym, sig in signals.items() if sig.get("buy_signal")]
     buy_candidates.sort(key=lambda x: x[1]["rsi"])  # Most oversold first
 
-    current_symbols = {p["symbol"] for p in broker.get_positions()}
+    # Hoist all broker.get_positions() calls out of the loop (QW4) — n+1 query before
+    cached_positions = broker.get_positions()
+    current_symbols = {p["symbol"] for p in cached_positions}
+    total_equity = len([p for p in cached_positions if p.get("asset_class", "equity") == "equity"])
     new_entries = 0
 
     for sym, sig in buy_candidates:
@@ -208,13 +211,11 @@ def run(broker: AlpacaBroker, db_conn):
             continue
         if current_mr_count >= MR_MAX_POSITIONS:
             break
-        total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
         if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
             break
 
         # Skip if a position in the same sector is already held (correlation control)
-        live_positions = broker.get_positions()
-        if is_correlated_position(sym, live_positions):
+        if is_correlated_position(sym, cached_positions):
             logger.info(f"[MR] Skipping {sym} — correlated sector already held")
             continue
 
@@ -240,6 +241,7 @@ def run(broker: AlpacaBroker, db_conn):
                   metadata={"notional": notional, "rsi": sig["rsi"]})
         cash -= notional
         current_mr_count += 1
+        total_equity += 1
         new_entries += 1
 
     logger.info(f"[MR] Scan complete — {current_mr_count} active positions")

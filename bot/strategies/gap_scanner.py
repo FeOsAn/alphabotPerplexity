@@ -107,6 +107,9 @@ def check_overnight_gaps(broker, db_conn):
                 logger.warning(
                     f"[GAP PROTECT] {sym} down {pct_display:.1f}% pre-market — closing before open"
                 )
+                # Convention: close_position is logged with the literal "gap_protect" action
+                # so the broker layer can audit cross-strategy interventions; the trades row
+                # keeps the *originating* strategy as the attribution. Both legs intentional.
                 broker.close_position(sym, "gap_protect")
                 log_trade(
                     db_conn,
@@ -201,7 +204,11 @@ def _holding_too_long(symbol: str) -> bool:
     entry = _entry_dates.get(symbol)
     if entry is None:
         return False
-    approx_trading_days = (datetime.now() - entry).days * (5 / 7)
+    # approximation: 5 trading days ≈ 7 calendar days × (5/7); outer cap at 10 calendar days
+    calendar_days = (datetime.now() - entry).days
+    if calendar_days >= 10:
+        return True
+    approx_trading_days = calendar_days * (5 / 7)
     return approx_trading_days >= MAX_HOLD_DAYS
 
 

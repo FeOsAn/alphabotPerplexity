@@ -46,7 +46,7 @@ NEWS_MAX_AGE_HOURS  = 48    # Reject symbol if it has NO news at all in last 48h
                             # Older news that is still relevant is NOT penalised by age alone
 PRICED_IN_MOVE_PCT  = 3.0   # If stock moved >3% in thesis direction since news → likely priced in
 
-# Session-wide hit-rate counter (persists for the life of the process)
+# Session-wide hit-rate counter (resets daily — QW8)
 _session_stats = {
     "evaluated":         0,
     "passed_research":   0,
@@ -54,6 +54,18 @@ _session_stats = {
     "passed_auditor":    0,
     "trades_placed":     0,
 }
+_session_stats_reset_date: str = ""
+
+
+def _maybe_reset_session_stats():
+    """Reset _session_stats once per UTC day."""
+    global _session_stats_reset_date
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _session_stats_reset_date != today:
+        for k in _session_stats:
+            _session_stats[k] = 0
+        _session_stats_reset_date = today
+        logger.info(f"[AI Research] _session_stats reset for {today}")
 
 
 # Watchlist — expanded universe for daily research cycle
@@ -618,6 +630,9 @@ def run(broker: AlpacaBroker, db_conn):
     EASTERN = pytz.timezone("America/New_York")
     now_et  = datetime.now(EASTERN)
 
+    # QW8: reset _session_stats daily
+    _maybe_reset_session_stats()
+
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         logger.warning("[AI Research] ANTHROPIC_API_KEY not set — skipping strategy")
@@ -754,15 +769,8 @@ def run(broker: AlpacaBroker, db_conn):
             f"{json.dumps(thesis)[:400]}"
         )
 
-        # AI cluster gets a small confidence boost — these names have higher analyst
-        # coverage, more predictable catalysts, and tend to have cleaner signals.
-        # Boost is modest (0.5 pts) so it doesn't override genuine low-confidence signals.
-        if symbol in AI_THEME_CLUSTER:
-            original_conf = thesis.get("confidence", 0)
-            thesis["confidence"] = min(10, original_conf + 0.5)
-            if thesis["confidence"] != original_conf:
-                logger.info(f"[AI Research] {symbol}: AI cluster boost {original_conf} → {thesis['confidence']}")
-
+        # M8: gate FIRST on raw confidence, then apply AI cluster boost as a tiebreaker
+        # for ranking — the boost no longer bypasses MIN_CONFIDENCE.
         if thesis.get("verdict") == "NEUTRAL":
             logger.info(f"[AI Research] {symbol}: BLOCKED — verdict NEUTRAL")
             continue
@@ -773,6 +781,13 @@ def run(broker: AlpacaBroker, db_conn):
                 f"freshness note: {thesis.get('news_freshness_note', '')[:80]}"
             )
             continue
+
+        # Apply AI cluster boost AFTER the gate — used for ranking, not bypass.
+        if symbol in AI_THEME_CLUSTER:
+            original_conf = thesis.get("confidence", 0)
+            thesis["confidence"] = min(10, original_conf + 0.5)
+            if thesis["confidence"] != original_conf:
+                logger.info(f"[AI Research] {symbol}: AI cluster boost (post-gate) {original_conf} → {thesis['confidence']}")
 
         n_passed_research += 1
         _session_stats["passed_research"] += 1

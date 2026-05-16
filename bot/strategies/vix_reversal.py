@@ -120,7 +120,11 @@ def _holding_too_long(symbol: str) -> bool:
     entry = _entry_dates.get(symbol)
     if entry is None:
         return False
-    approx_trading_days = (datetime.now() - entry).days * (5 / 7)
+    # approximation: 5 trading days ≈ 7 calendar days × (5/7); outer cap at 10 calendar days
+    calendar_days = (datetime.now() - entry).days
+    if calendar_days >= 10:
+        return True
+    approx_trading_days = calendar_days * (5 / 7)
     return approx_trading_days >= MAX_HOLD_DAYS
 
 
@@ -198,5 +202,19 @@ def run(broker: AlpacaBroker, db_conn):
     log_trade(db_conn, STRATEGY_NAME, "SPY", "buy", 0, sig["spy_price"], 0,
               metadata={"notional": notional, "vixy_spike_ratio": sig["spike_ratio"]})
     _entry_dates["SPY"] = datetime.now()
+
+    try:
+        from utils import notify
+        notify.send(
+            title="⚡ VIX Spike Buy: SPY",
+            body=(
+                f"SPY entered at ${sig['spy_price']:.2f} "
+                f"(VIXY ratio {sig['spike_ratio']:.2f}, SPY day {sig['spy_change_today']*100:+.1f}%)."
+            ),
+            priority="high",
+            tags="zap",
+        )
+    except Exception:
+        pass
 
     logger.info("[VIX] VIX reversal position opened")

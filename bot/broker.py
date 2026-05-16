@@ -2,6 +2,7 @@
 Broker interface — wraps Alpaca API
 """
 import logging
+import re
 from typing import Optional
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
@@ -13,6 +14,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
+
+# OCC option symbol: ROOT (1-5 letters) + YYMMDD + C|P + 8-digit strike price.
+# e.g. SPY250117C00500000
+_OPTION_SYMBOL_RE = re.compile(r"^[A-Z]{1,5}\d{6}[CP]\d{8}$")
 
 logger = logging.getLogger("alphabot.broker")
 
@@ -45,9 +50,9 @@ class AlpacaBroker:
         positions = self.trading.get_all_positions()
         result = []
         for p in positions:
-            # Detect options by checking for P/C in the symbol (e.g. SPY250117C00500000)
+            # Detect options via strict OCC format (e.g. SPY250117C00500000)
             sym = p.symbol
-            is_option = len(sym) > 10 and any(c in sym[4:] for c in ['C', 'P']) and sym[-8:].isdigit()
+            is_option = bool(_OPTION_SYMBOL_RE.match(sym))
             result.append({
                 "symbol": sym,
                 "qty": float(p.qty),
@@ -375,8 +380,9 @@ def check_pyramid_adds(broker_instance) -> None:
     """
     Check all tracked pyramid positions and add if +2% or +4% targets hit.
     Call this once per cycle from main.py.
+    Uses fast_info.last_price — much cheaper than fetching a full 1m bar series.
     """
-    import logging, yfinance as yf, gc
+    import logging, yfinance as yf
     logger = logging.getLogger(__name__)
 
     for symbol, state in list(_pyramid_state.items()):
@@ -384,12 +390,15 @@ def check_pyramid_adds(broker_instance) -> None:
             del _pyramid_state[symbol]
             continue
         try:
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(period="1d", interval="1m")
-            gc.collect()
-            if hist.empty:
+            current_price = None
+            try:
+                fi = yf.Ticker(symbol).fast_info
+                current_price = getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None)
+            except Exception:
+                current_price = None
+            if not current_price or current_price <= 0:
                 continue
-            current_price = hist["Close"].iloc[-1]
+            current_price = float(current_price)
             pct_gain = (current_price - state["initial_price"]) / state["initial_price"]
 
             if not state["add1_done"] and pct_gain >= 0.02:

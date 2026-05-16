@@ -8,17 +8,12 @@ TRAILING STOP:
   the price but never down. E.g. if a stock goes +10% then drops 5% from
   the peak, we exit at +5% instead of waiting for the original -5% stop.
 
-  Peak tracking is in-memory (resets on restart). On restart, we
-  conservatively use current price as the initial peak — this means
-  the trailing stop starts fresh from the current level, which is safe
-  (worst case we give back a bit more than intended on the first cycle
-  after restart, but we never stay in a losing position indefinitely).
+  On restart, restore_trade_management_state() rebuilds _peak_prices,
+  _ratchet_stops, and _partial_taken from the trades table and current
+  prices so trailing-stop integrity isn't lost across redeploys.
 
 PARTIAL PROFIT TAKING:
   At +PARTIAL_TAKE_PCT, sell half the position and let the rest run.
-  This locks in real gains while keeping upside exposure.
-  The remaining half stays open with a ratchet trailing stop that locks
-  in profit as the position climbs — we ride the winner, not cap it.
   Tracked per-symbol to avoid double-selling.
 
 DUST CLEANUP:
@@ -31,6 +26,7 @@ import logging
 from datetime import datetime, timezone
 from broker import AlpacaBroker
 from db import log_trade
+from utils import notify
 
 logger = logging.getLogger("alphabot.trade_management")
 
@@ -74,12 +70,11 @@ MIN_POSITION_VALUE   = 500    # Close stub if below $500 after partial take
 # genuinely exhausts. Exit triggers when BOTH:
 #   1. Position is up >= TRAIL_TAKE_ACTIVATE_PCT (40% — was 25%)
 #   2. Price pulls back >= TRAIL_TAKE_DRAWDOWN_PCT from the peak (8%)
-# This way AVGO +38% doesn't get closed — it keeps running until it
-# actually rolls over.
 TRAIL_TAKE_ACTIVATE_PCT  = 0.40  # Start protecting profit once up 40%
 TRAIL_TAKE_DRAWDOWN_PCT  = 0.08  # Exit if pulls back 8% from peak after activation
 
 # Per-strategy base stop loss (fraction). Used as the floor before ratchet kicks in.
+# Strategy-specific values intentionally override config.STOP_LOSS_PCT — see M20.
 _STRATEGY_BASE_STOP = {
     "momentum":        0.06,
     "breakout":        0.05,
@@ -99,38 +94,39 @@ def _base_stop_for(strategy: str) -> float:
 _peak_prices: dict[str, float] = {}        # symbol -> highest price seen
 _partial_taken: set[str] = set()           # symbols where partial exit already fired
 _ratchet_stops: dict[str, float] = {}      # symbol -> locked stop pct (e.g. 0.05 = +5%)
+_state_restored: bool = False              # gate so restore runs only once
+
+
+# ── Ratchet logic ─────────────────────────────────────────────────────────────
+_RATCHET_LEVELS = [
+    (25.0, 0.20),   # pnl >= 25% -> stop at +20%
+    (20.0, 0.15),   # pnl >= 20% -> stop at +15%
+    (15.0, 0.10),   # pnl >= 15% -> stop at +10%
+    (10.0, 0.05),   # pnl >= 10% -> stop at +5%
+    (5.0,  0.00),   # pnl >= 5%  -> stop at breakeven
+]
+
+
+def _ratchet_for_pnl(current_pnl_pct: float):
+    """Return the highest ratchet lock_pct applicable for current_pnl_pct, or None."""
+    for threshold_pct, lock_pct in _RATCHET_LEVELS:
+        if current_pnl_pct >= threshold_pct:
+            return lock_pct
+    return None
 
 
 def _get_ratchet_stop(symbol: str, current_pnl_pct: float, base_stop_pct: float) -> float:
     """
     Returns the effective stop loss % (as a fraction; negative = below entry).
     Ratchets up as position gains. Never moves the stop down.
-    current_pnl_pct: e.g. 8.5 (percent)
-    base_stop_pct: e.g. 0.05 (fraction)
-    Returns: effective stop as fraction, e.g. 0.0 means stop at breakeven
     """
-    RATCHET_LEVELS = [
-        (25.0, 0.20),   # pnl >= 25% -> stop at +20%
-        (20.0, 0.15),   # pnl >= 20% -> stop at +15%
-        (15.0, 0.10),   # pnl >= 15% -> stop at +10%
-        (10.0, 0.05),   # pnl >= 10% -> stop at +5%
-        (5.0,  0.00),   # pnl >= 5%  -> stop at breakeven
-    ]
-
-    new_ratchet = None
-    for threshold_pct, lock_pct in RATCHET_LEVELS:
-        if current_pnl_pct >= threshold_pct:
-            new_ratchet = lock_pct
-            break
-
+    new_ratchet = _ratchet_for_pnl(current_pnl_pct)
     if new_ratchet is None:
-        # Below +5%, use normal stop loss (negative) unless already ratcheted up
         current_ratchet = _ratchet_stops.get(symbol)
         if current_ratchet is not None:
             return current_ratchet
         return -base_stop_pct
 
-    # Only ratchet UP, never down
     current_ratchet = _ratchet_stops.get(symbol, -base_stop_pct)
     if new_ratchet > current_ratchet:
         _ratchet_stops[symbol] = new_ratchet
@@ -155,6 +151,88 @@ def clear_symbol(symbol: str):
     _peak_prices.pop(symbol, None)
     _partial_taken.discard(symbol)
     _ratchet_stops.pop(symbol, None)
+
+
+def restore_trade_management_state(broker: AlpacaBroker, db_conn):
+    """
+    Rebuild _peak_prices / _ratchet_stops / _partial_taken from the trades table
+    so trailing-stop integrity is preserved across restarts.
+
+    Strategy per open position:
+      1. Find the most recent BUY in the trades table for that symbol → entry_price.
+      2. Peak  = max(current_price, entry_price)  (safe starting point)
+      3. Ratchet = highest tier whose threshold is met by current unrealized gain
+      4. partial_taken = True if any SELL trade exists for the symbol after entry
+    """
+    global _state_restored
+    if _state_restored:
+        return
+    _state_restored = True
+    try:
+        positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[TM Restore] Could not fetch positions: {e}")
+        return
+
+    restored_count = 0
+    for pos in positions:
+        sym = pos["symbol"]
+        try:
+            current_price = float(pos.get("current_price") or 0)
+            avg_entry = float(pos.get("avg_entry") or 0)
+
+            # 1. Entry price — prefer the most recent BUY in the DB
+            entry_price = None
+            try:
+                row = db_conn.execute(
+                    "SELECT price, created_at FROM trades "
+                    "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (sym,),
+                ).fetchone()
+                if row and row["price"] and float(row["price"]) > 0:
+                    entry_price = float(row["price"])
+            except Exception as e:
+                logger.debug(f"[TM Restore] DB entry lookup failed {sym}: {e}")
+
+            if not entry_price or entry_price <= 0:
+                entry_price = avg_entry if avg_entry > 0 else current_price
+            if entry_price <= 0:
+                continue
+
+            # 2. Peak
+            peak = max(current_price, entry_price) if current_price > 0 else entry_price
+            _peak_prices[sym] = peak
+
+            # 3. Ratchet — based on current unrealized gain
+            try:
+                pnl_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
+                ratchet = _ratchet_for_pnl(pnl_pct)
+                if ratchet is not None:
+                    _ratchet_stops[sym] = ratchet
+            except Exception:
+                pass
+
+            # 4. Partial-taken — if any SELL trade exists since entry
+            try:
+                sell_row = db_conn.execute(
+                    "SELECT 1 FROM trades "
+                    "WHERE symbol=? AND side LIKE 'sell%' LIMIT 1",
+                    (sym,),
+                ).fetchone()
+                if sell_row:
+                    _partial_taken.add(sym)
+            except Exception:
+                pass
+
+            restored_count += 1
+        except Exception as e:
+            logger.debug(f"[TM Restore] {sym}: {e}")
+
+    logger.info(
+        f"[TM Restore] Hydrated {restored_count} position(s) | "
+        f"peaks={len(_peak_prices)} ratchets={len(_ratchet_stops)} partial={len(_partial_taken)}"
+    )
 
 
 def check_trailing_stop(pos: dict) -> bool:
@@ -194,8 +272,6 @@ def check_partial_take(pos: dict, broker: AlpacaBroker, db_conn, strategy: str) 
     """
     If position is up PARTIAL_TAKE_PCT and we haven't taken partial profits yet,
     sell half. Returns True if partial exit was executed.
-    The remaining half stays open — the ratchet trailing stop will ride it up
-    and lock in profit as the stock climbs. We don't cap upside here.
     """
     sym = pos["symbol"]
 
@@ -231,7 +307,6 @@ def check_partial_take(pos: dict, broker: AlpacaBroker, db_conn, strategy: str) 
                   })
         _partial_taken.add(sym)
         # Reset peak tracking to current price for the remaining half
-        # (trailing stop now trails from here, not the original peak)
         _peak_prices[sym] = pos["current_price"]
         return True
     except Exception as e:
@@ -243,7 +318,6 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
     """
     Run trailing stops + partial profit taking across ALL positions.
     Called once per cycle from main.py before individual strategies run.
-    Replaces the old fixed-stop global enforcer.
     """
     positions = broker.get_positions()
     logger.info(f"[TRADE MGT] Checking {len(positions)} position(s) — trailing stops + partial takes")
@@ -261,9 +335,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             f"price=${current_price:.2f} | value=${market_value:.0f} | peak=${peak:.2f}"
         )
 
-        # 0. Dust cleanup — if a partial take already fired and the remaining
-        #    stub is below MIN_POSITION_VALUE, close the whole thing.
-        #    No point holding $50 with a trailing stop — it's irrelevant money.
+        # 0. Dust cleanup
         if sym in _partial_taken and market_value < MIN_POSITION_VALUE:
             logger.info(
                 f"[TRADE MGT] DUST CLOSE {sym}: stub=${market_value:.0f} "
@@ -285,9 +357,6 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             continue
 
         # 1. Trailing take profit — ride winners until momentum exhausts.
-        #    Activates once up TRAIL_TAKE_ACTIVATE_PCT (40%). After that,
-        #    if price pulls back TRAIL_TAKE_DRAWDOWN_PCT (8%) from the peak,
-        #    close the entire position. This replaces the old hard 25% exit.
         if pnl_pct >= TRAIL_TAKE_ACTIVATE_PCT * 100:
             peak_price = _peak_prices.get(sym, current_price)
             drawdown_from_peak = (peak_price - current_price) / peak_price if peak_price > 0 else 0
@@ -308,6 +377,15 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                   "drawdown_from_peak_pct": round(drawdown_from_peak * 100, 2),
                               })
                     clear_symbol(sym)
+                    try:
+                        notify.send(
+                            title=f"📈 Trailing Take-Profit: {sym}",
+                            body=f"{sym} exited at +{pnl_pct/100:.1%} after {drawdown_from_peak:.1%} pullback from peak.",
+                            priority="default",
+                            tags="chart_with_upwards_trend",
+                        )
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.error(f"[TRADE MGT] Failed trailing take profit for {sym}: {e}")
                 continue
@@ -341,9 +419,9 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
 
         # 2. Check partial profit taking first (before stop checks)
         if check_partial_take(pos, broker, db_conn, strategy):
-            continue  # partial exit done, re-check next cycle with updated qty
+            continue
 
-        # 2. Check trailing stop
+        # 2b. Check trailing stop
         if check_trailing_stop(pos):
             logger.info(f"[TRADE MGT] TRAILING STOP — closing {sym} ({strategy})")
             try:
@@ -395,12 +473,9 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             continue
 
         # 3b. Dead money timeout — exit flat positions held >5 days.
-        #     A position drifting between -1.5% and +1.5% for 5+ days is dead
-        #     capital that could be redeployed. Entry date inferred from the
-        #     most recent BUY in the trades table for this symbol.
         DEAD_MONEY_DAYS = 5
-        DEAD_MONEY_MIN_PCT = -1.5   # -1.5% (pnl_pct is in percent units here)
-        DEAD_MONEY_MAX_PCT = 1.5    # +1.5%
+        DEAD_MONEY_MIN_PCT = -1.5
+        DEAD_MONEY_MAX_PCT = 1.5
         try:
             qty_signed = float(pos.get("qty", 0))
             if qty_signed > 0 and DEAD_MONEY_MIN_PCT <= pnl_pct <= DEAD_MONEY_MAX_PCT:
@@ -449,7 +524,6 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             logger.debug(f"[TradeMgt] Dead money check error for {sym}: {e}")
 
         # 3c. Sector ETF cap — trim long ETF positions exceeding 5% of equity.
-        #     Sector ETFs are diversification tools, not concentration plays.
         SECTOR_ETFS = {
             "XLK", "XLE", "XLRE", "XLF", "XLV", "XLI", "XLY",
             "XLP", "XLB", "XLU", "XLC", "GDX", "IAU", "TLT", "HYG",
@@ -488,7 +562,6 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             logger.debug(f"[TradeMgt] ETF cap check error for {sym}: {e}")
 
         # 4. Hard floor stop — catches any position down 7%+ regardless
-        # (safety net in case trailing stop tracking reset after deploy)
         if pnl_pct <= -7.0:
             logger.info(f"[TRADE MGT] HARD FLOOR STOP {sym} @ {pnl_pct:.1f}% — closing")
             try:

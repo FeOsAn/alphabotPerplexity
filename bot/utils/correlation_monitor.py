@@ -3,14 +3,22 @@ Portfolio Correlation Monitor.
 Before entering a new position, checks its correlation with existing holdings.
 Blocks entries that would push portfolio-level correlation above threshold.
 Runs correlation on 60-day daily returns.
+
+Fails CLOSED on missing data — we'd rather skip a candidate than pile in
+correlated longs when yfinance is rate-limited.
 """
 import gc
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
 CORRELATION_THRESHOLD = 0.70
 LOOKBACK_DAYS = 60
+
+# Per-cycle cache of existing-position returns (M11) — TTL 4 minutes
+_returns_cache: dict = {"ts": 0.0, "data": {}}
+_CACHE_TTL = 240  # seconds
 
 
 def _get_returns(symbol: str) -> list:
@@ -52,7 +60,6 @@ def _existing_long_symbols(broker) -> list:
         if hasattr(broker, "get_positions"):
             positions = broker.get_positions()
             return [p["symbol"] for p in positions if float(p.get("qty", 0)) > 0]
-        # Fallback: raw alpaca-style get_all_positions
         if hasattr(broker, "get_all_positions"):
             positions = broker.get_all_positions()
             return [p.symbol for p in positions if float(getattr(p, "qty", 0)) > 0]
@@ -64,10 +71,47 @@ def _existing_long_symbols(broker) -> list:
     return []
 
 
+def _existing_returns(existing_symbols: list) -> dict:
+    """
+    Fetch returns for each existing-position symbol, using a per-cycle cache
+    so candidate-loop scans don't re-fetch the same matrix every time.
+    """
+    now = time.time()
+    if now - _returns_cache["ts"] < _CACHE_TTL and _returns_cache["data"]:
+        # Use cached, intersected with current symbol set
+        cached = {s: r for s, r in _returns_cache["data"].items() if s in existing_symbols}
+        # If all symbols are present in cache, return as-is
+        if set(cached.keys()) >= set(existing_symbols):
+            return cached
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out = {}
+    try:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(_get_returns, sym): sym for sym in existing_symbols}
+            for future in as_completed(futures):
+                sym = futures[future]
+                try:
+                    r = future.result()
+                    if r:
+                        out[sym] = r
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug(f"[CorrMonitor] Executor error: {e}")
+
+    _returns_cache["ts"] = now
+    _returns_cache["data"] = out
+    return out
+
+
 def is_entry_allowed(new_symbol: str, broker) -> tuple:
     """
     Check if entering new_symbol would breach correlation threshold.
     Returns (allowed: bool, reason: str)
+
+    H8: fail CLOSED on missing data — skip the entry rather than pile in
+    correlated longs while yfinance is rate-limited.
     """
     try:
         existing_symbols = _existing_long_symbols(broker)
@@ -81,28 +125,19 @@ def is_entry_allowed(new_symbol: str, broker) -> tuple:
 
         new_returns = _get_returns(new_symbol)
         if not new_returns:
-            return True, "Could not fetch returns — allowing entry"
+            # H8: fail CLOSED — was previously "allowing entry"
+            return False, "Could not fetch returns — skipping entry to be safe"
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         corr_results = {}
-        try:
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(_get_returns, sym): sym for sym in existing_symbols}
-                for future in as_completed(futures):
-                    sym = futures[future]
-                    try:
-                        existing_returns = future.result()
-                        if existing_returns:
-                            corr = _pearson_correlation(new_returns, existing_returns)
-                            corr_results[sym] = corr
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.debug(f"[CorrMonitor] Executor error: {e}")
-            return True, "Executor error — allowing entry"
+        existing_returns = _existing_returns(existing_symbols)
+        for sym, r in existing_returns.items():
+            try:
+                corr_results[sym] = _pearson_correlation(new_returns, r)
+            except Exception:
+                pass
 
         if not corr_results:
-            return True, "Could not compute correlations — allowing entry"
+            return False, "Could not compute correlations — skipping entry to be safe"
 
         max_corr_sym = max(corr_results, key=corr_results.get)
         max_corr = corr_results[max_corr_sym]
@@ -115,4 +150,4 @@ def is_entry_allowed(new_symbol: str, broker) -> tuple:
 
     except Exception as e:
         logger.error(f"[CorrMonitor] Error checking {new_symbol}: {e}")
-        return True, f"Error — allowing entry: {e}"
+        return False, f"Error — skipping entry: {e}"

@@ -76,8 +76,12 @@ _last_earnings_scan = 0        # unix timestamp of last scan
 _state_restored: bool = False
 
 
-def _restore_state(broker):
-    """Rebuild _active_positions from broker on startup."""
+def _restore_state(broker, db_conn=None):
+    """Rebuild _active_positions from broker on startup.
+
+    M4: entry_date is the most recent buy_* timestamp in the trades table
+    for that symbol (or fallback to 1 day ago if no DB record).
+    """
     global _state_restored
     if _state_restored:
         return
@@ -89,13 +93,35 @@ def _restore_state(broker):
             tag = pos.get("strategy", "") or ""
             if "earnings" in tag.lower() and sym not in _active_positions:
                 qty = float(pos.get("qty", 0))
+                entry_date = None
+                if db_conn is not None:
+                    try:
+                        row = db_conn.execute(
+                            "SELECT created_at FROM trades "
+                            "WHERE symbol=? AND side LIKE 'buy%' "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (sym,),
+                        ).fetchone()
+                        if row:
+                            raw = row[0] if not hasattr(row, "keys") else row["created_at"]
+                            try:
+                                dt = datetime.fromisoformat(raw)
+                            except Exception:
+                                dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            entry_date = dt
+                    except Exception as e:
+                        logger.debug(f"[EarningsNLP] DB entry_date lookup failed {sym}: {e}")
+                if entry_date is None:
+                    entry_date = datetime.now(timezone.utc) - timedelta(days=1)
                 _active_positions[sym] = {
                     "entry_price": float(pos.get("avg_entry", 0)),
-                    "entry_date": datetime.now(timezone.utc) - timedelta(days=1),
+                    "entry_date": entry_date,
                     "side": "long" if qty > 0 else "short",
                     "qty": int(abs(qty)),
                 }
-                logger.info(f"[EarningsNLP] Restored position: {sym}")
+                logger.info(f"[EarningsNLP] Restored position: {sym} (entry={entry_date.date()})")
     except Exception as e:
         logger.warning(f"[EarningsNLP] State restore failed: {e}")
 
@@ -396,7 +422,7 @@ def run(broker, db_conn=None):
     """
     global _last_earnings_scan
 
-    _restore_state(broker)
+    _restore_state(broker, db_conn)
 
     # Skip scans on weekends — market is closed, no point burning API calls
     from datetime import datetime, timezone
@@ -555,6 +581,19 @@ def run(broker, db_conn=None):
                 f"[EarningsNLP] ORDER: {side.upper()} {qty} {sym} @ ~${price:.2f} "
                 f"(PEAD {direction}, conf {confidence:.2f})"
             )
+            # M10: record the signal so back-tests can score hit rate
+            try:
+                if db_conn is not None:
+                    from db import log_signal
+                    log_signal(db_conn, "earnings_nlp", sym, direction, confidence, {
+                        "earnings_date": earnings_date.strftime("%Y-%m-%d"),
+                        "eps_surprise": eps_surprise,
+                        "price_reaction": price_reaction,
+                        "confidence": confidence,
+                        "rationale": rationale[:200],
+                    })
+            except Exception as _e:
+                logger.debug(f"[EarningsNLP] log_signal failed for {sym}: {_e}")
         except Exception as e:
             logger.error(f"[EarningsNLP] Order failed for {sym}: {e}")
         finally:

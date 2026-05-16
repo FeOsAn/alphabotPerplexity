@@ -190,20 +190,19 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     # ── Fetch data one symbol at a time to avoid OOM on Railway 512MB ──────────
+    # QW3: per-cycle memoize so other strategies in the same cycle reuse the fetch
+    from utils import yf_cache
     signals = {}
     for sym in TREND_WATCHLIST:
         try:
-            ticker = yf.Ticker(sym)
-            hist = ticker.history(period="3mo")
-            if not hist.empty:
+            hist = yf_cache.get_history(sym, period="3mo", interval="1d")
+            if hist is not None and not hist.empty:
                 sig = _compute_signals(hist)
                 if sig:
                     signals[sym] = sig
-            del hist
         except Exception as e:
             logger.debug(f"[TF] Error fetching {sym}: {e}")
-        finally:
-            gc.collect()
+    gc.collect()
 
     _check_exits_and_stops(broker, db_conn, signals)
 

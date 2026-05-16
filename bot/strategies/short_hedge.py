@@ -145,6 +145,8 @@ def _check_exits(broker: AlpacaBroker, db_conn) -> None:
 def run(broker: AlpacaBroker, db_conn) -> None:
     """Main entry point — called every cycle from main.py."""
     from utils.adaptive_filters import get_regime, get_thresholds
+    from utils import notify
+    from strategies.trade_management import clear_symbol
     regime = get_regime()
 
     # Force-close all short positions if we somehow still hold them in a bull regime
@@ -154,7 +156,28 @@ def run(broker: AlpacaBroker, db_conn) -> None:
         if short_positions:
             logger.warning(f"[SHORT] Regime flipped to {regime} — force-closing {len(short_positions)} short position(s)")
             for pos in short_positions:
-                broker.close_position(pos["symbol"], STRATEGY_NAME)
+                sym = pos["symbol"]
+                qty = float(pos.get("qty", 0))
+                price = float(pos.get("current_price", 0))
+                pnl = float(pos.get("unrealized_pnl", 0.0))
+                try:
+                    broker.close_position(sym, STRATEGY_NAME)
+                    log_trade(db_conn, STRATEGY_NAME, sym, "sell_regime_flip",
+                              qty, price, pnl,
+                              metadata={"reason": "regime_flip", "new_regime": regime})
+                    clear_symbol(sym)
+                    _entry_times.pop(sym, None)
+                    try:
+                        notify.send(
+                            title=f"⚠️ Short Hedge Closed — {sym}",
+                            body=f"Regime flipped to {regime}. {sym} closed at P&L {pnl:+.2f}.",
+                            priority="high",
+                            tags="warning",
+                        )
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.error(f"[SHORT] Force-close failed for {sym}: {e}")
         else:
             logger.info(f"[SHORT] Regime={regime} — short hedge inactive (bull market)")
         return

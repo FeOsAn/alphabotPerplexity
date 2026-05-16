@@ -88,6 +88,7 @@ def _get_earnings_surprise(symbol: str) -> Optional[dict]:
         if pd.isna(reported) or pd.isna(estimated) or estimated == 0:
             return None
 
+        # abs(estimated) normalises for negative EPS correctly
         surprise_pct = ((reported - estimated) / abs(estimated)) * 100
 
         if surprise_pct >= PEAD_MIN_SURPRISE_PCT:

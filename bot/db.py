@@ -5,7 +5,7 @@ import os
 import sqlite3
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,6 +75,16 @@ def init_db():
         )
     """)
 
+    # Persistent key/value store for restart-fragile state
+    # (circuit breaker flag, daily one-shot fire dates, etc.)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS bot_state (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -88,8 +98,8 @@ def log_trade(conn: sqlite3.Connection, strategy: str, symbol: str, side: str,
     """, (strategy, symbol, side, qty, price, pnl, json.dumps(metadata or {})))
     conn.commit()
 
-    # Update strategy performance
-    date = datetime.now().strftime("%Y-%m-%d")
+    # Update strategy performance — UTC to match trades.created_at (SQLite datetime('now') is UTC)
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     win = 1 if pnl > 0 else 0
     loss = 1 if pnl < 0 else 0
     conn.execute("""
@@ -176,3 +186,28 @@ def get_snapshots(conn: sqlite3.Connection, limit: int = 90) -> list[dict]:
         "SELECT * FROM snapshots ORDER BY snapshot_at DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── bot_state helpers ────────────────────────────────────────────────────────
+def get_state(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    """Read a bot_state value. Returns None if missing."""
+    try:
+        row = conn.execute("SELECT value FROM bot_state WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+    except Exception as e:
+        logger.warning(f"[db.get_state] {key}: {e}")
+        return None
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Write a bot_state value. Upserts."""
+    try:
+        ts = datetime.now(timezone.utc).isoformat()
+        conn.execute("""
+            INSERT INTO bot_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """, (key, value, ts))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[db.set_state] {key}: {e}")

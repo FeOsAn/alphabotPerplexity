@@ -21,7 +21,7 @@ def get_sentiment_score(symbol: str, alpaca_key: str, alpaca_secret: str) -> flo
     """
     now = datetime.now(timezone.utc)
     cached = _sentiment_cache.get(symbol)
-    if cached and (now - cached["updated"]).seconds < CACHE_TTL_MINUTES * 60:
+    if cached and (now - cached["updated"]).total_seconds() < CACHE_TTL_MINUTES * 60:
         return cached["score"]
 
     try:

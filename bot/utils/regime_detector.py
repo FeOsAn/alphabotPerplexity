@@ -35,7 +35,7 @@ def _compute_regime() -> tuple:
     Returns (regime_str, confidence_float).
     """
     import yfinance as yf
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
     signals = {}
 
@@ -58,20 +58,30 @@ def _compute_regime() -> tuple:
         f_lqd    = ex.submit(fetch, "LQD", "1mo", "1d")
         f_qqq    = ex.submit(fetch, "QQQ", "1mo", "1d")
 
-    spy_1y = f_spy_1y.result()
-    spy_1m = f_spy_1m.result()
-    vix_h  = f_vix.result()
-    hyg_h  = f_hyg.result()
-    lqd_h  = f_lqd.result()
-    qqq_h  = f_qqq.result()
+    def _safe_result(f, name):
+        try:
+            return f.result(timeout=15)
+        except FuturesTimeoutError:
+            logger.warning(f"[RegimeDetector] {name} fetch timed out — using None")
+            return None
+        except Exception as e:
+            logger.warning(f"[RegimeDetector] {name} fetch error: {e}")
+            return None
+
+    spy_1y = _safe_result(f_spy_1y, "SPY 1y")
+    spy_1m = _safe_result(f_spy_1m, "SPY 1m")
+    vix_h  = _safe_result(f_vix,    "VIX")
+    hyg_h  = _safe_result(f_hyg,    "HYG")
+    lqd_h  = _safe_result(f_lqd,    "LQD")
+    qqq_h  = _safe_result(f_qqq,    "QQQ")
 
     score = 0.0   # positive = bull, negative = bear
     weight = 0.0
 
-    # Signal 1: SPY 12-week trend
+    # Signal 1: SPY 12-week trend (iloc[-13] for true 12-week lookback)
     try:
-        if spy_1y is not None and len(spy_1y) >= 12:
-            ret_12w = (spy_1y["Close"].iloc[-1] - spy_1y["Close"].iloc[-12]) / spy_1y["Close"].iloc[-12]
+        if spy_1y is not None and len(spy_1y) >= 13:
+            ret_12w = (spy_1y["Close"].iloc[-1] - spy_1y["Close"].iloc[-13]) / spy_1y["Close"].iloc[-13]
             if ret_12w > 0.05:
                 score += 2.0
             elif ret_12w > 0.0:

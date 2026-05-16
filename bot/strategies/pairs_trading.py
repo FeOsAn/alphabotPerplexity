@@ -40,12 +40,71 @@ MAX_HOLD_DAYS = 20    # Force-close after 20 days if spread hasn't reverted
 
 
 # ── Pair state tracking ───────────────────────────────────────────────────────
-# {pair_key: {"long": symbol, "short": symbol, "entry_zscore": float, "entry_date": datetime}}
 _active_pairs: dict[str, dict] = {}
 
 
 def _pair_key(s1: str, s2: str) -> str:
     return f"{s1}/{s2}"
+
+
+def restore_active_pairs(broker: AlpacaBroker, db_conn) -> None:
+    """
+    On bot restart, rebuild _active_pairs from current open positions tagged
+    pairs_trading + most recent buy timestamp in the trades table.
+    """
+    try:
+        positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[PAIRS] restore: could not fetch positions: {e}")
+        return
+
+    pt_syms = [p["symbol"] for p in positions if p.get("strategy") == STRATEGY_NAME]
+    if not pt_syms:
+        return
+
+    # Match symbols to known pairs
+    sym_set = set(pt_syms)
+    for s1, s2 in PAIRS:
+        if s1 in sym_set and s2 in sym_set:
+            key = _pair_key(s1, s2)
+            if key in _active_pairs:
+                continue
+            entry_date = datetime.now(timezone.utc)
+            try:
+                row = db_conn.execute(
+                    "SELECT created_at FROM trades "
+                    "WHERE strategy=? AND side LIKE 'buy%' AND symbol IN (?, ?) "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (STRATEGY_NAME, s1, s2),
+                ).fetchone()
+                if row:
+                    raw = row[0] if not hasattr(row, "keys") else row["created_at"]
+                    try:
+                        dt = datetime.fromisoformat(raw)
+                    except Exception:
+                        dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    entry_date = dt
+            except Exception:
+                pass
+            # Determine which leg was long vs short from position sides
+            p1 = next((p for p in positions if p["symbol"] == s1), None)
+            p2 = next((p for p in positions if p["symbol"] == s2), None)
+            if p1 is None or p2 is None:
+                continue
+            qty1 = float(p1.get("qty", 0))
+            qty2 = float(p2.get("qty", 0))
+            long_sym = s1 if qty1 > 0 else s2
+            short_sym = s2 if long_sym == s1 else s1
+            _active_pairs[key] = {
+                "long": long_sym,
+                "short": short_sym,
+                "entry_zscore": 0.0,
+                "entry_date": entry_date,
+                "beta": 1.0,
+            }
+            logger.info(f"[PAIRS] Restored active pair {key} (entry={entry_date.date()})")
 
 
 def _compute_pair_signals(s1: str, s2: str) -> Optional[dict]:
@@ -70,6 +129,11 @@ def _compute_pair_signals(s1: str, s2: str) -> Optional[dict]:
         recent = close.tail(LOOKBACK_DAYS)
         s1_prices = recent[s1].values
         s2_prices = recent[s2].values
+
+        # Guard against constant s2 — np.var == 0 would divide-by-zero
+        if np.var(s2_prices) < 1e-12:
+            logger.warning(f"[PAIRS] {s1}/{s2} variance ~0 on {s2} — skipping")
+            return None
 
         # OLS hedge ratio: S1 = beta * S2 + alpha
         beta = float(np.cov(s1_prices, s2_prices)[0, 1] / np.var(s2_prices))
@@ -152,7 +216,12 @@ def _close_pair(broker: AlpacaBroker, db_conn, key: str, state: dict,
 
 
 def run(broker: AlpacaBroker, db_conn) -> None:
-    """Main entry — called every cycle."""
+    """Main entry — called every cycle.
+
+    Order of operations (M18): compute all exits first, execute all exits, then
+    only consider new entries. We don't open new pairs while old ones are still
+    being closed in the same cycle.
+    """
     logger.info("=== Pairs Trading Strategy: Scanning ===")
 
     try:
@@ -184,6 +253,9 @@ def run(broker: AlpacaBroker, db_conn) -> None:
         positions = []
     held_symbols = {p["symbol"] for p in positions if p.get("strategy") == STRATEGY_NAME}
 
+    # First pass: collect all entry candidates with computed signals so we can net
+    # exits and entries cleanly (M18 — avoid sector-flat windows).
+    candidates = []
     for s1, s2 in PAIRS:
         key = _pair_key(s1, s2)
         if key in active_keys:
@@ -203,17 +275,21 @@ def run(broker: AlpacaBroker, db_conn) -> None:
             pass
 
         long_sym = short_sym = None
-
         if z > Z_ENTRY:
-            # S1 overpriced vs S2 → Short S1, Long S2
             short_sym, long_sym = s1, s2
         elif z < -Z_ENTRY:
-            # S1 underpriced vs S2 → Long S1, Short S2
             long_sym, short_sym = s1, s2
 
         if long_sym is None:
             logger.debug(f"[PAIRS] {key} z={z:.2f} — no signal")
             continue
+
+        candidates.append((key, s1, s2, long_sym, short_sym, signals, z))
+
+    # Second pass: execute entries (exits already done above).
+    for key, s1, s2, long_sym, short_sym, signals, z in candidates:
+        if len(_active_pairs) >= MAX_PAIRS_ACTIVE:
+            break
 
         notional = portfolio_value * POSITION_PCT
         long_price = signals["s1_price"] if long_sym == s1 else signals["s2_price"]
@@ -226,14 +302,12 @@ def run(broker: AlpacaBroker, db_conn) -> None:
         )
 
         try:
-            # Long leg — notional buy
             broker.market_buy(long_sym, notional, STRATEGY_NAME)
             tag_symbol(long_sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, long_sym, "buy",
                      notional / long_price, long_price, 0,
                      {"pair": key, "zscore": z, "leg": "long"})
 
-            # Short leg — qty-based sell (Alpaca paper supports shorting)
             broker.market_sell(short_sym, short_qty, STRATEGY_NAME)
             tag_symbol(short_sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, short_sym, "sell_short",
@@ -248,10 +322,10 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                 "beta": signals["beta"],
             }
             logger.info(f"[PAIRS] Opened {key} — LONG {long_sym}, SHORT {short_sym}")
+            cash -= notional + short_price * short_qty
 
         except Exception as e:
             logger.error(f"[PAIRS] Failed to open {key}: {e}", exc_info=True)
-            # Try to close any partial fills
             try:
                 broker.close_position(long_sym, STRATEGY_NAME)
             except Exception:

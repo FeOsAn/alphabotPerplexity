@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import queue
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -129,6 +130,17 @@ def _enqueue_event(symbol: str, headline: str, category: str, source: str = "alp
         logger.info(f"[news_scanner] EVENT queued: {symbol} [{category}] — {headline[:80]}")
     except queue.Full:
         logger.warning("[news_scanner] EVENT_QUEUE full — dropping event")
+        # M6: alert when events are being dropped — operationally important
+        try:
+            from utils import notify
+            notify.send(
+                title="⚠️ Event Queue Full",
+                body=f"Dropping {symbol} [{category}] — event queue at capacity.",
+                priority="high",
+                tags="warning",
+            )
+        except Exception:
+            pass
 
 
 def _process_news_item(item: dict):
@@ -208,7 +220,11 @@ def _poll_worker():
     """Poll Alpaca REST news endpoint as fallback / supplement."""
     BASE = "https://data.alpaca.markets/v1beta1/news"
     headers = {"APCA-API-KEY-ID": _api_key, "APCA-API-SECRET-KEY": _secret_key}
-    last_seen: set = set()
+    # M13: deterministic LRU eviction via OrderedDict — `set` insertion-order
+    # casting is not safe across mutations.
+    last_seen: OrderedDict = OrderedDict()
+    MAX_DEDUP = 500
+    EVICT_TO = 200
 
     while _running:
         try:
@@ -220,11 +236,12 @@ def _poll_worker():
                 for item in items:
                     item_id = item.get("id", "")
                     if item_id and item_id not in last_seen:
-                        last_seen.add(item_id)
+                        last_seen[item_id] = True
                         _process_news_item(item)
-                # Keep last_seen bounded
-                if len(last_seen) > 500:
-                    last_seen = set(list(last_seen)[-200:])
+                # Bounded LRU eviction — drop oldest until at EVICT_TO entries
+                while len(last_seen) > MAX_DEDUP:
+                    while len(last_seen) > EVICT_TO:
+                        last_seen.popitem(last=False)
             else:
                 logger.warning(f"[news_scanner] REST poll HTTP {r.status_code}")
         except Exception as e:

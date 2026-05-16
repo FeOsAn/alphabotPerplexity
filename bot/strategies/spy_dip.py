@@ -74,7 +74,7 @@ def _get_signals() -> dict:
             # MA20 slope — uptrend must be rising, not just flat
             ma20_now  = float(close.tail(20).mean())
             ma20_prev = float(close.tail(25).head(20).mean())  # 5 days ago
-            ma20_slope = (ma20_now - ma20_prev) / ma20_prev
+            ma20_slope = (ma20_now - ma20_prev) / ma20_prev if ma20_prev > 0 else 0.0
 
             buy_signal = (
                 above_ma50 and

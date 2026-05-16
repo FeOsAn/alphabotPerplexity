@@ -247,6 +247,9 @@ def _check_exits(broker: AlpacaBroker, db_conn, signals: dict):
                     db_conn, STRATEGY_NAME, sym, "sell_breakout_fail",
                     pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                 )
+                # M3: also cooldown on breakout_fail exit so we don't re-enter next cycle
+                from utils.cooldown import set_cooldown
+                set_cooldown(sym)
 
 
 def run(broker: AlpacaBroker, db_conn):
@@ -332,6 +335,10 @@ def run(broker: AlpacaBroker, db_conn):
     portfolio_value = account["portfolio_value"]
     cash = account["cash"]
 
+    # Hoist out of the per-candidate loop — was called N times before (QW4)
+    cached_positions = broker.get_positions()
+    equity_count = len([p for p in cached_positions if p.get("asset_class", "equity") == "equity"])
+
     # ── Enter positions ──────────────────────────────────────────────────────
     for sig in candidates:
         sym = sig["symbol"]
@@ -344,11 +351,7 @@ def run(broker: AlpacaBroker, db_conn):
             logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
             continue
 
-        # Portfolio equity cap
-        equity_count = len([
-            p for p in broker.get_positions()
-            if p.get("asset_class", "equity") == "equity"
-        ])
+        # Portfolio equity cap (uses cached count; each successful entry bumps it)
         if equity_count >= MAX_TOTAL_EQUITY_POSITIONS:
             logger.info(f"[BRK] Max equity positions ({MAX_TOTAL_EQUITY_POSITIONS}) — stopping entries")
             break
@@ -410,5 +413,6 @@ def run(broker: AlpacaBroker, db_conn):
         )
         cash -= notional
         brk_count += 1
+        equity_count += 1
 
     logger.info(f"[BRK] Scan complete — {brk_count} active breakout positions")

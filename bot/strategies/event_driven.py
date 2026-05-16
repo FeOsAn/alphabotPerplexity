@@ -9,6 +9,7 @@ Gate pipeline:
   4. Market hours     — only execute during regular trading hours
 """
 import logging
+import queue
 import time
 from datetime import datetime, timezone
 
@@ -192,7 +193,7 @@ def run(broker, db_conn):
     while not EVENT_QUEUE.empty() and processed < 5:
         try:
             event = EVENT_QUEUE.get_nowait()
-        except Exception:
+        except queue.Empty:
             break
 
         processed += 1

@@ -68,14 +68,26 @@ def update_watched(broker):
 
 
 def _refresh_subscriptions(ws):
-    """Subscribe to any new watched symbols (called periodically, not from on_message)."""
+    """Subscribe to any new watched symbols AND unsubscribe from closed ones.
+    Called periodically, not from on_message."""
     global _subscribed_symbols
     try:
+        if ws is None:
+            return
         new_syms = _watched_symbols - _subscribed_symbols
-        if new_syms and ws is not None:
+        removed = _subscribed_symbols - _watched_symbols
+        if new_syms:
             ws.send(json.dumps({"action": "subscribe", "quotes": list(new_syms)}))
             _subscribed_symbols.update(new_syms)
             logger.info(f"[OFI] Subscribed to new symbols: {new_syms}")
+        if removed:
+            ws.send(json.dumps({"action": "unsubscribe", "quotes": list(removed)}))
+            _subscribed_symbols -= removed
+            # Drop history for removed symbols to free memory
+            with _ofi_lock:
+                for sym in removed:
+                    _ofi_history.pop(sym, None)
+            logger.info(f"[OFI] Unsubscribed closed symbols: {removed}")
     except Exception as e:
         logger.debug(f"[OFI] _refresh_subscriptions error: {e}")
 

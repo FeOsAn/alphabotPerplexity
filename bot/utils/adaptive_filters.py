@@ -84,10 +84,33 @@ def _calibrate_market() -> dict:
     above_ma50_count = 0
     total = 0
 
+    # M12: parallel fetch — was sequential 20× ~300ms = 6s blocking
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one(sym):
+        try:
+            return sym, yf.Ticker(sym).history(period="6mo")
+        except Exception as e:
+            return sym, None
+
+    hist_map: dict = {}
+    try:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futures = {ex.submit(_fetch_one, s): s for s in CALIBRATION_UNIVERSE}
+            for fut in as_completed(futures):
+                try:
+                    sym, hist = fut.result(timeout=20)
+                    hist_map[sym] = hist
+                except Exception as e:
+                    logger.debug(f"[Calibrate] fetch error: {e}")
+    except Exception as e:
+        logger.warning(f"[Calibrate] Parallel fetch failed, falling back to defaults: {e}")
+        return _safe_defaults()
+    gc.collect()
+
     for sym in CALIBRATION_UNIVERSE:
         try:
-            hist = yf.Ticker(sym).history(period="6mo")
-            gc.collect()
+            hist = hist_map.get(sym)
             if hist is None or hist.empty or len(hist) < 65:
                 continue
 

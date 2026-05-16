@@ -182,9 +182,9 @@ def _score_sectors() -> pd.Series:
 
         except Exception as e:
             logger.warning(f"[SR] Error fetching {etf}: {e}")
-        finally:
-            gc.collect()
 
+    # QW7: single gc.collect after the loop instead of per-iteration
+    gc.collect()
     logger.info(f"[SR] Scored {len(scores)}/{len(SECTOR_ETFS)} sectors")
     return pd.Series(scores).sort_values(ascending=False)
 
@@ -233,21 +233,35 @@ def run(broker: AlpacaBroker, db_conn):
     sr_positions = [p for p in all_positions if p["strategy"] == STRATEGY_NAME]
     current_symbols = {p["symbol"] for p in sr_positions}
 
-    # Exit sectors no longer in top N
-    for pos in sr_positions:
-        if pos["symbol"] not in top_sectors:
-            logger.info(f"[SR] EXIT {pos['symbol']} ({SECTOR_ETFS.get(pos['symbol'], '?')}) — rotated out")
+    # M9: compute exits + entries first (netting), then execute together so we
+    # don't end up sector-flat for a cycle if cash is briefly depleted.
+    to_exit = [p for p in sr_positions if p["symbol"] not in top_sectors]
+    to_enter = [etf for etf in top_sectors if etf not in current_symbols]
+
+    expected_cash_freed = sum(float(p.get("market_value", 0)) for p in to_exit)
+    logger.info(
+        f"[SR] Rotation plan — exit {[p['symbol'] for p in to_exit]} "
+        f"(~${expected_cash_freed:.0f} freed) | enter {to_enter}"
+    )
+
+    # Execute exits
+    for pos in to_exit:
+        logger.info(f"[SR] EXIT {pos['symbol']} ({SECTOR_ETFS.get(pos['symbol'], '?')}) — rotated out")
+        try:
             broker.close_position(pos["symbol"], STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, pos["symbol"], "sell",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
             cash += pos["market_value"]
+        except Exception as e:
+            logger.error(f"[SR] Exit failed for {pos['symbol']}: {e}")
+
+    # Hoist out of loop (QW4)
+    total_equity = len([p for p in all_positions
+                        if p.get("asset_class", "equity") == "equity"
+                        and p["symbol"] not in {pp["symbol"] for pp in to_exit}])
 
     # Enter new top sectors
-    for etf in top_sectors:
-        if etf in current_symbols:
-            continue
-
-        total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
+    for etf in to_enter:
         if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
             logger.info(f"[SR] Max equity positions reached — skipping {etf}")
             break
@@ -273,6 +287,7 @@ def run(broker: AlpacaBroker, db_conn):
             "sector": SECTOR_ETFS[etf],
             "momentum": float(scores[etf]),
         })
+        total_equity += 1
         cash -= notional
 
     _last_rebalance = datetime.now()
