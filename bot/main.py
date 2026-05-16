@@ -61,6 +61,7 @@ from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
 from strategies import cash_deployer
+from strategies import earnings_nlp
 
 EASTERN = pytz.timezone("America/New_York")
 LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
@@ -441,6 +442,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         event_driven.run(broker, db_conn)
     except Exception as e:
         logger.error(f"Event-driven error: {e}", exc_info=True)
+
+    # ── Earnings NLP: Claude-driven PEAD trades on earnings events ──────────
+    try:
+        earnings_nlp.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"Earnings NLP error: {e}", exc_info=True)
 
     # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
     # Exit checks run every cycle. New research fires once daily inside the strategy.
