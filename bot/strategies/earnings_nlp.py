@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 MAX_POSITIONS = 10
-POSITION_PCT = 0.05          # 5% of portfolio per trade
+# Conviction-based position sizing
+POSITION_PCT_BASE    = 0.05   # confidence 0.60–0.74
+POSITION_PCT_HIGH    = 0.08   # confidence 0.75–0.89
+POSITION_PCT_VERY_HIGH = 0.12 # confidence ≥ 0.90
 TAKE_PROFIT = 0.15           # +15%
 STOP_LOSS = -0.07            # -7%
 HOLD_DAYS = 20               # max trading days to hold
@@ -46,6 +49,16 @@ EARNINGS_UNIVERSE = [
 _active_positions: dict = {}   # symbol -> {entry_price, entry_date, side, qty}
 _processed_earnings: set = set()  # "SYMBOL_YYYY-MM-DD" — avoid double-entry
 _last_earnings_scan = 0        # unix timestamp of last scan
+
+
+def _conviction_size(confidence: float) -> float:
+    """Return position size as fraction of portfolio based on Claude confidence."""
+    if confidence >= 0.90:
+        return POSITION_PCT_VERY_HIGH
+    elif confidence >= 0.75:
+        return POSITION_PCT_HIGH
+    else:
+        return POSITION_PCT_BASE
 
 
 def _get_recent_earnings(lookback_days: int = 5) -> list:
@@ -407,7 +420,9 @@ def run(broker, db_conn=None):
             if not price or price <= 0:
                 logger.warning(f"[EarningsNLP] Cannot get price for {sym}")
                 continue
-            trade_value = portfolio_value * POSITION_PCT
+            pos_pct = _conviction_size(confidence)
+            trade_value = portfolio_value * pos_pct
+            logger.info(f"[EarningsNLP] Conviction sizing: conf {confidence:.2f} → {pos_pct:.0%} of portfolio (${trade_value:,.0f})")
             qty = int(trade_value / price)
             if qty < 1:
                 logger.warning(f"[EarningsNLP] {sym} position too small at ${price:.2f}")

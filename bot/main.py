@@ -60,7 +60,6 @@ from strategies.trade_management import run_global_trade_management
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
-from strategies import cash_deployer
 from strategies import earnings_nlp
 
 EASTERN = pytz.timezone("America/New_York")
@@ -302,14 +301,6 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.error(f"[CircuitBreaker] Exits-only trade_management failed: {e}", exc_info=True)
         return
-
-    # ── Cash deployment floor: self-gates to 13:30–15:30 UTC weekdays, once daily ──
-    # Called BEFORE market_open / is_trading_window guards so it fires reliably
-    # even during the 15-min post-open buffer or on Railway rebuild lag.
-    try:
-        cash_deployer.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"Cash deployer error: {e}", exc_info=True)
 
     try:
         from utils.adaptive_filters import get_thresholds
