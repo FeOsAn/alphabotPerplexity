@@ -300,15 +300,15 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             logger.error(f"[GapProtect] Outer failure: {e}")
         _gap_protection_run_date = today_utc
 
-    # ── Daily P&L recap: 20:30 UTC (16:30 ET / 21:30 BST), weekdays only ─────
+    # ── Daily P&L recap: 20:30–21:59 UTC (16:30 ET / 21:30 BST), weekdays only ─
     # Fires after market close, so checked here BEFORE any early-return paths.
-    if (now_utc.hour == 20 and now_utc.minute >= 30 and weekday < 5
-            and _recap_sent_date != today_utc):
+    if (((now_utc.hour == 20 and now_utc.minute >= 30) or now_utc.hour == 21)
+            and weekday < 5 and _recap_sent_date != today_utc):
         try:
             send_daily_recap(broker)
+            _recap_sent_date = today_utc
         except Exception as e:
             logger.error(f"[Recap] Outer failure: {e}")
-        _recap_sent_date = today_utc
 
     # ── Circuit breaker check (3% daily drawdown halts new entries) ──────────
     try:
