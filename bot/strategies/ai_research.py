@@ -56,13 +56,61 @@ _session_stats = {
 }
 
 
-# Watchlist — high-profile stocks with lots of news coverage
+# Watchlist — expanded universe for daily research cycle
+# Organised by theme so the AI cluster gets priority treatment (see AI_THEME_CLUSTER below)
 RESEARCH_WATCHLIST = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-    "NFLX", "AMD", "CRM", "PLTR", "SHOP", "UBER", "ABNB",
-    "COIN", "SNOW", "NET", "DDOG", "MDB", "SMCI",
-    "AVGO", "ORCL", "NOW", "ADBE",
+    # ── AI Infrastructure & Semiconductors (highest priority) ─────────────────
+    "NVDA", "AMD", "AVGO", "QCOM", "AMAT", "LRCX", "KLAC", "MRVL", "MU", "TXN",
+    "INTC", "ARM", "ASML", "TSM", "SMCI", "ON", "MCHP", "ADI", "NXPI", "TER",
+    # ── AI Networking & Infrastructure ────────────────────────────────────────
+    "ANET", "CIEN", "CSCO", "JNPR", "DELL", "HPE", "NTAP", "PSTG", "INFN",
+    # ── AI Software & Cloud ───────────────────────────────────────────────────
+    "PLTR", "AI", "SOUN", "BBAI", "GTLB", "SNOW", "DDOG", "MDB", "ESTC", "CFLT",
+    "NET", "CRWD", "ZS", "PANW", "OKTA", "FTNT", "S", "TENB",
+    # ── Mega-cap Tech ─────────────────────────────────────────────────────────
+    "AAPL", "MSFT", "GOOGL", "META", "AMZN", "TSLA", "ORCL", "ADBE", "CRM", "NOW",
+    "UBER", "ABNB", "SHOP", "INTU", "ANSS", "CDNS", "SNPS",
+    # ── Streaming / Media ─────────────────────────────────────────────────────
+    "NFLX", "DIS", "WBD", "PARA", "SPOT",
+    # ── Fintech & Payments ────────────────────────────────────────────────────
+    "V", "MA", "PYPL", "SQ", "AFRM", "COIN", "HOOD", "SOFI", "NU", "UPST",
+    # ── Large-cap Financials ──────────────────────────────────────────────────
+    "JPM", "GS", "MS", "BAC", "WFC", "C", "BLK", "SCHW", "AXP", "COF",
+    # ── Healthcare & Biotech ──────────────────────────────────────────────────
+    "LLY", "NVO", "ABBV", "JNJ", "MRK", "AMGN", "GILD", "REGN", "VRTX", "BIIB",
+    "MRNA", "BNTX", "BMY", "PFE", "ISRG", "DXCM", "IDXX", "ALGN", "STE",
+    "INCY", "EXEL", "HALO", "IONS", "ALNY",
+    # ── Consumer & Retail ─────────────────────────────────────────────────────
+    "WMT", "COST", "HD", "TGT", "MCD", "SBUX", "NKE", "LULU",
+    "BURL", "TJX", "ROST", "RH", "ELF", "ULTA",
+    # ── Industrial & Aerospace ────────────────────────────────────────────────
+    "CAT", "HON", "GE", "BA", "RTX", "LMT", "NOC", "DE", "EMR", "ETN",
+    "ROK", "AME", "PH", "XYL", "CARR", "OTIS", "TT", "IR",
+    # ── Energy ────────────────────────────────────────────────────────────────
+    "XOM", "CVX", "COP", "OXY", "SLB", "HAL", "EOG", "DVN", "FANG",
+    # ── Clean Energy & EV ─────────────────────────────────────────────────────
+    "ENPH", "SEDG", "RUN", "RIVN", "LCID", "NIO", "LI", "XPEV",
+    # ── Consumer Staples ──────────────────────────────────────────────────────
+    "PEP", "KO", "PG", "CL", "PM", "MO",
+    # ── Real Estate & REITs ───────────────────────────────────────────────────
+    "AMT", "PLD", "EQIX", "CCI", "SPG", "PSA",
+    # ── Crypto-adjacent ───────────────────────────────────────────────────────
+    "MSTR", "RIOT", "MARA", "CLSK",
+    # ── High-vol / Momentum favourites ────────────────────────────────────────
+    "RBLX", "SNAP", "PINS", "RDDT", "LYFT", "DASH", "TTD", "ROKU",
 ]
+
+# AI/Semiconductor/Networking theme cluster — these names get priority in the
+# research loop when market is in BULL regime. When a macro AI catalyst fires
+# (Nvidia earnings, hyperscaler capex, new chip announcement, AI model release),
+# the whole cluster tends to move together.
+AI_THEME_CLUSTER = {
+    "NVDA", "AMD", "AVGO", "QCOM", "AMAT", "LRCX", "KLAC", "MRVL", "MU",
+    "ARM", "SMCI", "ON", "MCHP", "ADI", "NXPI", "TER",           # semis
+    "ANET", "CIEN", "CSCO", "DELL", "HPE", "NTAP", "PSTG", "INFN",  # networking / infra
+    "PLTR", "AI", "SNOW", "DDOG", "NET", "CRWD", "PANW",           # AI software
+    "MSFT", "GOOGL", "META", "AMZN",                                # hyperscalers
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,7 +682,14 @@ def run(broker: AlpacaBroker, db_conn):
     cash             = account["cash"]
 
     # ── 4. Research loop ──────────────────────────────────────────────────────
-    candidates = [s for s in RESEARCH_WATCHLIST if s not in current_symbols]
+    # AI theme cluster gets priority — runs first in the research loop
+    # so a Nvidia catalyst doesn't get skipped because we ran out of slots on unrelated names
+    ai_candidates = [s for s in RESEARCH_WATCHLIST if s in AI_THEME_CLUSTER and s not in current_symbols]
+    other_candidates = [s for s in RESEARCH_WATCHLIST if s not in AI_THEME_CLUSTER and s not in current_symbols]
+    candidates = ai_candidates + other_candidates
+    # Deduplicate preserving order
+    seen = set()
+    candidates = [s for s in candidates if not (s in seen or seen.add(s))]
     logger.info(
         f"[AI] Candidates: {len(candidates)} | Slots: {slots_available} | "
         f"List: {candidates}"
@@ -698,6 +753,15 @@ def run(broker: AlpacaBroker, db_conn):
             f"[AI Research] {symbol}: Research response (first 400 chars): "
             f"{json.dumps(thesis)[:400]}"
         )
+
+        # AI cluster gets a small confidence boost — these names have higher analyst
+        # coverage, more predictable catalysts, and tend to have cleaner signals.
+        # Boost is modest (0.5 pts) so it doesn't override genuine low-confidence signals.
+        if symbol in AI_THEME_CLUSTER:
+            original_conf = thesis.get("confidence", 0)
+            thesis["confidence"] = min(10, original_conf + 0.5)
+            if thesis["confidence"] != original_conf:
+                logger.info(f"[AI Research] {symbol}: AI cluster boost {original_conf} → {thesis['confidence']}")
 
         if thesis.get("verdict") == "NEUTRAL":
             logger.info(f"[AI Research] {symbol}: BLOCKED — verdict NEUTRAL")

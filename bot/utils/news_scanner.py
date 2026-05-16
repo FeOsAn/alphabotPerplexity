@@ -33,6 +33,7 @@ WATCHED_SYMBOLS = [
     # High-vol tech
     "NVDA", "AMD", "SMCI", "PLTR", "META", "GOOGL", "MSFT", "AAPL",
     "TSLA", "AMZN", "NFLX", "CRM", "SNOW", "DDOG", "CRWD", "ZS", "OKTA",
+    "ANET", "CIEN", "ARM", "DELL", "HPE", "AI", "SOUN", "BBAI",
     # Financials
     "GS", "MS", "JPM", "BAC", "C", "WFC", "BLK", "SCHW",
     # Energy
@@ -67,6 +68,14 @@ KEYWORD_TRIGGERS = {
         "fed rate", "federal reserve", "interest rate", "inflation", "cpi",
         "jobs report", "nonfarm", "gdp", "recession", "tariff", "sanction",
         "debt ceiling", "default", "bank failure",
+    ],
+    "AI_CATALYST": [
+        "ai chip", "artificial intelligence", "data center", "gpu demand",
+        "hyperscaler", "capex", "inference", "training cluster",
+        "nvidia", "arm architecture", "foundry", "semiconductor",
+        "networking switch", "400g", "800g", "co-packaged optics",
+        "large language model", "llm", "foundation model", "model release",
+        "openai", "anthropic", "gemini", "grok",
     ],
 }
 
