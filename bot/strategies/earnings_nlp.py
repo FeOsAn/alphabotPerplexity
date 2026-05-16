@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MAX_POSITIONS = 10
+MAX_POSITIONS = 20
 # Conviction-based position sizing
 POSITION_PCT_BASE    = 0.05   # confidence 0.60–0.74
 POSITION_PCT_HIGH    = 0.08   # confidence 0.75–0.89
@@ -30,19 +30,43 @@ ENTRY_DELAY_DAYS = 2         # enter 2 calendar days after earnings
 # Universe — liquid names with regular earnings catalysts
 EARNINGS_UNIVERSE = [
     # Mega-cap tech
-    "AAPL", "MSFT", "GOOGL", "META", "AMZN", "NVDA", "TSLA",
+    "AAPL", "MSFT", "GOOGL", "GOOG", "META", "AMZN", "NVDA", "TSLA", "ORCL", "ADBE",
     # Semis
-    "AMD", "AVGO", "INTC", "QCOM", "MU", "TXN", "AMAT",
+    "AMD", "AVGO", "INTC", "QCOM", "MU", "TXN", "AMAT", "LRCX", "KLAC", "MRVL",
+    "MCHP", "ADI", "NXPI", "SWKS", "MPWR", "WOLF", "ON", "STM", "ACLS",
+    # Cloud / SaaS
+    "CRM", "NOW", "SNOW", "DDOG", "PANW", "CRWD", "ZS", "OKTA", "NET", "FTNT",
+    "MDB", "ESTC", "CFLT", "HUBS", "BILL", "GTLB", "DXCM", "VEEV", "WDAY", "TEAM",
+    "ZM", "DOCU", "BOX", "DBX", "TWLO", "FROG", "PD", "APPN", "NCNO",
     # Financials
-    "JPM", "GS", "MS", "BAC", "WFC", "V", "MA",
-    # Healthcare
-    "LLY", "JNJ", "MRK", "AMGN", "GILD", "ABBV",
-    # Cloud/SaaS
-    "CRM", "NOW", "SNOW", "DDOG", "PANW", "CRWD", "ZS",
-    # Consumer
-    "NFLX", "SBUX", "NKE", "HD", "MCD",
-    # Industrials
-    "CAT", "HON", "GE", "BA",
+    "JPM", "GS", "MS", "BAC", "WFC", "C", "BLK", "SCHW", "V", "MA",
+    "AXP", "COF", "DFS", "SYF", "ALLY", "FITB", "RF", "CFG", "HBAN", "KEY",
+    "MTB", "ZION", "CMA", "PBCT", "FRC", "SIVB",
+    # Healthcare / Biotech
+    "LLY", "JNJ", "MRK", "AMGN", "GILD", "ABBV", "BMY", "PFE", "MRNA", "BNTX",
+    "REGN", "BIIB", "VRTX", "SGEN", "ALNY", "IONS", "RARE", "ACAD", "NBIX",
+    "INCY", "EXEL", "HALO", "KRYS", "PRTA",
+    # Consumer / Retail
+    "NFLX", "SBUX", "NKE", "HD", "MCD", "AMZN", "TGT", "WMT", "COST", "LOW",
+    "TJX", "ROST", "BURL", "M", "KSS", "GPS", "ANF", "AEO", "URBN",
+    "LULU", "RH", "WSM", "CPRI", "TPR", "PVH", "HBI",
+    # Industrials / Aerospace
+    "CAT", "HON", "GE", "BA", "RTX", "LMT", "NOC", "GD", "HII",
+    "DE", "EMR", "ETN", "PH", "ROK", "AME", "XYL", "CARR", "OTIS",
+    # Energy
+    "XOM", "CVX", "OXY", "SLB", "HAL", "BKR", "MPC", "VLO", "PSX",
+    "COP", "PXD", "EOG", "DVN", "FANG", "APA",
+    # Consumer staples
+    "PEP", "KO", "PG", "CL", "KMB", "GIS", "K", "CPB", "HRL", "SJM",
+    # Media / Telecom
+    "DIS", "CMCSA", "T", "VZ", "TMUS", "CHTR", "PARA", "WBD",
+    # Real estate / REITs
+    "AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "EQR", "AVB",
+    # Autos
+    "GM", "F", "RIVN", "LCID", "NIO",
+    # Misc high-vol
+    "UBER", "LYFT", "ABNB", "DASH", "RBLX", "SNAP", "PINS", "RDDT",
+    "COIN", "MSTR", "HOOD", "SOFI", "AFRM", "UPST",
 ]
 
 # In-memory state (persists for process lifetime)
@@ -63,34 +87,33 @@ def _conviction_size(confidence: float) -> float:
 
 def _get_recent_earnings(lookback_days: int = 5) -> list:
     """
-    Return list of symbols that reported earnings in the last `lookback_days` days.
-    Uses yfinance calendar data.
+    Return list of symbols that reported earnings in the last lookback_days days.
+    Uses parallel fetching with ThreadPoolExecutor for speed.
     """
     import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     results = []
     since = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    for sym in EARNINGS_UNIVERSE:
+    def check_symbol(sym):
         try:
             ticker = yf.Ticker(sym)
             cal = ticker.calendar
-            # calendar is a dict with 'Earnings Date' key (list of dates) or similar
             if cal is None:
-                continue
-            # Handle both dict and DataFrame formats yfinance returns
+                return []
             earnings_dates = []
             if isinstance(cal, dict):
                 ed = cal.get("Earnings Date", [])
                 if ed:
                     earnings_dates = ed if isinstance(ed, list) else [ed]
             elif hasattr(cal, "loc"):
-                # DataFrame
                 try:
                     ed = cal.loc["Earnings Date"].values
                     earnings_dates = list(ed)
                 except Exception:
                     pass
-
+            found = []
             for ed in earnings_dates:
                 try:
                     if hasattr(ed, "to_pydatetime"):
@@ -101,13 +124,21 @@ def _get_recent_earnings(lookback_days: int = 5) -> list:
                         ed = ed.replace(tzinfo=timezone.utc)
                     ed_utc = ed.astimezone(timezone.utc)
                     if since <= ed_utc <= datetime.now(timezone.utc):
-                        results.append({"symbol": sym, "earnings_date": ed_utc})
+                        found.append({"symbol": sym, "earnings_date": ed_utc})
                 except Exception:
                     continue
+            return found
         except Exception as e:
             logger.debug(f"[EarningsNLP] Calendar error for {sym}: {e}")
-        finally:
-            gc.collect()
+            return []
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(check_symbol, sym): sym for sym in EARNINGS_UNIVERSE}
+        for future in as_completed(futures):
+            try:
+                results.extend(future.result())
+            except Exception:
+                pass
 
     return results
 
@@ -298,8 +329,6 @@ def _manage_open_positions(broker):
                 to_close.append((sym, pos, reason))
         except Exception as e:
             logger.debug(f"[EarningsNLP] Position check error {sym}: {e}")
-        finally:
-            gc.collect()
 
     for sym, pos, reason in to_close:
         try:
@@ -329,7 +358,7 @@ def run(broker, db_conn=None):
 
     # Only scan for new earnings every 4 hours (not every 5-min cycle)
     now_ts = time.time()
-    if now_ts - _last_earnings_scan < 4 * 3600:
+    if now_ts - _last_earnings_scan < 3600:
         return
     _last_earnings_scan = now_ts
 

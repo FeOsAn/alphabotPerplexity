@@ -40,23 +40,37 @@ BREAKOUT_MAX_POSITIONS = 4
 STOP_LOSS_PCT = 0.05            # 5% trailing stop — tight for fast-fail detection
 BREAKOUT_FAIL_PCT = 0.08        # Exit if price falls >8% below 52w high
 
-# Expanded universe — same stocks as momentum for maximum overlap opportunity.
-# Breakout fetches 1y daily + 5d hourly per symbol, released immediately after.
-# 40 symbols is still safe on Railway 512MB.
 BREAKOUT_UNIVERSE = [
-    # Mega-cap tech
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
-    # High-growth tech
-    "AMD", "CRM", "NOW", "PANW", "ADBE", "NFLX", "INTU", "ORCL",
+    # Mega-cap
+    "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "ORCL", "ADBE",
+    # Semis
+    "AMD", "QCOM", "MU", "TXN", "AMAT", "LRCX", "KLAC", "MRVL", "MCHP", "ADI",
+    "NXPI", "MPWR", "ON", "WOLF", "ACLS",
+    # Cloud/SaaS
+    "CRM", "NOW", "SNOW", "DDOG", "PANW", "CRWD", "ZS", "NET", "FTNT", "MDB",
+    "HUBS", "WDAY", "TEAM", "VEEV", "GTLB",
     # Financials
-    "V", "MA", "JPM", "GS", "AXP", "SPGI", "CME",
+    "JPM", "GS", "MS", "BAC", "V", "MA", "BLK", "SCHW", "AXP", "COF",
     # Healthcare
-    "LLY", "UNH", "ISRG", "ABBV", "VRTX",
-    # Industrials
-    "CAT", "GE", "RTX", "LMT",
+    "LLY", "JNJ", "MRK", "AMGN", "ABBV", "GILD", "BMY", "VRTX", "REGN", "MRNA",
     # Consumer
-    "COST", "HD", "MCD", "BKNG", "UBER",
+    "NFLX", "SBUX", "NKE", "HD", "MCD", "COST", "LOW", "LULU", "TJX", "ROST",
+    # Industrials
+    "CAT", "HON", "GE", "BA", "RTX", "LMT", "DE", "EMR", "ETN", "PH",
+    # Energy
+    "XOM", "CVX", "OXY", "SLB", "COP", "EOG", "DVN", "MPC", "VLO", "PSX",
+    # Tech hardware
+    "AAPL", "HPQ", "DELL", "STX", "WDC", "NTAP",
+    # Media/Telecom
+    "DIS", "CMCSA", "T", "VZ", "TMUS", "NFLX",
+    # High-vol momentum names
+    "UBER", "ABNB", "COIN", "PLTR", "RBLX", "SNAP", "RDDT", "HOOD",
+    "RIVN", "GM", "F",
+    # ETFs for regime signals
+    "SPY", "QQQ", "IWM", "XLF", "XLE", "XLK", "XLV", "XLI", "GLD", "TLT",
 ]
+# Deduplicate while preserving order
+BREAKOUT_UNIVERSE = list(dict.fromkeys(BREAKOUT_UNIVERSE))
 
 
 def _confirm_4h_breakout(symbol: str, breakout_level: float) -> bool:

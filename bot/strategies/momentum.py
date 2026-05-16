@@ -33,23 +33,37 @@ MOMENTUM_TOP_N = 6             # top 6 picks per rebalance
 MOMENTUM_REBALANCE_DAYS = 5    # was 7 — rebalance weekly (every 5 trading days)
 STOP_LOSS_PCT = 0.06           # 6% trailing — looser for momentum
 
-# Expanded universe — 40 liquid large/mega-caps across sectors.
-# Each symbol fetches ~180 rows of daily OHLCV one at a time with gc.collect().
-# Memory profiled safe on Railway 512MB (each fetch ~150KB, released immediately).
 MOMENTUM_UNIVERSE = [
-    # Mega-cap tech
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
-    # High-growth tech
-    "AMD", "CRM", "NOW", "PANW", "ADBE", "ORCL", "INTU", "SNOW",
+    # Mega-cap
+    "AAPL", "MSFT", "NVDA", "GOOGL", "META", "AMZN", "TSLA", "AVGO", "ORCL", "ADBE",
+    # Semis
+    "AMD", "QCOM", "MU", "TXN", "AMAT", "LRCX", "KLAC", "MRVL", "MCHP", "ADI",
+    "NXPI", "MPWR", "ON", "WOLF", "ACLS",
+    # Cloud/SaaS
+    "CRM", "NOW", "SNOW", "DDOG", "PANW", "CRWD", "ZS", "NET", "FTNT", "MDB",
+    "HUBS", "WDAY", "TEAM", "VEEV", "GTLB",
     # Financials
-    "V", "MA", "JPM", "GS", "MS", "AXP", "SPGI",
-    # Healthcare / Biotech
-    "LLY", "UNH", "ISRG", "ABBV", "VRTX",
-    # Industrials / Defence
-    "CAT", "GE", "RTX", "HON", "LMT",
-    # Consumer / Other
-    "COST", "HD", "MCD", "BKNG", "UBER",
+    "JPM", "GS", "MS", "BAC", "V", "MA", "BLK", "SCHW", "AXP", "COF",
+    # Healthcare
+    "LLY", "JNJ", "MRK", "AMGN", "ABBV", "GILD", "BMY", "VRTX", "REGN", "MRNA",
+    # Consumer
+    "NFLX", "SBUX", "NKE", "HD", "MCD", "COST", "LOW", "LULU", "TJX", "ROST",
+    # Industrials
+    "CAT", "HON", "GE", "BA", "RTX", "LMT", "DE", "EMR", "ETN", "PH",
+    # Energy
+    "XOM", "CVX", "OXY", "SLB", "COP", "EOG", "DVN", "MPC", "VLO", "PSX",
+    # Tech hardware
+    "AAPL", "HPQ", "DELL", "STX", "WDC", "NTAP",
+    # Media/Telecom
+    "DIS", "CMCSA", "T", "VZ", "TMUS", "NFLX",
+    # High-vol momentum names
+    "UBER", "ABNB", "COIN", "PLTR", "RBLX", "SNAP", "RDDT", "HOOD",
+    "RIVN", "GM", "F",
+    # ETFs for regime signals
+    "SPY", "QQQ", "IWM", "XLF", "XLE", "XLK", "XLV", "XLI", "GLD", "TLT",
 ]
+# Deduplicate while preserving order
+MOMENTUM_UNIVERSE = list(dict.fromkeys(MOMENTUM_UNIVERSE))
 
 _last_rebalance: Optional[datetime] = None
 

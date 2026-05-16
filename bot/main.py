@@ -61,6 +61,8 @@ from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
 from strategies import earnings_nlp
+from strategies import ts_momentum
+from utils import regime_detector
 
 EASTERN = pytz.timezone("America/New_York")
 LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
@@ -426,7 +428,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.error(f"{name} error: {e}", exc_info=True)
         finally:
-            gc.collect()  # Free memory between each strategy to stay under Railway 512MB
+            gc.collect()
 
     # ── Event-driven: consume news_scanner EVENT_QUEUE ───────────────────────
     try:
@@ -439,6 +441,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         earnings_nlp.run(broker, db_conn)
     except Exception as e:
         logger.error(f"Earnings NLP error: {e}", exc_info=True)
+
+    # ── TS Momentum: monthly rebalance, macro/sector ETF trend-following ────
+    try:
+        ts_momentum.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"TS Momentum error: {e}", exc_info=True)
 
     # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
     # Exit checks run every cycle. New research fires once daily inside the strategy.
@@ -475,7 +483,7 @@ def take_snapshot(broker: AlpacaBroker, db_conn):
 def start_health_server():
     """
     Bind a minimal HTTP health check server on $PORT (Railway requires this).
-    Uses only Python built-ins — zero extra RAM vs uvicorn's ~150MB.
+    Uses only Python built-ins.
     Returns 200 OK on GET / so Railway's health check passes.
     """
     import threading
@@ -552,6 +560,9 @@ def main():
     )
     logger.info("News scanner started — event-driven strategy armed")
 
+    regime_detector.start()
+    logger.info("Regime detector started (background thread, 30-min updates)")
+
     # Schedules
     schedule.every(CHECK_INTERVAL_MIN).minutes.do(run_all_strategies, broker, db_conn)
     schedule.every(60).minutes.do(take_snapshot, broker, db_conn)
@@ -559,8 +570,7 @@ def main():
 
     take_snapshot(broker, db_conn)
 
-    # Delay first strategy run by CHECK_INTERVAL_MIN — let imports settle
-    # and avoid OOM on boot when all modules are freshly loaded in RAM.
+    # Delay first strategy run by CHECK_INTERVAL_MIN — let imports settle.
     logger.info(f"Bot running — first strategy run in {CHECK_INTERVAL_MIN} minutes")
 
     logger.info(f"Bot running — checking every {CHECK_INTERVAL_MIN} minutes")
