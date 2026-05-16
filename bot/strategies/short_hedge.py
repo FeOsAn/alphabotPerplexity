@@ -34,6 +34,9 @@ TAKE_PROFIT_PCT = 0.15        # 15% take profit (leveraged moves fast)
 MAX_HOLD_DAYS = 5             # force-close after 5 days regardless (decay protection)
 MAX_POSITION_PCT = 0.05       # 5% of portfolio per inverse ETF position
 
+# Track entry times so max-hold-days check works (broker.get_positions() doesn't include entry_time)
+_entry_times: dict[str, datetime] = {}  # symbol -> entry datetime (UTC)
+
 
 def _get_signals(symbol: str) -> Optional[dict]:
     """Compute entry signals for a single inverse ETF."""
@@ -100,9 +103,8 @@ def _check_exits(broker: AlpacaBroker, db_conn) -> None:
             continue
         symbol = pos["symbol"]
         pnl_pct = pos["unrealized_pnl_pct"]
-        entry_time = pos.get("entry_time")
-
-        # Max hold duration (leveraged ETF decay)
+        # Max hold duration — look up from _entry_times dict (broker positions don't carry entry_time)
+        entry_time = _entry_times.get(symbol)
         if entry_time:
             try:
                 age_days = (datetime.now(timezone.utc) - entry_time).days
@@ -112,6 +114,7 @@ def _check_exits(broker: AlpacaBroker, db_conn) -> None:
                     log_trade(db_conn, STRATEGY_NAME, symbol, "sell", pos["qty"],
                               pos["current_price"], pos.get("unrealized_pnl", 0.0),
                               metadata={"reason": "max_hold_days"})
+                    _entry_times.pop(symbol, None)
                     continue
             except Exception:
                 pass
@@ -123,6 +126,7 @@ def _check_exits(broker: AlpacaBroker, db_conn) -> None:
             log_trade(db_conn, STRATEGY_NAME, symbol, "sell", pos["qty"],
                       pos["current_price"], pos.get("unrealized_pnl", 0.0),
                       metadata={"reason": "stop_loss"})
+            _entry_times.pop(symbol, None)
             continue
 
         # Take profit
@@ -132,6 +136,7 @@ def _check_exits(broker: AlpacaBroker, db_conn) -> None:
             log_trade(db_conn, STRATEGY_NAME, symbol, "sell", pos["qty"],
                       pos["current_price"], pos.get("unrealized_pnl", 0.0),
                       metadata={"reason": "take_profit"})
+            _entry_times.pop(symbol, None)
             continue
 
         logger.info(f"[SHORT] {symbol}: P&L={pnl_pct:+.1f}% | holding")
@@ -210,5 +215,6 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                 f"[SHORT] BUY ${notional:.0f} {symbol} @ ~${sig['price']:.2f} | "
                 f"regime={regime} slope5d={sig['slope_5d']:+.1%} ADX={sig['adx']:.1f}"
             )
+            _entry_times[symbol] = datetime.now(timezone.utc)
         except Exception as e:
             logger.error(f"[SHORT] Order failed for {symbol}: {e}")
