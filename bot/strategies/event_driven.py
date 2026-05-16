@@ -174,6 +174,16 @@ def run(broker, db_conn):
     except Exception:
         pass
 
+    # Sync _event_positions with actual open positions — remove closed ones
+    try:
+        open_syms = {p["symbol"] for p in broker.get_positions()}
+        stale = _event_positions - open_syms
+        if stale:
+            logger.info(f"[event_driven] Removing closed positions from tracker: {stale}")
+            _event_positions -= stale
+    except Exception as e:
+        logger.debug(f"[event_driven] Position sync error: {e}")
+
     if EVENT_QUEUE.empty():
         return
 

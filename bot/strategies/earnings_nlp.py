@@ -398,6 +398,13 @@ def run(broker, db_conn=None):
 
     _restore_state(broker)
 
+    # Skip scans on weekends — market is closed, no point burning API calls
+    from datetime import datetime, timezone
+    if datetime.now(timezone.utc).weekday() >= 5:
+        if _active_positions:
+            _manage_open_positions(broker)
+        return
+
     # Always manage open positions first
     if _active_positions:
         _manage_open_positions(broker)

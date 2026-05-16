@@ -220,7 +220,7 @@ def _poll_worker():
                 logger.warning(f"[news_scanner] REST poll HTTP {r.status_code}")
         except Exception as e:
             logger.error(f"[news_scanner] REST poll error: {e}")
-        time.sleep(60)  # poll every 60 seconds
+        time.sleep(30)  # poll every 30 seconds
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

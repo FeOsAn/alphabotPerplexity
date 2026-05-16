@@ -114,6 +114,14 @@ def run(broker, db_conn=None):
     if now.weekday() >= 5:
         return
 
+    # Only rebalance when market is open — avoid submitting orders pre/post market
+    try:
+        if not broker.is_market_open():
+            logger.info("[TSMomentum] Market closed — skipping rebalance")
+            return
+    except Exception:
+        pass
+
     logger.info("[TSMomentum] Monthly rebalance triggered")
     _last_rebalance = month_key
 
@@ -153,6 +161,10 @@ def run(broker, db_conn=None):
     # Exit positions no longer in target
     for sym, pos in list(_ts_positions.items()):
         if sym not in target_longs:
+            if sym not in existing_positions:
+                logger.info(f"[TSMomentum] {sym} not in current positions — removing from tracker")
+                del _ts_positions[sym]
+                continue
             try:
                 broker.submit_order(
                     symbol=sym, qty=abs(int(float(existing_positions[sym]["qty"]))),

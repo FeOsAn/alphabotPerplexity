@@ -128,7 +128,7 @@ def _manage_positions(broker):
     """Check take profit, stop loss, EOD exit for VWAP positions."""
     import yfinance as yf
     now_et = datetime.now(_ET)
-    eod = now_et.time() >= _time(15, 55)
+    eod = now_et.time() >= _time(15, 40)
 
     for sym, pos in list(_active_positions.items()):
         try:

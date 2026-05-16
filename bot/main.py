@@ -163,22 +163,22 @@ _circuit_breaker_active: bool = False
 _circuit_breaker_reset_date: str = ""
 
 
-def send_daily_recap(broker: AlpacaBroker):
+def send_daily_recap(broker: AlpacaBroker) -> bool:
     """Send daily P&L summary to ntfy after market close."""
     import requests as _requests
     try:
-        account = broker.trading.get_account()
-        equity = float(account.equity)
-        prev_close = float(account.last_equity)
+        account = broker.get_account()
+        equity = float(account["equity"])
+        prev_close = equity - float(account["pnl_today"])   # last_equity = equity - pnl_today
         day_pnl = equity - prev_close
         day_pct = (day_pnl / prev_close) * 100 if prev_close else 0
-        cash_pct = (float(account.cash) / equity) * 100 if equity else 0
+        cash_pct = (float(account["cash"]) / equity) * 100 if equity else 0
 
-        positions = broker.trading.get_all_positions()
+        positions = broker.get_positions()
         pos_lines = []
-        for p in positions[:5]:  # top 5
-            pnl = float(p.unrealized_plpc) * 100
-            pos_lines.append(f"{p.symbol} {pnl:+.1f}%")
+        for pos in positions[:5]:  # top 5
+            pnl = pos["unrealized_pnl_pct"]
+            pos_lines.append(f"{pos['symbol']} {pnl:+.1f}%")
 
         emoji = "📈" if day_pnl >= 0 else "📉"
         body = (
@@ -199,8 +199,10 @@ def send_daily_recap(broker: AlpacaBroker):
             timeout=10,
         )
         logger.info(f"[Recap] ntfy sent — P&L {day_pnl:+,.0f} ({day_pct:+.2f}%)")
+        return True
     except Exception as e:
         logger.error(f"[Recap] ntfy failed: {e}")
+        return False
 
 
 def run_gap_protection(broker: AlpacaBroker):
@@ -305,8 +307,11 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     if (((now_utc.hour == 20 and now_utc.minute >= 30) or now_utc.hour == 21)
             and weekday < 5 and _recap_sent_date != today_utc):
         try:
-            send_daily_recap(broker)
-            _recap_sent_date = today_utc
+            success = send_daily_recap(broker)
+            if success:
+                _recap_sent_date = today_utc
+            else:
+                logger.warning("[Recap] Send failed — will retry next cycle")
         except Exception as e:
             logger.error(f"[Recap] Outer failure: {e}")
 
