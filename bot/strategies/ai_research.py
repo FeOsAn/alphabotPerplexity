@@ -819,7 +819,17 @@ def run(broker: AlpacaBroker, db_conn):
         thesis  = trade["thesis"]
         audit   = trade["audit"]
 
-        notional = portfolio_value * MAX_POSITION_PCT
+        # Regime-aware sizing for ai_research
+        try:
+            from utils.regime_weights import get_multiplier as _regime_mult
+            regime_mult = _regime_mult("ai_research")
+        except Exception:
+            regime_mult = 1.0
+        if regime_mult == 0.0:
+            logger.info(f"[AI Research] Regime weight 0.0 — skipping {sym}")
+            continue
+
+        notional = portfolio_value * MAX_POSITION_PCT * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:

@@ -62,7 +62,10 @@ from utils import news_scanner
 from strategies import event_driven
 from strategies import earnings_nlp
 from strategies import ts_momentum
+from strategies import vwap_reclaim
 from utils import regime_detector
+from utils import earnings_calendar
+from utils import ofi_monitor
 
 EASTERN = pytz.timezone("America/New_York")
 LONDON  = pytz.timezone("Europe/London")  # user's timezone (BST/GMT)
@@ -366,6 +369,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     positions = broker.get_positions()
     retag_all_positions(positions)
 
+    # ── Update OFI watched symbols based on current positions ────────────────
+    try:
+        ofi_monitor.update_watched(broker)
+    except Exception as e:
+        logger.debug(f"[OFI] update_watched failed: {e}")
+
     # ── Trade management: trailing stops + partial takes on ALL positions ─────
     run_global_trade_management(broker, db_conn)
 
@@ -454,6 +463,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         ai_research.run(broker, db_conn)
     except Exception as e:
         logger.error(f"AI Research error: {e}", exc_info=True)
+
+    # ── VWAP Reclaim: intraday gap-down reclaim (9:35–10:30 AM ET entries) ───
+    try:
+        vwap_reclaim.run(broker, db_conn)
+    except Exception as e:
+        logger.error(f"VWAP Reclaim error: {e}", exc_info=True)
 
     logger.info("Strategy run complete")
 
@@ -562,6 +577,16 @@ def main():
 
     regime_detector.start()
     logger.info("Regime detector started (background thread, 30-min updates)")
+
+    try:
+        earnings_calendar.start()
+    except Exception as e:
+        logger.error(f"Earnings calendar start failed: {e}")
+
+    try:
+        ofi_monitor.start(broker)
+    except Exception as e:
+        logger.error(f"OFI monitor start failed: {e}")
 
     # Schedules
     schedule.every(CHECK_INTERVAL_MIN).minutes.do(run_all_strategies, broker, db_conn)

@@ -317,6 +317,28 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                     f"P&L={pnl_pct:+.1f}% drawdown={drawdown_from_peak:.1%} — still riding"
                 )
 
+        # 1b. OFI early exit — sustained sell pressure on a profitable long
+        try:
+            from utils.ofi_monitor import is_sell_pressure
+            qty_signed = float(pos.get("qty", 0))
+            if qty_signed > 0 and is_sell_pressure(sym):
+                if pnl_pct > 2.0:  # only OFI-exit if up >2%
+                    logger.info(
+                        f"[TradeManagement] OFI sell pressure on {sym} "
+                        f"({pnl_pct:+.2f}% profit) — early exit"
+                    )
+                    try:
+                        broker.close_position(sym, strategy)
+                        log_trade(db_conn, strategy, sym, "sell_ofi",
+                                  pos["qty"], current_price, pos["unrealized_pnl"],
+                                  metadata={"reason": "ofi_sell_pressure", "pnl_pct": pnl_pct})
+                        clear_symbol(sym)
+                    except Exception as e:
+                        logger.error(f"[TradeManagement] OFI close failed for {sym}: {e}")
+                    continue
+        except Exception as e:
+            logger.debug(f"[TradeManagement] OFI check error {sym}: {e}")
+
         # 2. Check partial profit taking first (before stop checks)
         if check_partial_take(pos, broker, db_conn, strategy):
             continue  # partial exit done, re-check next cycle with updated qty

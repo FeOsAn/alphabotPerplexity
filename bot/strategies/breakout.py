@@ -364,10 +364,20 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[Breakout] {sym} — skipping, 4H confirmation failed")
             continue
 
+        # Regime-aware sizing
+        try:
+            from utils.regime_weights import get_multiplier as _regime_mult
+            regime_mult = _regime_mult("breakout")
+        except Exception:
+            regime_mult = 1.0
+        if regime_mult == 0.0:
+            logger.info(f"[BRK] Regime weight 0.0 for breakout — skipping {sym}")
+            continue
+
         mult = _conviction_multiplier(sig["vol_ratio"], sig["pct_from_high"])
         from utils.position_sizer import get_position_size_pct
         size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
-        notional = portfolio_value * size_pct * mult
+        notional = portfolio_value * size_pct * mult * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:

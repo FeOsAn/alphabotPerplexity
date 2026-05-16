@@ -90,6 +90,24 @@ def _get_recent_earnings(lookback_days: int = 5) -> list:
     Return list of symbols that reported earnings in the last lookback_days days.
     Uses parallel fetching with ThreadPoolExecutor for speed.
     """
+    # Fast path: use the pre-loaded calendar if available
+    try:
+        from utils.earnings_calendar import UPCOMING_EARNINGS, _calendar_lock
+        with _calendar_lock:
+            if UPCOMING_EARNINGS:
+                now = datetime.now(timezone.utc)
+                since_dt = now - timedelta(days=lookback_days)
+                preloaded = []
+                for sym, dates in UPCOMING_EARNINGS.items():
+                    for d in dates:
+                        if since_dt <= d <= now:
+                            preloaded.append({"symbol": sym, "earnings_date": d})
+                if preloaded:
+                    logger.debug(f"[EarningsNLP] Using pre-loaded calendar ({len(preloaded)} events)")
+                    return preloaded
+    except Exception:
+        pass
+
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -442,6 +460,26 @@ def run(broker, db_conn=None):
             logger.info(f"[EarningsNLP] {sym} already priced in — skipping")
             continue
 
+        # Correlation monitor — block if too similar to existing positions
+        try:
+            from utils.correlation_monitor import is_entry_allowed as _corr_ok
+            allowed, reason = _corr_ok(sym, broker)
+            if not allowed:
+                logger.info(f"[EarningsNLP] {sym} blocked by correlation monitor: {reason}")
+                continue
+        except Exception as _e:
+            logger.debug(f"[EarningsNLP] Correlation check error for {sym}: {_e}")
+
+        # Regime-aware sizing
+        try:
+            from utils.regime_weights import get_multiplier as _regime_mult
+            regime_mult = _regime_mult("earnings_nlp")
+        except Exception:
+            regime_mult = 1.0
+        if regime_mult == 0.0:
+            logger.info(f"[EarningsNLP] Regime weight 0.0 — skipping {sym}")
+            continue
+
         # Execute
         try:
             import yfinance as yf
@@ -449,9 +487,9 @@ def run(broker, db_conn=None):
             if not price or price <= 0:
                 logger.warning(f"[EarningsNLP] Cannot get price for {sym}")
                 continue
-            pos_pct = _conviction_size(confidence)
+            pos_pct = _conviction_size(confidence) * regime_mult
             trade_value = portfolio_value * pos_pct
-            logger.info(f"[EarningsNLP] Conviction sizing: conf {confidence:.2f} → {pos_pct:.0%} of portfolio (${trade_value:,.0f})")
+            logger.info(f"[EarningsNLP] Conviction sizing: conf {confidence:.2f} × regime {regime_mult:.2f} → {pos_pct:.1%} of portfolio (${trade_value:,.0f})")
             qty = int(trade_value / price)
             if qty < 1:
                 logger.warning(f"[EarningsNLP] {sym} position too small at ${price:.2f}")

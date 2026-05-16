@@ -382,10 +382,30 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[MOM] Skipping {sym} — earnings blackout (within 2 days)")
             continue
 
+        # Correlation monitor — block highly correlated entries
+        try:
+            from utils.correlation_monitor import is_entry_allowed as _corr_ok
+            allowed, reason = _corr_ok(sym, broker)
+            if not allowed:
+                logger.info(f"[MOM] {sym} blocked by correlation monitor: {reason}")
+                continue
+        except Exception as _e:
+            logger.debug(f"[MOM] Correlation check error for {sym}: {_e}")
+
+        # Regime-aware sizing
+        try:
+            from utils.regime_weights import get_multiplier as _regime_mult
+            regime_mult = _regime_mult("momentum")
+        except Exception:
+            regime_mult = 1.0
+        if regime_mult == 0.0:
+            logger.info(f"[MOM] Regime weight 0.0 for momentum — skipping {sym}")
+            continue
+
         mult = _conviction_multiplier(sig["score"], sig.get("rsi", 50), sig.get("vol_ratio", 1.0))
         from utils.position_sizer import get_position_size_pct
         size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
-        notional = portfolio_value * size_pct * mult
+        notional = portfolio_value * size_pct * mult * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:
