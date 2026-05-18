@@ -18,7 +18,7 @@ from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
     PEAD_WATCHLIST, PEAD_MIN_SURPRISE_PCT, PEAD_MAX_POSITIONS,
-    PEAD_HOLD_DAYS, MAX_POSITION_PCT, MAX_TOTAL_EQUITY_POSITIONS,
+    PEAD_HOLD_DAYS, DEFAULT_STRATEGY_ALLOCATION_PCT,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, MIN_CASH_RESERVE_PCT
 )
 from db import log_trade, log_signal
@@ -187,11 +187,7 @@ def run(broker: AlpacaBroker, db_conn):
         if current_pead_count >= PEAD_MAX_POSITIONS:
             break
 
-        total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
-        if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
-            break
-
-        notional = portfolio_value * MAX_POSITION_PCT
+        notional = portfolio_value * DEFAULT_STRATEGY_ALLOCATION_PCT
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             logger.info(f"[PEAD] Insufficient cash for {beat['symbol']}")

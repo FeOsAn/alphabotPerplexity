@@ -46,8 +46,8 @@ TS_UNIVERSE = [
 
 LOOKBACK_MONTHS = 12      # 12-month return signal
 SKIP_MONTH = 1            # skip most recent month (reversal effect)
-MAX_POSITION_PCT = 0.04   # 4% per ETF
-MAX_POSITIONS = 8         # max 8 concurrent TS momentum positions
+TS_ALLOCATION_PCT = 0.05   # 5% per ETF (fixed conviction allocation)
+MAX_POSITIONS = 8          # max 8 concurrent TS momentum positions
 
 _last_rebalance: str = ""   # "YYYY-MM" — rebalance once per month
 _ts_positions: dict = {}    # symbol -> side
@@ -186,7 +186,7 @@ def run(broker, db_conn=None):
             price = getattr(yf.Ticker(sym).fast_info, "last_price", None)
             if not price or price <= 0:
                 continue
-            trade_value = equity * MAX_POSITION_PCT
+            trade_value = equity * TS_ALLOCATION_PCT
             qty = int(trade_value / price)
             if qty < 1:
                 continue

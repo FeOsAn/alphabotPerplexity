@@ -2,14 +2,11 @@
 Strategy: Cross-Sectional Momentum (3-month minus 1-month)
 -----------------------------------------------------------
 Academically backed short-term momentum: 3-month return minus last 1-month
-return prevents chasing exhausted moves. Rebalances weekly. Holds top 5 picks.
+return prevents chasing exhausted moves. Rebalances weekly. Processes the
+entire filtered universe — no fixed slot count.
 
-Improvements over the original (now disabled) OOM version:
-- Downloads one symbol at a time via yfinance Ticker.history() — never batches
-- gc.collect() after every fetch to stay under Railway 512MB RAM
-- Entry filters: above MA50, RSI < 75, volume >= 0.8x average
-- Conviction-based position sizing (0.75x–1.5x)
-- 6% trailing stop (looser than other strategies — momentum needs room to breathe)
+Sizing is purely conviction-driven (see config.CONVICTION_TIER_*):
+  score tier base + RSI sweet-spot bonus + volume bonus, capped at 20%.
 """
 
 import gc
@@ -21,16 +18,17 @@ from datetime import datetime
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
-    MAX_POSITION_PCT, MIN_CASH_RESERVE_PCT, MAX_TOTAL_EQUITY_POSITIONS,
-    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT, SIZING_MAX_MULT,
+    MIN_CASH_RESERVE_PCT,
+    CONVICTION_TIER_MAX, CONVICTION_TIER_HIGH, CONVICTION_TIER_MID,
+    CONVICTION_TIER_LOW, CONVICTION_TIER_MIN,
+    CONVICTION_RSI_BONUS, CONVICTION_VOL_BONUS, MAX_SINGLE_POSITION_PCT,
 )
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.momentum")
 STRATEGY_NAME = "momentum"
 
-MOMENTUM_TOP_N = 6             # top 6 picks per rebalance
-MOMENTUM_REBALANCE_DAYS = 5    # was 7 — rebalance weekly (every 5 trading days)
+MOMENTUM_REBALANCE_DAYS = 5    # rebalance weekly (every 5 trading days)
 STOP_LOSS_PCT = 0.06           # 6% trailing — looser for momentum
 
 MOMENTUM_UNIVERSE = [
@@ -75,30 +73,22 @@ def _should_rebalance() -> bool:
     return (datetime.now() - _last_rebalance).days >= MOMENTUM_REBALANCE_DAYS
 
 
-def _conviction_multiplier(score: float, rsi: float = 50, vol_ratio: float = 1.0) -> float:
+def _conviction_allocation_pct(score: float, rsi: float = 50, vol_ratio: float = 1.0) -> float:
     """
-    Scale position size by signal quality across three dimensions:
-      - score: straight 3m return (higher = stronger trend)
-      - rsi: momentum confirmation (mid-range RSI = healthy trend)
-      - vol_ratio: institutional participation
-
-    Thresholds use the widened 0.5x–2.0x range from config.
+    Returns the fraction of portfolio value to allocate to this position.
+    Pure conviction-based: score tier + RSI sweet-spot bonus + volume bonus.
+    Capped at MAX_SINGLE_POSITION_PCT (20%).
     """
-    # Base score tier
-    if score >= 0.50:      base = SIZING_MAX_MULT   # 2.0x — +50% in 3m, exceptional
-    elif score >= 0.25:    base = SIZING_HIGH_MULT  # 1.5x — +25% in 3m, strong
-    elif score >= 0.10:    base = SIZING_MID_MULT   # 1.0x — +10% in 3m, solid
-    elif score >= 0.03:    base = 0.75              # modest but positive
-    else:                  base = SIZING_MIN_MULT   # 0.5x — barely positive
+    if score >= 0.50:   base = CONVICTION_TIER_MAX
+    elif score >= 0.25: base = CONVICTION_TIER_HIGH
+    elif score >= 0.10: base = CONVICTION_TIER_MID
+    elif score >= 0.03: base = CONVICTION_TIER_LOW
+    else:               base = CONVICTION_TIER_MIN
 
-    # Boost for healthy RSI (50–70 = ideal momentum zone, not exhausted)
-    rsi_boost = 0.25 if 50 <= rsi <= 72 else 0.0
+    rsi_bonus = CONVICTION_RSI_BONUS if 50 <= rsi <= 72 else 0.0
+    vol_bonus = CONVICTION_VOL_BONUS if vol_ratio >= 1.2 else 0.0
 
-    # Boost for above-average volume (institutional conviction)
-    vol_boost = 0.25 if vol_ratio >= 1.2 else 0.0
-
-    mult = min(SIZING_MAX_MULT, base + rsi_boost + vol_boost)
-    return mult
+    return min(base + rsi_bonus + vol_bonus, MAX_SINGLE_POSITION_PCT)
 
 
 def _compute_score(sym: str) -> Optional[dict]:
@@ -131,29 +121,21 @@ def _compute_score(sym: str) -> Optional[dict]:
         price_21d = float(close.iloc[-22]) if len(close) >= 22 else float(close.iloc[0])
         price_63d = float(close.iloc[-64]) if len(close) >= 64 else float(close.iloc[0])
 
-        # Momentum score: straight 3-month return.
-        # The classic "3m minus 1m" formula was penalising stocks in strong
-        # rally conditions (1m > 3m everywhere during the tariff-relief rip).
-        # Straight 3m captures trend without inverting in fast markets.
         ret_3m = (price_now - price_63d) / price_63d if price_63d > 0 else 0.0
         ret_1m = (price_now - price_21d) / price_21d if price_21d > 0 else 0.0
-        score = ret_3m  # was ret_3m - ret_1m
+        score = ret_3m
 
-        # Acceleration: 1m return should be positive (stock trending up recently)
         price_42d = float(close.iloc[-43]) if len(close) >= 43 else price_21d
         ret_1m_prior = (price_21d - price_42d) / price_42d if price_42d > 0 else 0.0
 
-        # MA50
         ma50 = float(close.tail(50).mean()) if len(close) >= 50 else None
         above_ma50 = bool(ma50 is not None and price_now > ma50)
 
-        # RSI(14)
         rsi_series = ta.momentum.RSIIndicator(close, window=14).rsi()
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
         # Volume ratio — use the PREVIOUS completed day (iloc[-2]), not today's
-        # partial bar. During market hours iloc[-1] is incomplete and always
-        # looks like 0.1x average, which kills every entry signal.
+        # partial bar.
         vol_avg_20 = float(volume.tail(21).iloc[:-1].mean()) if len(volume) >= 21 else float(volume.mean())
         vol_last = float(volume.iloc[-2]) if len(volume) >= 2 else float(volume.iloc[-1])
         vol_ratio = vol_last / vol_avg_20 if vol_avg_20 > 0 else 0.0
@@ -178,7 +160,7 @@ def _compute_score(sym: str) -> Optional[dict]:
 
 
 def _passes_entry_filters(sig: dict) -> bool:
-    """All four entry filters must pass."""
+    """All entry filters must pass."""
     from utils.adaptive_filters import get_thresholds
     t = get_thresholds()
     if not sig.get("above_ma50", False):
@@ -187,15 +169,12 @@ def _passes_entry_filters(sig: dict) -> bool:
     if sig.get("rsi", 100) >= t["momentum_rsi_max"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= {t['momentum_rsi_max']} (overbought)")
         return False
-    # Volume: require prev day >= 0.8x average (not 1.1x — that was too tight)
     if sig.get("vol_ratio", 0) < 0.8:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 0.8x")
         return False
-    # Score: straight 3m return must be positive
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")
         return False
-    # 1m return must be positive — stock is trending up in the last month
     if sig.get("ret_1m", 0) <= 0:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — 1m return negative ({sig['ret_1m']:.2%})")
         return False
@@ -228,8 +207,9 @@ def run(broker: AlpacaBroker, db_conn):
     Run the momentum strategy.
 
     Between rebalances: only enforce stop losses.
-    On rebalance (every 7 days): score all universe symbols one-at-a-time,
-    pick top 5 by score (with entry filters), exit dropped names, enter new ones.
+    On rebalance: score all universe symbols, process every filtered candidate,
+    size by conviction. Exit positions that drop below the median score of the
+    filtered universe or fail any entry filter.
     """
     global _last_rebalance
 
@@ -255,7 +235,6 @@ def run(broker: AlpacaBroker, db_conn):
         sig = _compute_score(sym)
         if sig is not None:
             raw_scores.append(sig)
-        # gc.collect() is already called inside _compute_score's finally block
 
     if not raw_scores:
         logger.warning("[MOM] No scores computed — skipping rebalance (will retry next cycle)")
@@ -263,7 +242,7 @@ def run(broker: AlpacaBroker, db_conn):
 
     logger.info(f"[MOM] Scored {len(raw_scores)}/{len(MOMENTUM_UNIVERSE)} symbols")
 
-    # Log all signals (before filter — full picture)
+    # Log all signals (full picture)
     for sig in sorted(raw_scores, key=lambda x: x["score"], reverse=True):
         log_signal(
             db_conn, STRATEGY_NAME, sig["symbol"],
@@ -278,18 +257,29 @@ def run(broker: AlpacaBroker, db_conn):
             },
         )
 
-    # Apply entry filters and pick top N by score
+    # Apply entry filters — process every passing candidate (no slot cap)
     filtered = [s for s in raw_scores if _passes_entry_filters(s)]
     filtered.sort(key=lambda x: x["score"], reverse=True)
-    top_picks_data = filtered[:MOMENTUM_TOP_N]
+    if not filtered:
+        logger.info("[MOM] No candidates passed entry filters")
+        _last_rebalance = datetime.now()
+        return
+
+    scores_sorted = sorted([s["score"] for s in filtered])
+    n = len(scores_sorted)
+    median_score = scores_sorted[n // 2] if n % 2 == 1 else (
+        (scores_sorted[n // 2 - 1] + scores_sorted[n // 2]) / 2
+    )
+
+    top_picks_data = filtered
     top_picks = [s["symbol"] for s in top_picks_data]
 
     logger.info(
-        f"[MOM] Top {MOMENTUM_TOP_N} picks after filters: "
-        + ", ".join(f"{s['symbol']}({s['score']:.3f})" for s in top_picks_data)
+        f"[MOM] {len(top_picks_data)} candidates passed filters (median score={median_score:.4f}): "
+        + ", ".join(f"{s['symbol']}({s['score']:.3f})" for s in top_picks_data[:15])
+        + (" ..." if len(top_picks_data) > 15 else "")
     )
 
-    # Log buy signals for top picks
     for sig in top_picks_data:
         log_signal(
             db_conn, STRATEGY_NAME, sig["symbol"], "buy",
@@ -300,54 +290,44 @@ def run(broker: AlpacaBroker, db_conn):
     # ── Current momentum positions ───────────────────────────────────────────
     all_positions = broker.get_positions()
     mom_positions = [p for p in all_positions if p["strategy"] == STRATEGY_NAME]
-    current_symbols = {p["symbol"] for p in mom_positions}
 
     account = broker.get_account()
     portfolio_value = account["portfolio_value"]
     cash = account["cash"]
 
-    # ── Exit positions no longer in top picks ────────────────────────────────
-    # Anti-churn guard: only replace an existing position if a new candidate
-    # (not currently held) scores meaningfully better. Threshold is 15% relative
-    # improvement, or 25% if the existing position is currently profitable.
+    # ── Exit positions whose score has fallen below the median or that fail filters ──
     score_map = {s["symbol"]: s["score"] for s in raw_scores}
+    sig_map = {s["symbol"]: s for s in raw_scores}
     held_syms = {p["symbol"] for p in mom_positions}
-    candidate_new_picks = [s for s in top_picks_data if s["symbol"] not in held_syms]
-    best_new_score = max((s["score"] for s in candidate_new_picks), default=None)
-    best_new_symbol = (
-        max(candidate_new_picks, key=lambda x: x["score"])["symbol"]
-        if candidate_new_picks else None
-    )
 
     for pos in mom_positions:
-        if pos["symbol"] in top_picks:
+        sym = pos["symbol"]
+        current_score = score_map.get(sym)
+        held_sig = sig_map.get(sym)
+
+        # If the symbol couldn't be scored (data outage), keep it.
+        if current_score is None or held_sig is None:
             continue
 
-        current_score = score_map.get(pos["symbol"])
-        is_profitable = pos["unrealized_pnl_pct"] > 0
-        required_mult = 1.25 if is_profitable else 1.15
-        required_pct  = 25 if is_profitable else 15
+        still_passes = _passes_entry_filters(held_sig)
+        above_median = current_score >= median_score
 
-        if (
-            current_score is not None
-            and best_new_score is not None
-            and best_new_score < current_score * required_mult
-        ):
-            logger.info(
-                f"[MOM] Keeping {pos['symbol']} (score {current_score:.4f}) — "
-                f"new pick {best_new_symbol} (score {best_new_score:.4f}) "
-                f"not {required_pct}% better"
-            )
+        if still_passes and above_median:
             continue
+
+        reason = []
+        if not still_passes:
+            reason.append("filters failed")
+        if not above_median:
+            reason.append(f"score {current_score:.4f} below median {median_score:.4f}")
 
         logger.info(
-            f"[MOM] EXIT {pos['symbol']} — rotated out of top {MOMENTUM_TOP_N} "
-            f"(pnl={pos['unrealized_pnl_pct']:.1f}%)"
+            f"[MOM] EXIT {sym} — {', '.join(reason)} (pnl={pos['unrealized_pnl_pct']:.1f}%)"
         )
-        order = broker.close_position(pos["symbol"], STRATEGY_NAME)
+        order = broker.close_position(sym, STRATEGY_NAME)
         if order:
             log_trade(
-                db_conn, STRATEGY_NAME, pos["symbol"], "sell",
+                db_conn, STRATEGY_NAME, sym, "sell",
                 pos["qty"], pos["current_price"], pos["unrealized_pnl"],
             )
             cash += pos["market_value"]
@@ -367,15 +347,6 @@ def run(broker: AlpacaBroker, db_conn):
         if is_on_cooldown(sym):
             logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
             continue
-
-        # Portfolio-level guards
-        equity_count = len([
-            p for p in broker.get_positions()
-            if p.get("asset_class", "equity") == "equity"
-        ])
-        if equity_count >= MAX_TOTAL_EQUITY_POSITIONS:
-            logger.info(f"[MOM] Max equity positions ({MAX_TOTAL_EQUITY_POSITIONS}) — stopping entries")
-            break
 
         from utils.earnings_calendar import has_upcoming_earnings
         if has_upcoming_earnings(sym):
@@ -402,10 +373,10 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[MOM] Regime weight 0.0 for momentum — skipping {sym}")
             continue
 
-        mult = _conviction_multiplier(sig["score"], sig.get("rsi", 50), sig.get("vol_ratio", 1.0))
-        from utils.position_sizer import get_position_size_pct
-        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
-        notional = portfolio_value * size_pct * mult * regime_mult
+        size_pct = _conviction_allocation_pct(
+            sig["score"], sig.get("rsi", 50), sig.get("vol_ratio", 1.0)
+        )
+        notional = portfolio_value * size_pct * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:
@@ -416,10 +387,10 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         logger.info(
-            f"[MOM] ENTER {sym} — score={sig['score']:.4f} "
+            f"[MOM] ENTER {sym} — score={sig['score']:.4f}, alloc={size_pct:.1%} "
             f"(3m={sig['ret_3m']:.2%}, 1m={sig['ret_1m']:.2%}), "
             f"rsi={sig['rsi']:.1f}, vol_ratio={sig['vol_ratio']:.2f}x, "
-            f"conviction={mult:.2f}x, notional=${notional:.0f}"
+            f"notional=${notional:.0f}"
         )
 
         broker.market_buy(sym, notional, STRATEGY_NAME)
@@ -432,7 +403,7 @@ def run(broker: AlpacaBroker, db_conn):
                 "ret_3m": sig["ret_3m"],
                 "ret_1m": sig["ret_1m"],
                 "rsi": sig["rsi"],
-                "conviction": mult,
+                "alloc_pct": size_pct,
             },
         )
         cash -= notional

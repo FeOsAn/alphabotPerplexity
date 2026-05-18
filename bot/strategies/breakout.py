@@ -28,8 +28,7 @@ from datetime import datetime
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
-    MAX_POSITION_PCT, MIN_CASH_RESERVE_PCT, MAX_TOTAL_EQUITY_POSITIONS,
-    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT, SIZING_MAX_MULT,
+    MIN_CASH_RESERVE_PCT, DEFAULT_STRATEGY_ALLOCATION_PCT, MAX_SINGLE_POSITION_PCT,
 )
 from db import log_trade, log_signal
 
@@ -108,11 +107,11 @@ def _conviction_multiplier(vol_ratio: float, pct_from_high: float) -> float:
     Strongest: massive volume surge AND price essentially at the 52w high.
     """
     if vol_ratio >= 2.5 and pct_from_high >= 0.99:
-        return SIZING_MAX_MULT   # 1.5x — textbook breakout
+        return 1.5   # textbook breakout
     elif vol_ratio >= 2.0:
-        return SIZING_HIGH_MULT  # 1.25x — strong volume
+        return 1.25  # strong volume
     else:
-        return SIZING_MID_MULT   # 1.0x — standard volume (>= 1.5x minimum already enforced)
+        return 1.0   # standard volume (>= 1.5x minimum already enforced)
 
 
 def _compute_signals(sym: str) -> Optional[dict]:
@@ -337,7 +336,6 @@ def run(broker: AlpacaBroker, db_conn):
 
     # Hoist out of the per-candidate loop — was called N times before (QW4)
     cached_positions = broker.get_positions()
-    equity_count = len([p for p in cached_positions if p.get("asset_class", "equity") == "equity"])
 
     # ── Enter positions ──────────────────────────────────────────────────────
     for sig in candidates:
@@ -350,11 +348,6 @@ def run(broker: AlpacaBroker, db_conn):
         if is_on_cooldown(sym):
             logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
             continue
-
-        # Portfolio equity cap (uses cached count; each successful entry bumps it)
-        if equity_count >= MAX_TOTAL_EQUITY_POSITIONS:
-            logger.info(f"[BRK] Max equity positions ({MAX_TOTAL_EQUITY_POSITIONS}) — stopping entries")
-            break
 
         from utils.earnings_calendar import has_upcoming_earnings
         if has_upcoming_earnings(sym):
@@ -378,9 +371,8 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["vol_ratio"], sig["pct_from_high"])
-        from utils.position_sizer import get_position_size_pct
-        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
-        notional = portfolio_value * size_pct * mult * regime_mult
+        size_pct = min(DEFAULT_STRATEGY_ALLOCATION_PCT * mult, MAX_SINGLE_POSITION_PCT)
+        notional = portfolio_value * size_pct * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:
@@ -413,6 +405,5 @@ def run(broker: AlpacaBroker, db_conn):
         )
         cash -= notional
         brk_count += 1
-        equity_count += 1
 
     logger.info(f"[BRK] Scan complete — {brk_count} active breakout positions")

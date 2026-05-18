@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 import pytz
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
-from config import MAX_POSITION_PCT, MIN_CASH_RESERVE_PCT, MAX_TOTAL_EQUITY_POSITIONS
+from config import DEFAULT_STRATEGY_ALLOCATION_PCT, MIN_CASH_RESERVE_PCT
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.gap_scanner")
@@ -305,11 +305,7 @@ def run(broker: AlpacaBroker, db_conn):
         if sym in current_symbols:
             continue
 
-        total_equity = len([p for p in broker.get_positions() if p.get("asset_class", "equity") == "equity"])
-        if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
-            break
-
-        notional = portfolio_value * MAX_POSITION_PCT
+        notional = portfolio_value * DEFAULT_STRATEGY_ALLOCATION_PCT
         if cash - notional < min_cash:
             logger.info(f"[GAP] Insufficient cash for {sym}")
             continue

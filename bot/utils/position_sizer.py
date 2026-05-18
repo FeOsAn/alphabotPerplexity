@@ -9,7 +9,7 @@ Formula:
   position_size = (portfolio * risk_per_trade) / (ATR_pct * portfolio)
                 = risk_per_trade / ATR_pct
 
-  Capped between MIN_POSITION_PCT and MAX_POSITION_PCT from config.
+  Capped between min_pct (2%) and MAX_SINGLE_POSITION_PCT from config.
   Hard minimum: $500 in absolute dollar terms — positions below this
   are not worth trading (leaves dust after partial takes).
 """
@@ -37,9 +37,9 @@ def get_position_size_pct(symbol: str, fallback_pct: float = 0.08,
     small to meet the floor even at the calculated size.
     """
     try:
-        from config import MAX_POSITION_PCT, MIN_CASH_RESERVE_PCT
+        from config import MAX_SINGLE_POSITION_PCT, MIN_CASH_RESERVE_PCT
         min_pct = 0.02   # never less than 2%
-        max_pct = MAX_POSITION_PCT * 1.5   # never more than 1.5x base max
+        max_pct = MAX_SINGLE_POSITION_PCT   # never more than 20%
 
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="1mo", interval="1d")

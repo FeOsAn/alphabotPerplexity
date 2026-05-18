@@ -446,16 +446,6 @@ def run(broker, db_conn=None):
         logger.info(f"[EarningsNLP] At max positions ({MAX_POSITIONS}) — skipping scan")
         return
 
-    # Global portfolio cap
-    try:
-        from config import MAX_TOTAL_EQUITY_POSITIONS
-        all_positions = broker.get_positions()
-        if len(all_positions) >= MAX_TOTAL_EQUITY_POSITIONS:
-            logger.info(f"[EarningsNLP] Portfolio cap {MAX_TOTAL_EQUITY_POSITIONS} reached — skipping new entries")
-            return
-    except Exception:
-        pass
-
     logger.info("[EarningsNLP] Scanning for earnings events...")
 
     try:

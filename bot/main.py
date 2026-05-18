@@ -1,5 +1,5 @@
 """
-AlphaBot — Main entry point  (v41)
+AlphaBot — Main entry point  (v43)
 Multi-factor algorithmic trading bot for Alpaca Markets
 Runs 24/7 on Railway. Handles all strategies + API server.
 """
@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v41"
+VERSION = "v43"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

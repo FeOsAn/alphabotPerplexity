@@ -20,9 +20,8 @@ from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
     SR_TOP_N, SR_LOOKBACK_DAYS, SR_REBALANCE_DAYS,
-    SR_MAX_POSITION_PCT, MAX_TOTAL_EQUITY_POSITIONS,
+    SR_MAX_POSITION_PCT,
     STOP_LOSS_PCT, MIN_CASH_RESERVE_PCT,
-    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT
 )
 
 
@@ -33,11 +32,11 @@ def _conviction_multiplier(momentum: float) -> float:
     Sector ETFs are capped at 1.25x max — they're already 8% of portfolio each.
     """
     if momentum >= 0.15:
-        return SIZING_HIGH_MULT  # 1.25x — very strong sector trend
+        return 1.25  # very strong sector trend
     elif momentum >= 0.08:
-        return SIZING_MID_MULT   # 1.0x — solid momentum
+        return 1.0   # solid momentum
     else:
-        return SIZING_MIN_MULT   # 0.75x — weak, borderline top-3
+        return 0.75  # weak, borderline top-3
 
 
 from db import log_trade, log_signal
@@ -256,16 +255,8 @@ def run(broker: AlpacaBroker, db_conn):
             logger.error(f"[SR] Exit failed for {pos['symbol']}: {e}")
 
     # Hoist out of loop (QW4)
-    total_equity = len([p for p in all_positions
-                        if p.get("asset_class", "equity") == "equity"
-                        and p["symbol"] not in {pp["symbol"] for pp in to_exit}])
-
     # Enter new top sectors
     for etf in to_enter:
-        if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
-            logger.info(f"[SR] Max equity positions reached — skipping {etf}")
-            break
-
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional_per_sector < min_cash:
             logger.info(f"[SR] Insufficient cash for {etf}")
@@ -287,7 +278,6 @@ def run(broker: AlpacaBroker, db_conn):
             "sector": SECTOR_ETFS[etf],
             "momentum": float(scores[etf]),
         })
-        total_equity += 1
         cash -= notional
 
     _last_rebalance = datetime.now()

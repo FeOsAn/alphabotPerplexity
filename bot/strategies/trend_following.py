@@ -21,26 +21,25 @@ import ta
 from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
     TREND_FAST_EMA, TREND_SLOW_EMA, TREND_VIX_MAX,
-    TREND_MAX_POSITIONS, MAX_POSITION_PCT, MAX_TOTAL_POSITIONS,
+    TREND_MAX_POSITIONS, MAX_TOTAL_POSITIONS,
     TAKE_PROFIT_PCT, MIN_CASH_RESERVE_PCT,
-    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT, SIZING_MAX_MULT
+    DEFAULT_STRATEGY_ALLOCATION_PCT, MAX_SINGLE_POSITION_PCT,
 )
 
 
 def _conviction_multiplier(slope: float, recent_cross: bool) -> float:
     """
     Scale position size by trend strength.
-    Steep slope + fresh cross = max conviction (1.5x).
-    Weak slope barely crossing = reduce size (0.75x).
+    Steep slope + fresh cross = max conviction.
     """
     if slope >= 0.03 and recent_cross:
-        return SIZING_MAX_MULT   # 1.5x — strong trend + fresh cross
+        return 1.5   # strong trend + fresh cross
     elif slope >= 0.015:
-        return SIZING_HIGH_MULT  # 1.25x — solid momentum
+        return 1.25  # solid momentum
     elif slope >= 0.005:
-        return SIZING_MID_MULT   # 1.0x — moderate trend
+        return 1.0   # moderate trend
     else:
-        return SIZING_MIN_MULT   # 0.75x — weak slope, marginal signal
+        return 0.75  # weak slope, marginal signal
 
 
 from db import log_trade, log_signal
@@ -266,9 +265,8 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["slope"], sig.get("recent_cross", False))
-        from utils.position_sizer import get_position_size_pct
-        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
-        notional = portfolio_value * size_pct * mult
+        size_pct = min(DEFAULT_STRATEGY_ALLOCATION_PCT * mult, MAX_SINGLE_POSITION_PCT)
+        notional = portfolio_value * size_pct
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue

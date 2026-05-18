@@ -335,7 +335,66 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             f"price=${current_price:.2f} | value=${market_value:.0f} | peak=${peak:.2f}"
         )
 
-        # 0. Dust cleanup
+        # 0a. Dead money timeout — any equity position flat ±1.5% for >=5 trading days
+        # exits regardless of strategy tag. Runs FIRST so trailing stops, ratchets,
+        # and partial-take logic don't keep stale positions alive indefinitely.
+        DEAD_MONEY_DAYS = 5
+        DEAD_MONEY_MIN_PCT = -1.5
+        DEAD_MONEY_MAX_PCT = 1.5
+        try:
+            qty_signed = float(pos.get("qty", 0))
+            asset_class = pos.get("asset_class", "equity")
+            if (
+                qty_signed > 0
+                and asset_class == "equity"
+                and DEAD_MONEY_MIN_PCT <= pnl_pct <= DEAD_MONEY_MAX_PCT
+            ):
+                entry_dt = None
+                if db_conn is not None:
+                    try:
+                        cur = db_conn.cursor()
+                        cur.execute(
+                            "SELECT created_at FROM trades "
+                            "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
+                            "ORDER BY created_at DESC LIMIT 1",
+                            (sym,),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            raw = row[0] if not hasattr(row, "keys") else row["created_at"]
+                            try:
+                                entry_dt = datetime.fromisoformat(raw)
+                            except Exception:
+                                entry_dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+                    except Exception as e:
+                        logger.debug(f"[TradeMgt] Dead money DB lookup failed for {sym}: {e}")
+                if entry_dt is not None:
+                    if entry_dt.tzinfo is None:
+                        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                    age_days = (datetime.now(timezone.utc) - entry_dt).days
+                    if age_days >= DEAD_MONEY_DAYS:
+                        logger.info(
+                            f"[TRADE MGT] DEAD MONEY EXIT {sym} ({strategy}): held {age_days}d "
+                            f"at {pnl_pct:+.2f}% (within ±{DEAD_MONEY_MAX_PCT}%) — "
+                            f"redeploying capital"
+                        )
+                        try:
+                            broker.close_position(sym, strategy)
+                            log_trade(db_conn, strategy, sym, "sell_dead_money",
+                                      pos["qty"], current_price, pos["unrealized_pnl"],
+                                      metadata={
+                                          "reason": "dead_money_timeout",
+                                          "age_days": age_days,
+                                          "pnl_pct": pnl_pct,
+                                      })
+                            clear_symbol(sym)
+                            continue
+                        except Exception as e:
+                            logger.error(f"[TRADE MGT] Dead money close failed for {sym}: {e}")
+        except Exception as e:
+            logger.debug(f"[TradeMgt] Dead money check error for {sym}: {e}")
+
+        # 0b. Dust cleanup
         if sym in _partial_taken and market_value < MIN_POSITION_VALUE:
             logger.info(
                 f"[TRADE MGT] DUST CLOSE {sym}: stub=${market_value:.0f} "
@@ -472,58 +531,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
 
-        # 3b. Dead money timeout — exit flat positions held >5 days.
-        DEAD_MONEY_DAYS = 5
-        DEAD_MONEY_MIN_PCT = -1.5
-        DEAD_MONEY_MAX_PCT = 1.5
-        try:
-            qty_signed = float(pos.get("qty", 0))
-            if qty_signed > 0 and DEAD_MONEY_MIN_PCT <= pnl_pct <= DEAD_MONEY_MAX_PCT:
-                entry_dt = None
-                if db_conn is not None:
-                    try:
-                        cur = db_conn.cursor()
-                        cur.execute(
-                            "SELECT created_at FROM trades "
-                            "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
-                            "ORDER BY created_at DESC LIMIT 1",
-                            (sym,),
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            raw = row[0] if not hasattr(row, "keys") else row["created_at"]
-                            try:
-                                entry_dt = datetime.fromisoformat(raw)
-                            except Exception:
-                                entry_dt = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
-                    except Exception as e:
-                        logger.debug(f"[TradeMgt] Dead money DB lookup failed for {sym}: {e}")
-                if entry_dt is not None:
-                    if entry_dt.tzinfo is None:
-                        entry_dt = entry_dt.replace(tzinfo=timezone.utc)
-                    age_days = (datetime.now(timezone.utc) - entry_dt).days
-                    if age_days >= DEAD_MONEY_DAYS:
-                        logger.info(
-                            f"[TRADE MGT] DEAD MONEY EXIT {sym}: held {age_days}d "
-                            f"at {pnl_pct:+.2f}% — redeploying capital"
-                        )
-                        try:
-                            broker.close_position(sym, strategy)
-                            log_trade(db_conn, strategy, sym, "sell_dead_money",
-                                      pos["qty"], current_price, pos["unrealized_pnl"],
-                                      metadata={
-                                          "reason": "dead_money_timeout",
-                                          "age_days": age_days,
-                                          "pnl_pct": pnl_pct,
-                                      })
-                            clear_symbol(sym)
-                            continue
-                        except Exception as e:
-                            logger.error(f"[TRADE MGT] Dead money close failed for {sym}: {e}")
-        except Exception as e:
-            logger.debug(f"[TradeMgt] Dead money check error for {sym}: {e}")
-
-        # 3c. Sector ETF cap — trim long ETF positions exceeding 5% of equity.
+        # 3b. Sector ETF cap — trim long ETF positions exceeding 5% of equity.
         SECTOR_ETFS = {
             "XLK", "XLE", "XLRE", "XLF", "XLV", "XLI", "XLY",
             "XLP", "XLB", "XLU", "XLC", "GDX", "IAU", "TLT", "HYG",

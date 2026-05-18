@@ -21,25 +21,24 @@ import yfinance as yf
 from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
     MR_RSI_PERIOD, MR_RSI_OVERSOLD, MR_RSI_OVERBOUGHT,
-    MR_BB_PERIOD, MR_BB_STD, MR_MAX_POSITIONS, MAX_POSITION_PCT,
-    MAX_TOTAL_EQUITY_POSITIONS, MIN_CASH_RESERVE_PCT,
-    SIZING_MIN_MULT, SIZING_MID_MULT, SIZING_HIGH_MULT, SIZING_MAX_MULT
+    MR_BB_PERIOD, MR_BB_STD, MR_MAX_POSITIONS,
+    MIN_CASH_RESERVE_PCT, DEFAULT_STRATEGY_ALLOCATION_PCT, MAX_SINGLE_POSITION_PCT,
 )
 
 
 def _conviction_multiplier(rsi: float, vol_elevated: bool, vol_ratio: float) -> float:
     """
     Scale position size by how strong the mean-reversion signal is.
-    RSI=18 + vol 2x avg = maximum conviction (1.5x). RSI=31 barely oversold = 0.75x.
+    RSI=18 + vol 2x avg = maximum conviction. RSI=31 barely oversold = lower.
     """
     if rsi <= 20 and vol_ratio >= 2.0:
-        return SIZING_MAX_MULT   # 1.5x — RSI deeply oversold + massive volume
+        return 1.5   # RSI deeply oversold + massive volume
     elif rsi <= 24 and vol_elevated:
-        return SIZING_HIGH_MULT  # 1.25x — very oversold with volume confirmation
+        return 1.25  # very oversold with volume confirmation
     elif rsi <= 28:
-        return SIZING_MID_MULT   # 1.0x — solidly oversold
+        return 1.0   # solidly oversold
     else:
-        return SIZING_MIN_MULT   # 0.75x — barely at threshold (RSI 28-32)
+        return 0.75  # barely at threshold (RSI 28-32)
 
 
 from db import log_trade, log_signal
@@ -196,7 +195,6 @@ def run(broker: AlpacaBroker, db_conn):
     # Hoist all broker.get_positions() calls out of the loop (QW4) — n+1 query before
     cached_positions = broker.get_positions()
     current_symbols = {p["symbol"] for p in cached_positions}
-    total_equity = len([p for p in cached_positions if p.get("asset_class", "equity") == "equity"])
     new_entries = 0
 
     for sym, sig in buy_candidates:
@@ -211,8 +209,6 @@ def run(broker: AlpacaBroker, db_conn):
             continue
         if current_mr_count >= MR_MAX_POSITIONS:
             break
-        if total_equity >= MAX_TOTAL_EQUITY_POSITIONS:
-            break
 
         # Skip if a position in the same sector is already held (correlation control)
         if is_correlated_position(sym, cached_positions):
@@ -225,9 +221,8 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
-        from utils.position_sizer import get_position_size_pct
-        size_pct = get_position_size_pct(sym, fallback_pct=MAX_POSITION_PCT)
-        notional = portfolio_value * size_pct * mult
+        size_pct = min(DEFAULT_STRATEGY_ALLOCATION_PCT * mult, MAX_SINGLE_POSITION_PCT)
+        notional = portfolio_value * size_pct
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional < min_cash:
             continue
@@ -241,7 +236,6 @@ def run(broker: AlpacaBroker, db_conn):
                   metadata={"notional": notional, "rsi": sig["rsi"]})
         cash -= notional
         current_mr_count += 1
-        total_equity += 1
         new_entries += 1
 
     logger.info(f"[MR] Scan complete — {current_mr_count} active positions")

@@ -32,7 +32,7 @@ import yfinance as yf
 import anthropic
 
 from broker import AlpacaBroker, tag_symbol
-from config import MAX_POSITION_PCT, MIN_CASH_RESERVE_PCT
+from config import DEFAULT_STRATEGY_ALLOCATION_PCT, MIN_CASH_RESERVE_PCT
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.ai_research")
@@ -908,7 +908,7 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[AI Research] Regime weight 0.0 — skipping {sym}")
             continue
 
-        notional = portfolio_value * MAX_POSITION_PCT * regime_mult
+        notional = portfolio_value * DEFAULT_STRATEGY_ALLOCATION_PCT * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:

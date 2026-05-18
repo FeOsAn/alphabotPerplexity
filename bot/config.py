@@ -27,12 +27,28 @@ UNIVERSE = [
 # ============================================================
 # Risk Management
 # ============================================================
-MAX_POSITION_PCT = 0.10          # was 8% — raised to 10% so each position is meaningful
-MAX_TOTAL_EQUITY_POSITIONS = 12  # was 30 — focus on 12 best ideas, not 30 mediocre ones
-MAX_TOTAL_POSITIONS = 15         # hard cap
+MAX_TOTAL_POSITIONS = 15         # hard cap on total positions (across all strategies)
 STOP_LOSS_PCT = 0.05             # 5% stop loss per position
 TAKE_PROFIT_PCT = 0.20           # 20% take profit target
-MIN_CASH_RESERVE_PCT = 0.05     # was 10% — keep only 5% cash, deploy the rest
+
+# --- Conviction-based sizing (no hard slot caps) ---
+# Allocation tiers: score determines base % of portfolio
+CONVICTION_TIER_MAX   = 0.15   # score >= 0.50 (exceptional, +50% in 3m)  → up to 15%
+CONVICTION_TIER_HIGH  = 0.10   # score >= 0.25 (+25% in 3m) → up to 10%
+CONVICTION_TIER_MID   = 0.07   # score >= 0.10 (+10% in 3m) → up to 7%
+CONVICTION_TIER_LOW   = 0.04   # score >= 0.03 (+3% in 3m)  → up to 4%
+CONVICTION_TIER_MIN   = 0.02   # score < 0.03                → up to 2%
+
+# RSI bonus: in the 50-72 sweet spot → +1.5% to allocation
+CONVICTION_RSI_BONUS  = 0.015
+# Volume bonus: vol_ratio >= 1.2 (institutional buying) → +1.5% to allocation
+CONVICTION_VOL_BONUS  = 0.015
+# Hard max single position: never exceed 20% of portfolio regardless of conviction
+MAX_SINGLE_POSITION_PCT = 0.20
+# Cash floor: keep at least 15% cash at all times
+MIN_CASH_RESERVE_PCT = 0.15
+# Non-momentum strategies that lack a score-based conviction use this flat base.
+DEFAULT_STRATEGY_ALLOCATION_PCT = 0.05
 
 # ============================================================
 # Strategy Parameters
@@ -41,7 +57,6 @@ MIN_CASH_RESERVE_PCT = 0.05     # was 10% — keep only 5% cash, deploy the rest
 # Momentum strategy
 MOMENTUM_LOOKBACK = 120        # ~6 months (safe under yFinance ~179 day limit)
 MOMENTUM_SKIP = 21             # Skip last month (reversal avoidance)
-MOMENTUM_TOP_N = 6             # was 10 — top 6 highest-conviction names
 MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month
 
 # Mean Reversion strategy
@@ -78,19 +93,6 @@ SR_REBALANCE_DAYS = 21        # Rebalance monthly
 SR_MAX_POSITION_PCT = 0.08    # 8% per sector ETF (individual names can go higher)
 SR_MAX_ETF_SLOTS = 3          # Cap ETF positions at 3 if individual signals are firing
                                # ETFs are backup exposure, not the main bet
-
-# ============================================================
-# Position Sizing — Conviction Multipliers
-# ============================================================
-# Base notional = MAX_POSITION_PCT * portfolio_value
-# Multiplied by conviction score. Widened range so the best signals get
-# meaningfully more capital than weak ones.
-# Hard cap: no single position > MAX_POSITION_PCT * 2.0 of portfolio
-SIZING_MIN_MULT  = 0.5   # Weak signal — half size (was 0.75)
-SIZING_MID_MULT  = 1.0   # Standard signal — base size
-SIZING_HIGH_MULT = 1.5   # Strong signal (was 1.25)
-SIZING_MAX_MULT  = 2.0   # Exceptional conviction — double size (was 1.5)
-                          # e.g. AMD: 3m=+104%, at 52w high, RSI 80, vol 1.4x = 2.0x
 
 # ============================================================
 # Scheduling
