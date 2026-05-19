@@ -23,7 +23,8 @@ DUST CLEANUP:
 """
 
 import logging
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from broker import AlpacaBroker
 from db import log_trade
 from utils import notify
@@ -582,3 +583,352 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 set_cooldown(sym)
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
+
+
+# ── v44: Earnings-aware autonomous stop tightening ───────────────────────────
+# RSI(14) helper — cached 10 minutes so repeated cycles don't re-fetch.
+_rsi_cache: dict = {}   # symbol -> (rsi_value, cached_at_epoch)
+_RSI_TTL = 600          # 10 minutes
+
+# Symbols whose post-earnings review has already fired (don't re-act).
+_post_earnings_checked: set = set()
+
+
+def _get_current_rsi(symbol: str) -> float:
+    """Compute RSI(14) from the last ~20 days of daily closes via yf_cache.
+
+    Returns a float in [0, 100], or 50.0 if data is unavailable.
+    Cached per-symbol for 10 minutes.
+    """
+    now_ts = time.time()
+    cached = _rsi_cache.get(symbol)
+    if cached is not None and (now_ts - cached[1]) < _RSI_TTL:
+        return cached[0]
+
+    rsi_val = 50.0
+    try:
+        from utils import yf_cache
+        hist = yf_cache.get_history(symbol, period="1mo", interval="1d")
+        if hist is not None and not hist.empty and len(hist) >= 15:
+            closes = hist["Close"].dropna()
+            if len(closes) >= 15:
+                deltas = closes.diff().dropna()
+                period = 14
+                recent = deltas.tail(period)
+                gains = recent.clip(lower=0).sum() / period
+                losses = (-recent.clip(upper=0)).sum() / period
+                if losses == 0:
+                    rsi_val = 100.0
+                else:
+                    rs = gains / losses
+                    rsi_val = 100.0 - (100.0 / (1.0 + rs))
+                rsi_val = float(rsi_val)
+    except Exception as e:
+        logger.debug(f"[RSI] {symbol}: compute failed — {e}")
+
+    _rsi_cache[symbol] = (rsi_val, now_ts)
+    return rsi_val
+
+
+def _resolve_entry_price(symbol: str, pos: dict, db_conn) -> float:
+    """Best-effort entry price: prefer most-recent BUY in trades table."""
+    try:
+        if db_conn is not None:
+            row = db_conn.execute(
+                "SELECT price FROM trades "
+                "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
+                "ORDER BY created_at DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if row and row["price"] and float(row["price"]) > 0:
+                return float(row["price"])
+    except Exception:
+        pass
+    try:
+        return float(pos.get("avg_entry") or 0)
+    except Exception:
+        return 0.0
+
+
+def _maybe_tighten(symbol: str, target_multiplier: float) -> tuple:
+    """Ratchet stop up to target_multiplier (e.g. 1.16 → lock in +16%).
+
+    Never loosens — `max(current_lock, new_lock)` is enforced.
+    Returns (tightened: bool, new_lock_pct: float).
+    """
+    target_lock = target_multiplier - 1.0
+    current_lock = _ratchet_stops.get(symbol)
+    if current_lock is None or target_lock > current_lock:
+        _ratchet_stops[symbol] = target_lock
+        return True, target_lock
+    return False, current_lock if current_lock is not None else 0.0
+
+
+def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
+    """Autonomously tighten stops on positions based on earnings proximity + RSI + gain.
+
+    Goal: ride winners hard, protect aggressively when earnings + extreme RSI raise risk.
+    Never loosens an existing stop.
+    """
+    try:
+        from utils.earnings_calendar import get_next_earnings_date
+    except Exception as e:
+        logger.warning(f"[EarningsTighten] earnings_calendar import failed: {e}")
+        return
+
+    today = datetime.now(timezone.utc).date()
+
+    for pos in positions:
+        sym = pos["symbol"]
+        try:
+            qty_signed = float(pos.get("qty", 0))
+            if qty_signed <= 0:
+                continue   # longs only
+            try:
+                gain_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
+            except Exception:
+                continue
+
+            entry_price = _resolve_entry_price(sym, pos, db_conn)
+            if entry_price <= 0:
+                continue
+
+            earn_date = None
+            try:
+                earn_date = get_next_earnings_date(sym)
+            except Exception as e:
+                logger.debug(f"[EarningsTighten] {sym} earnings lookup failed: {e}")
+            days_to_earnings = (earn_date - today).days if earn_date else None
+
+            rsi = _get_current_rsi(sym)
+
+            tightened = False
+            new_lock = 0.0
+            tier = ""
+
+            if days_to_earnings is not None and days_to_earnings <= 1:
+                if rsi > 80 and gain_pct > 15:
+                    tightened, new_lock = _maybe_tighten(sym, 1.16)
+                    tier = "earnings≤1d / RSI>80 / +15%"
+                elif rsi > 70 and gain_pct > 10:
+                    tightened, new_lock = _maybe_tighten(sym, 1.10)
+                    tier = "earnings≤1d / RSI>70 / +10%"
+                elif gain_pct > 5:
+                    tightened, new_lock = _maybe_tighten(sym, 1.05)
+                    tier = "earnings≤1d / +5%"
+                else:
+                    tightened, new_lock = _maybe_tighten(sym, 0.97)
+                    tier = "earnings≤1d / floor -3%"
+            elif days_to_earnings is not None and days_to_earnings <= 3:
+                if rsi > 85 and gain_pct > 20:
+                    tightened, new_lock = _maybe_tighten(sym, 1.14)
+                    tier = "earnings≤3d / RSI>85 / +20%"
+                elif rsi > 75 and gain_pct > 10:
+                    tightened, new_lock = _maybe_tighten(sym, 1.08)
+                    tier = "earnings≤3d / RSI>75 / +10%"
+            elif days_to_earnings is not None and days_to_earnings <= 7:
+                if rsi > 90:
+                    tightened, new_lock = _maybe_tighten(sym, 1.12)
+                    tier = "earnings≤7d / RSI>90"
+            else:
+                # Feature 2: extreme RSI tightening even without imminent earnings
+                if rsi > 90 and gain_pct > 20:
+                    tightened, new_lock = _maybe_tighten(sym, 1.15)
+                    tier = "no-earnings / RSI>90 / +20%"
+                elif rsi > 85 and gain_pct > 15:
+                    tightened, new_lock = _maybe_tighten(sym, 1.10)
+                    tier = "no-earnings / RSI>85 / +15%"
+
+            if tightened:
+                new_stop_price = entry_price * (1.0 + new_lock)
+                days_txt = (
+                    f"{days_to_earnings} day(s)" if days_to_earnings is not None else "n/a"
+                )
+                logger.info(
+                    f"[EarningsTighten] {sym} → stop locked at +{new_lock:.0%} "
+                    f"(${new_stop_price:.2f}) | gain={gain_pct:+.1f}% RSI={rsi:.0f} "
+                    f"earnings_in={days_txt} | tier={tier}"
+                )
+                try:
+                    notify.send(
+                        title=f"🔒 Stop tightened: {sym}",
+                        body=(
+                            f"🔒 Stop tightened: {sym} → ${new_stop_price:.2f} "
+                            f"(+{new_lock * 100:.1f}% locked) — "
+                            f"earnings in {days_txt}, RSI={rsi:.0f}"
+                        ),
+                        priority="default",
+                        tags="lock",
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"[EarningsTighten] {sym}: {e}")
+
+
+def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
+    """Post-earnings review for the 0-2 day window after earnings.
+
+    - DOWN >5% since pre-earnings close → close (gap-down protection)
+    - UP >10% → upgrade ratchet one tier (treat gain as +5% higher)
+    - Flat (±3%) → no change
+    Each symbol acted-on at most once (tracked in _post_earnings_checked).
+    """
+    today = datetime.now(timezone.utc).date()
+
+    for pos in positions:
+        sym = pos["symbol"]
+        if sym in _post_earnings_checked:
+            continue
+        try:
+            qty_signed = float(pos.get("qty", 0))
+            if qty_signed <= 0:
+                continue
+            strategy = pos.get("strategy", "unknown")
+            current_price = float(pos.get("current_price") or 0)
+            if current_price <= 0:
+                continue
+
+            # Find most-recent earnings date in the past 0-2 days for this symbol.
+            earn_date = None
+            try:
+                import yfinance as yf, gc as _gc
+                ticker = yf.Ticker(sym)
+                cal = ticker.calendar
+                _gc.collect()
+                raw_dates = []
+                if cal is None:
+                    pass
+                elif isinstance(cal, dict):
+                    ed = cal.get("Earnings Date", [])
+                    if ed:
+                        raw_dates = ed if isinstance(ed, list) else [ed]
+                elif hasattr(cal, "empty") and not cal.empty:
+                    if hasattr(cal, "columns") and "Earnings Date" in getattr(cal, "columns", []):
+                        raw_dates = cal["Earnings Date"].dropna().tolist()
+                    elif hasattr(cal, "index") and "Earnings Date" in getattr(cal, "index", []):
+                        val = cal.loc["Earnings Date"]
+                        raw_dates = val.tolist() if hasattr(val, "tolist") else [val]
+                for d in raw_dates:
+                    try:
+                        dd = d.date() if hasattr(d, "date") else d
+                        if (today - timedelta(days=2)) <= dd <= today:
+                            earn_date = dd
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug(f"[PostEarnings] {sym} calendar fetch failed: {e}")
+
+            if earn_date is None:
+                continue
+
+            # Pre-earnings close — last trading day strictly before earn_date.
+            pre_close = None
+            try:
+                from utils import yf_cache
+                hist = yf_cache.get_history(sym, period="1mo", interval="1d")
+                if hist is not None and not hist.empty:
+                    closes = hist["Close"].dropna()
+                    pre_rows = []
+                    for ts, val in closes.items():
+                        try:
+                            d = ts.date() if hasattr(ts, "date") else ts
+                            if d < earn_date:
+                                pre_rows.append((d, float(val)))
+                        except Exception:
+                            continue
+                    if pre_rows:
+                        pre_rows.sort()
+                        pre_close = pre_rows[-1][1]
+            except Exception as e:
+                logger.debug(f"[PostEarnings] {sym} pre-close lookup failed: {e}")
+
+            if not pre_close or pre_close <= 0:
+                continue
+
+            move_pct = (current_price - pre_close) / pre_close * 100.0
+            logger.info(
+                f"[PostEarnings] {sym} earnings {earn_date} | pre=${pre_close:.2f} → "
+                f"now=${current_price:.2f} ({move_pct:+.1f}%)"
+            )
+
+            if move_pct < -5.0:
+                logger.info(f"[PostEarnings] {sym} gapped down {move_pct:+.1f}% — closing")
+                try:
+                    broker.close_position(sym, strategy)
+                    log_trade(db_conn, strategy, sym, "sell_post_earnings_gap",
+                              pos["qty"], current_price, pos.get("unrealized_pnl", 0.0),
+                              metadata={
+                                  "reason": "post_earnings_gap_down",
+                                  "pre_earnings_close": pre_close,
+                                  "move_pct": move_pct,
+                              })
+                    clear_symbol(sym)
+                    try:
+                        notify.send(
+                            title=f"🛡️ Post-earnings gap-down: {sym}",
+                            body=f"{sym} {move_pct:+.1f}% since earnings — closed.",
+                            priority="high",
+                            tags="shield",
+                        )
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.error(f"[PostEarnings] Close failed for {sym}: {e}")
+                _post_earnings_checked.add(sym)
+                continue
+
+            if move_pct > 10.0:
+                try:
+                    boosted = float(pos.get("unrealized_pnl_pct") or 0.0) + 5.0
+                    new_ratchet = _ratchet_for_pnl(boosted)
+                    if new_ratchet is not None:
+                        current = _ratchet_stops.get(sym, -1.0)
+                        if new_ratchet > current:
+                            _ratchet_stops[sym] = new_ratchet
+                            logger.info(
+                                f"[PostEarnings] {sym} upgraded ratchet to +{new_ratchet:.0%} "
+                                f"(post-earnings beat: {move_pct:+.1f}%)"
+                            )
+                            try:
+                                notify.send(
+                                    title=f"📈 Post-earnings beat: {sym}",
+                                    body=(
+                                        f"{sym} {move_pct:+.1f}% post-earnings — "
+                                        f"ratchet upgraded to +{new_ratchet * 100:.0f}%."
+                                    ),
+                                    priority="default",
+                                    tags="chart_with_upwards_trend",
+                                )
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.debug(f"[PostEarnings] {sym} ratchet upgrade failed: {e}")
+                _post_earnings_checked.add(sym)
+                continue
+
+            if -3.0 <= move_pct <= 3.0:
+                logger.info(f"[PostEarnings] {sym} flat ({move_pct:+.1f}%) — no change")
+                _post_earnings_checked.add(sym)
+        except Exception as e:
+            logger.debug(f"[PostEarnings] {sym}: {e}")
+
+
+def run_trade_management(broker: AlpacaBroker, db_conn):
+    """v44 entry point — earnings tightening + post-earnings review BEFORE normal ratchet logic."""
+    try:
+        positions = broker.get_positions()
+    except Exception as e:
+        logger.error(f"[TradeMgt] get_positions failed: {e}")
+        return
+    try:
+        apply_earnings_stop_tightening(positions, broker, db_conn)
+    except Exception as e:
+        logger.error(f"[TradeMgt] earnings tightening failed: {e}", exc_info=True)
+    try:
+        check_post_earnings_action(positions, broker, db_conn)
+    except Exception as e:
+        logger.error(f"[TradeMgt] post-earnings review failed: {e}", exc_info=True)
+    # Then normal global trade management (trailing stops + partial takes).
+    run_global_trade_management(broker, db_conn)

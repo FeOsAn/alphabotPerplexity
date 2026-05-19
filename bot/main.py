@@ -1,5 +1,5 @@
 """
-AlphaBot — Main entry point  (v43)
+AlphaBot — Main entry point  (v44)
 Multi-factor algorithmic trading bot for Alpaca Markets
 Runs 24/7 on Railway. Handles all strategies + API server.
 """
@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v43"
+VERSION = "v44"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,7 +58,12 @@ from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
-from strategies.trade_management import run_global_trade_management, restore_trade_management_state
+from strategies.trade_management import (
+    run_global_trade_management,
+    restore_trade_management_state,
+    run_trade_management,
+    apply_earnings_stop_tightening,
+)
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
@@ -423,8 +428,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     if _circuit_breaker_active:
         logger.info("[CircuitBreaker] ACTIVE — skipping new entries, running exits only")
         try:
-            from strategies.trade_management import run_global_trade_management
-            run_global_trade_management(broker, db_conn)
+            run_trade_management(broker, db_conn)
         except Exception as e:
             logger.error(f"[CircuitBreaker] Exits-only trade_management failed: {e}", exc_info=True)
         return
@@ -499,8 +503,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     except Exception as e:
         logger.debug(f"[OFI] update_watched failed: {e}")
 
-    # ── Trade management: trailing stops + partial takes on ALL positions ─────
-    run_global_trade_management(broker, db_conn)
+    # ── Trade management: v44 — earnings tightening + post-earnings review
+    # run BEFORE the normal ratchet/trailing-stop/partial-take logic.
+    run_trade_management(broker, db_conn)
 
     # ── Pyramid entry: check tracked positions for +2% / +4% add triggers ────
     try:
@@ -696,6 +701,15 @@ def main():
         restore_trade_management_state(broker, db_conn)
     except Exception as e:
         logger.warning(f"[Startup] trade_management restore failed: {e}")
+
+    # v44 one-time: apply earnings stop tightening on startup for any position
+    # that would qualify — catches positions already open before this feature existed
+    # (e.g. PANW: earnings today, RSI 95, +18% — locks the stop immediately).
+    try:
+        startup_positions = broker.get_positions()
+        apply_earnings_stop_tightening(startup_positions, broker, db_conn)
+    except Exception as e:
+        logger.warning(f"[Startup] earnings stop tightening failed: {e}")
 
     # Hydrate pairs_trading._active_pairs from open positions (M23)
     try:

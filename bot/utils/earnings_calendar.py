@@ -205,3 +205,81 @@ def start():
 def stop():
     global _running
     _running = False
+
+
+# ── Next-earnings lookup (v44) ────────────────────────────────────────────────
+# Used by trade_management.apply_earnings_stop_tightening to compute
+# days_to_earnings for any open position. 24-hour module-level cache so we
+# don't slam yfinance every cycle.
+_next_earnings_cache: dict = {}   # symbol -> (date|None, cached_at_epoch)
+_NEXT_EARNINGS_TTL = 86400        # 24 hours
+
+
+def get_next_earnings_date(symbol: str):
+    """Return the next upcoming earnings date (datetime.date) or None.
+
+    Lookup order:
+      1. In-memory 24h cache.
+      2. Pre-loaded UPCOMING_EARNINGS (refreshed weekly).
+      3. yf.Ticker(symbol).calendar (best-effort, swallows all errors).
+    """
+    from datetime import date as _date
+    now_ts = time.time()
+    cached = _next_earnings_cache.get(symbol)
+    if cached is not None and (now_ts - cached[1]) < _NEXT_EARNINGS_TTL:
+        return cached[0]
+
+    today = datetime.now(timezone.utc).date()
+    next_dt = None
+
+    # 2. Pre-loaded calendar
+    try:
+        with _calendar_lock:
+            dates = UPCOMING_EARNINGS.get(symbol, [])
+        upcoming = []
+        for d in dates:
+            try:
+                dd = d.date() if hasattr(d, "date") else d
+                if isinstance(dd, _date) and dd >= today:
+                    upcoming.append(dd)
+            except Exception:
+                continue
+        if upcoming:
+            next_dt = min(upcoming)
+    except Exception:
+        pass
+
+    # 3. yfinance fallback
+    if next_dt is None:
+        try:
+            ticker = yf.Ticker(symbol)
+            cal = ticker.calendar
+            gc.collect()
+            raw_dates = []
+            if cal is None:
+                pass
+            elif isinstance(cal, dict):
+                ed = cal.get("Earnings Date", [])
+                if ed:
+                    raw_dates = ed if isinstance(ed, list) else [ed]
+            elif hasattr(cal, "empty") and not cal.empty:
+                if hasattr(cal, "columns") and "Earnings Date" in getattr(cal, "columns", []):
+                    raw_dates = cal["Earnings Date"].dropna().tolist()
+                elif hasattr(cal, "index") and "Earnings Date" in getattr(cal, "index", []):
+                    val = cal.loc["Earnings Date"]
+                    raw_dates = val.tolist() if hasattr(val, "tolist") else [val]
+            upcoming = []
+            for d in raw_dates:
+                try:
+                    dd = d.date() if hasattr(d, "date") else d
+                    if isinstance(dd, _date) and dd >= today:
+                        upcoming.append(dd)
+                except Exception:
+                    continue
+            if upcoming:
+                next_dt = min(upcoming)
+        except Exception as e:
+            logger.debug(f"[EarningsCalendar] get_next_earnings_date {symbol}: {e}")
+
+    _next_earnings_cache[symbol] = (next_dt, now_ts)
+    return next_dt
