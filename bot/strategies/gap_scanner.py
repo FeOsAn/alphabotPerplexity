@@ -327,5 +327,15 @@ def run(broker: AlpacaBroker, db_conn):
         cash -= notional
         current_gap_count += 1
 
+        cash, portfolio_value = broker.get_live_cash()
+        if cash < 0:
+            logger.critical(f"[{STRATEGY_NAME}] Cash went negative (${cash:,.0f}) — halting entries")
+            from utils.notify import send as _notify
+            _notify("🚨 Negative Cash", f"[{STRATEGY_NAME}] cash ${cash:,.0f} — halting entries", priority="urgent")
+            break
+        if cash < portfolio_value * MIN_CASH_RESERVE_PCT:
+            logger.warning(f"[{STRATEGY_NAME}] Cash floor hit (${cash:,.0f}) — halting entries")
+            break
+
     _scanned_today = today_str
     logger.info(f"[GAP] Pre-market scan complete — {current_gap_count} active positions")

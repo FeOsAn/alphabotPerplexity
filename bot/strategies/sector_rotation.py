@@ -279,10 +279,13 @@ def run(broker: AlpacaBroker, db_conn):
             "momentum": float(scores[etf]),
         })
         cash, portfolio_value = broker.get_live_cash()
+        if cash < 0:
+            logger.critical(f"[{STRATEGY_NAME}] Cash went negative (${cash:,.0f}) — halting entries")
+            from utils.notify import send as _notify
+            _notify("🚨 Negative Cash", f"[{STRATEGY_NAME}] cash ${cash:,.0f} — halting entries", priority="urgent")
+            break
         if cash < portfolio_value * MIN_CASH_RESERVE_PCT:
             logger.warning(f"[{STRATEGY_NAME}] Cash floor hit (${cash:,.0f}) — halting entries")
-            from utils.notify import send as _notify
-            _notify("⚠️ Cash Floor Hit", f"{{STRATEGY_NAME}}: cash ${{cash:,.0f}} below floor — entries halted", priority="high")
             break
 
     _last_rebalance = datetime.now()

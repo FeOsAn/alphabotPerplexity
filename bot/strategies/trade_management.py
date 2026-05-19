@@ -264,12 +264,19 @@ def restore_trade_management_state(broker: AlpacaBroker, db_conn):
             peak = max(current_price, entry_price) if current_price > 0 else entry_price
             _peak_prices[sym] = peak
 
-            # 3. Ratchet — based on current unrealized gain
+            # 3. Ratchet — ATR-based (replaces floor-only _ratchet_for_pnl)
             try:
                 pnl_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
-                ratchet = _ratchet_for_pnl(pnl_pct)
-                if ratchet is not None:
-                    _ratchet_stops[sym] = ratchet
+                if current_price > 0 and entry_price > 0:
+                    # Use full ATR ratchet — computes stop = max(floor, gain - mult*ATR/entry)
+                    # base_stop_pct=0.07 matches TRAILING_STOP_PCT default
+                    _atr_ratchet_stop_pct(sym, pnl_pct, entry_price, current_price, base_stop_pct=0.07)
+                    # _atr_ratchet_stop_pct already writes into _ratchet_stops[sym]
+                else:
+                    # Fallback: floor-only
+                    ratchet = _ratchet_for_pnl(pnl_pct)
+                    if ratchet is not None:
+                        _ratchet_stops[sym] = ratchet
             except Exception:
                 pass
 
@@ -291,7 +298,8 @@ def restore_trade_management_state(broker: AlpacaBroker, db_conn):
 
     logger.info(
         f"[TM Restore] Hydrated {restored_count} position(s) | "
-        f"peaks={len(_peak_prices)} ratchets={len(_ratchet_stops)} partial={len(_partial_taken)}"
+        f"peaks={len(_peak_prices)} ratchets={len(_ratchet_stops)} partial={len(_partial_taken)} | "
+        f"ATR stops wired on startup"
     )
 
 
@@ -1024,6 +1032,35 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                 _post_earnings_checked.add(sym)
         except Exception as e:
             logger.debug(f"[PostEarnings] {sym}: {e}")
+
+    # Suspicious-gain watchlist — flag any position with >20% 1w gain for manual review
+    for pos in positions:
+        sym = pos["symbol"]
+        if sym in _post_earnings_checked:
+            continue
+        try:
+            pnl_1w = float(pos.get("unrealized_pnl_pct") or 0.0)  # approximate with unrealized
+            # Also check 1w return via yf
+            from utils import yf_cache
+            hist = yf_cache.get_history(sym, period="5d", interval="1d")
+            if hist is not None and not hist.empty:
+                closes = hist["Close"].dropna()
+                if len(closes) >= 2:
+                    w_ret = (closes.iloc[-1] - closes.iloc[0]) / closes.iloc[0]
+                    if w_ret > 0.20:
+                        logger.warning(f"[PostEarnings] {sym} flagged: +{w_ret:.1%} 1w — manual review needed")
+                        try:
+                            notify.send(
+                                title=f"🔍 {sym} +{w_ret:.1%} 1w — review stop",
+                                body=f"{sym} up {w_ret:+.1%} over 5 days. Possible earnings gap or news event. Check stop placement.",
+                                priority="high",
+                                tags="eyes",
+                            )
+                        except Exception:
+                            pass
+                        _post_earnings_checked.add(sym)  # only notify once
+        except Exception:
+            pass
 
 
 def run_trade_management(broker: AlpacaBroker, db_conn):
