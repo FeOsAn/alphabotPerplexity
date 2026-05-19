@@ -414,3 +414,14 @@ def check_pyramid_adds(broker_instance) -> None:
                 logger.info(f"[Pyramid] {symbol} add2 {qty} shares @ ${current_price:.2f} (+{pct_gain:.1%}, final 25% add)")
         except Exception as e:
             logger.warning(f"[Pyramid] Error checking adds for {symbol}: {e}")
+
+
+def get_live_cash(self) -> tuple[float, float]:
+    """Fetch real-time cash and portfolio_value from Alpaca. Use after every order."""
+    try:
+        acc = self.get_account()
+        return float(acc["cash"]), float(acc["portfolio_value"])
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"[broker] get_live_cash failed: {e}")
+        return 0.0, 0.0

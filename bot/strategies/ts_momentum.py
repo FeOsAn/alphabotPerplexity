@@ -190,6 +190,13 @@ def run(broker, db_conn=None):
             qty = int(trade_value / price)
             if qty < 1:
                 continue
+            # Live cash check before every entry
+            live_cash, live_pv = broker.get_live_cash()
+            if live_cash < live_pv * TS_ALLOCATION_PCT:
+                logger.warning(f"[TSMomentum] Cash floor hit (${live_cash:,.0f}) — halting entries")
+                from utils.notify import send as _notify
+                _notify("⚠️ Cash Floor Hit", f"TSMomentum: cash ${live_cash:,.0f} below floor", priority="high")
+                break
             broker.submit_order(
                 symbol=sym, qty=qty, side="buy",
                 type="market", time_in_force="day"

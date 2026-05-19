@@ -47,6 +47,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MARKET_OPEN_BUFFER_MIN, MARKET_CLOSE_BUFFER_MIN, CHECK_INTERVAL_MIN,
+    MIN_CASH_RESERVE_PCT,
 )
 from broker import AlpacaBroker, restore_tags_from_db, retag_all_positions, check_pyramid_adds
 from db import init_db, get_connection, log_snapshot, get_state, set_state
@@ -418,6 +419,28 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 logger.warning("[Recap] Send failed — will retry next cycle")
         except Exception as e:
             logger.error(f"[Recap] Outer failure: {e}")
+
+    # ── Account health check — halt on negative cash / margin ─────────────────
+    try:
+        acc = broker.get_account()
+        live_cash = float(acc["cash"])
+        live_pv   = float(acc["portfolio_value"])
+        if live_cash < 0:
+            msg = f"🚨 MARGIN: cash=${live_cash:,.0f}. Halting all entries this cycle."
+            logger.critical(msg)
+            from utils.notify import send as _notify_health
+            _notify_health("🚨 Margin Alert", msg, priority="urgent")
+            run_trade_management(broker, db_conn)  # still run exits
+            return
+        if live_pv > 0 and live_cash / live_pv < MIN_CASH_RESERVE_PCT:
+            msg = f"⚠️ Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
+            logger.warning(msg)
+            from utils.notify import send as _notify_health
+            _notify_health("⚠️ Cash Floor Breached", msg, priority="high")
+            run_trade_management(broker, db_conn)
+            return
+    except Exception as e:
+        logger.warning(f"[HealthCheck] Failed: {e}")
 
     # ── Circuit breaker check (3% daily drawdown halts new entries) ──────────
     try:
