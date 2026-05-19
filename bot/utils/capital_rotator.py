@@ -122,14 +122,10 @@ def find_rotation_candidate(
         if sym == new_symbol:
             continue
 
-        # Position dict from broker has unrealized_pnl_pct as percentage (e.g. -5.0 for -5%)
-        # Convert to fraction (e.g. -0.05) for thresholds.
-        raw_pnl_pct = pos.get("unrealized_pnl_pct")
-        if raw_pnl_pct is None:
-            raw_pnl_pct = pos.get("unrealized_plpc", 0.0)
-            gain_pct = float(raw_pnl_pct)  # alpaca raw plpc is already fractional
-        else:
-            gain_pct = float(raw_pnl_pct) / 100.0  # broker returns pct * 100
+        # broker.get_positions() always returns unrealized_pnl_pct already * 100
+        # (e.g. +17.5 for +17.5%). Divide by 100 to get fraction for threshold comparisons.
+        raw_pnl_pct = pos.get("unrealized_pnl_pct", pos.get("unrealized_plpc", 0.0))
+        gain_pct = float(raw_pnl_pct) / 100.0
 
         # Never rotate out of strong winners
         if gain_pct >= ROTATION_MIN_GAIN_TO_KEEP:
