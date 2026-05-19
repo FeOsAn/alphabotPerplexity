@@ -403,18 +403,23 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             f"price=${current_price:.2f} | value=${market_value:.0f} | peak=${peak:.2f}"
         )
 
-        # 0a. Dead money timeout — any equity position flat ±1.5% for >=5 trading days
-        # exits regardless of strategy tag. Runs FIRST so trailing stops, ratchets,
-        # and partial-take logic don't keep stale positions alive indefinitely.
-        DEAD_MONEY_DAYS = 5
-        DEAD_MONEY_MIN_PCT = -1.5
-        DEAD_MONEY_MAX_PCT = 1.5
+        # 0a. Dead money timeout — momentum/breakout/drift positions flat ±2.5% for >=14 days
+        # NEVER fires on structural strategies (sector_rotation, pairs_trading, short_hedge,
+        # spy_dip, vix_reversal) — those are intentionally held flat as diversification.
+        DEAD_MONEY_DAYS = 14
+        DEAD_MONEY_MIN_PCT = -2.5
+        DEAD_MONEY_MAX_PCT = 2.5
+        _DEAD_MONEY_EXEMPT = {
+            "sector_rotation", "pairs_trading", "short_hedge",
+            "spy_dip", "vix_reversal", "mean_reversion",
+        }
         try:
             qty_signed = float(pos.get("qty", 0))
             asset_class = pos.get("asset_class", "equity")
             if (
                 qty_signed > 0
                 and asset_class == "equity"
+                and strategy not in _DEAD_MONEY_EXEMPT
                 and DEAD_MONEY_MIN_PCT <= pnl_pct <= DEAD_MONEY_MAX_PCT
             ):
                 entry_dt = None
