@@ -243,11 +243,34 @@ def _get_transcript_sentiment(symbol: str) -> tuple[str, str]:
         except Exception as e:
             logger.debug(f"[EP] alpha_vantage transcript failed for {symbol}: {e}")
 
+    # Fallback: recent news headlines via yfinance (last 7 days only)
+    # Stale news is worse than no news — hard cutoff at 7 days
+    if not transcript_text:
+        try:
+            import yfinance as yf
+            import time as _time
+            news = yf.Ticker(symbol).news or []
+            cutoff_ts = _time.time() - (7 * 24 * 3600)  # 7 days ago in unix time
+            fresh_headlines = [
+                n.get("title", "") for n in news
+                if n.get("providerPublishTime", 0) >= cutoff_ts and n.get("title")
+            ]
+            if len(fresh_headlines) >= 3:  # need at least 3 recent headlines to be meaningful
+                transcript_text = (
+                    f"[RECENT NEWS — last 7 days, {len(fresh_headlines)} articles]\n"
+                    + "\n".join(f"- {h}" for h in fresh_headlines[:15])
+                )
+                logger.debug(f"[EP] {symbol}: using {len(fresh_headlines)} fresh news headlines as sentiment proxy")
+            else:
+                logger.debug(f"[EP] {symbol}: only {len(fresh_headlines)} fresh headlines (<3) — skipping sentiment")
+        except Exception as e:
+            logger.debug(f"[EP] {symbol}: news fallback failed: {e}")
+
     if not transcript_text:
         _transcript_cache[symbol] = {
-            "verdict": "unavailable", "reasoning": "no_transcript", "ts": time.time()
+            "verdict": "unavailable", "reasoning": "no_fresh_content", "ts": time.time()
         }
-        return "unavailable", "no_transcript"
+        return "unavailable", "no_fresh_content"
 
     # Ask Claude
     try:
@@ -259,15 +282,26 @@ def _get_transcript_sentiment(symbol: str) -> tuple[str, str]:
             }
             return "unavailable", "no_api_key"
         client = anthropic.Anthropic(api_key=api_key)
-        prompt = (
-            f"Company: {symbol}. This is from their most recent earnings call.\n\n"
-            f"{transcript_text[:MAX_TRANSCRIPT_CHARS]}\n\n"
-            f"Based solely on management tone, analyst questions, and guidance language:\n"
-            f"1. Is management confident or defensive about next quarter?\n"
-            f"2. Are analysts pushing back on anything specific?\n"
-            f"3. Is guidance language getting more or less optimistic?\n\n"
-            f"Reply with exactly: BULLISH, NEUTRAL, or BEARISH — then one sentence of reasoning."
-        )
+        is_news = transcript_text.startswith("[RECENT NEWS")
+        if is_news:
+            prompt = (
+                f"Company: {symbol}. These are recent news headlines from the last 7 days.\n\n"
+                f"{transcript_text[:MAX_TRANSCRIPT_CHARS]}\n\n"
+                f"Based on these headlines, is the near-term sentiment around {symbol} "
+                f"positive, neutral, or negative going into their upcoming earnings?\n"
+                f"Consider: product momentum, analyst upgrades/downgrades, macro tailwinds/headwinds.\n\n"
+                f"Reply with exactly: BULLISH, NEUTRAL, or BEARISH — then one sentence of reasoning."
+            )
+        else:
+            prompt = (
+                f"Company: {symbol}. This is from their most recent earnings call.\n\n"
+                f"{transcript_text[:MAX_TRANSCRIPT_CHARS]}\n\n"
+                f"Based solely on management tone, analyst questions, and guidance language:\n"
+                f"1. Is management confident or defensive about next quarter?\n"
+                f"2. Are analysts pushing back on anything specific?\n"
+                f"3. Is guidance language getting more or less optimistic?\n\n"
+                f"Reply with exactly: BULLISH, NEUTRAL, or BEARISH — then one sentence of reasoning."
+            )
         msg = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=100,
