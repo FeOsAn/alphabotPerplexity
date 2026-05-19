@@ -106,6 +106,7 @@ _RATCHET_LEVELS = [
     (15.0, 0.10),   # pnl >= 15% -> stop at +10%
     (10.0, 0.05),   # pnl >= 10% -> stop at +5%
     (5.0,  0.00),   # pnl >= 5%  -> stop at breakeven
+    (2.0, -0.02),   # pnl >= 2%  -> stop at -2% (locks in ~$500 on avg position, prevents full loss)
 ]
 
 
