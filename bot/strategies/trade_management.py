@@ -99,46 +99,103 @@ _ratchet_stops: dict[str, float] = {}      # symbol -> locked stop pct (e.g. 0.0
 _state_restored: bool = False              # gate so restore runs only once
 
 
-# ── Ratchet logic ─────────────────────────────────────────────────────────────
-_RATCHET_LEVELS = [
-    (25.0, 0.20),   # pnl >= 25% -> stop at +20%
-    (20.0, 0.15),   # pnl >= 20% -> stop at +15%
-    (15.0, 0.10),   # pnl >= 15% -> stop at +10%
-    (10.0, 0.05),   # pnl >= 10% -> stop at +5%
-    (5.0,  0.02),   # pnl >= 5%  -> stop at +2%
-    (3.0,  0.00),   # pnl >= 3%  -> stop at breakeven
+# ── ATR-based ratchet logic ───────────────────────────────────────────────────
+# Gain tiers: once a position reaches this gain, the stop is placed
+# (gain - ATR_RATCHET_MULT * ATR / entry_price) from entry, but never below
+# the LOCK_FLOOR_PCT for that tier. This means:
+#   - Volatile stocks (high ATR) get more breathing room automatically
+#   - Calm stocks (low ATR) get tighter stops
+#   - You never give back more than ~1 ATR of profit once in a tier
+
+_ATR_RATCHET_TIERS = [
+    # (min_gain_pct, lock_floor_pct, atr_mult)
+    # Once gain >= min_gain, stop = max(lock_floor, gain - atr_mult * ATR/entry)
+    # lock_floor ensures we always lock in at least this much gain
+    (0.25, 0.18, 1.0),  # >= +25%: floor +18%, give 1 ATR room
+    (0.18, 0.12, 1.0),  # >= +18%: floor +12%, give 1 ATR room
+    (0.12, 0.07, 1.2),  # >= +12%: floor +7%,  give 1.2 ATR room
+    (0.08, 0.04, 1.5),  # >= +8%:  floor +4%,  give 1.5 ATR room
+    (0.05, 0.02, 1.5),  # >= +5%:  floor +2%,  give 1.5 ATR room
+    (0.03, 0.00, 2.0),  # >= +3%:  floor breakeven, give 2 ATR room
 ]
 
 
-def _ratchet_for_pnl(current_pnl_pct: float):
-    """Return the highest ratchet lock_pct applicable for current_pnl_pct, or None."""
-    for threshold_pct, lock_pct in _RATCHET_LEVELS:
-        if current_pnl_pct >= threshold_pct:
-            return lock_pct
-    return None
-
-
-def _get_ratchet_stop(symbol: str, current_pnl_pct: float, base_stop_pct: float) -> float:
+def _atr_ratchet_stop_pct(
+    symbol: str,
+    current_pnl_pct: float,
+    entry_price: float,
+    current_price: float,
+    base_stop_pct: float,
+) -> float:
     """
-    Returns the effective stop loss % (as a fraction; negative = below entry).
-    Ratchets up as position gains. Never moves the stop down.
+    Returns the effective stop as a fraction from entry (e.g. 0.05 = stop at entry*1.05).
+    Uses ATR to give each stock appropriate breathing room.
+    Never loosens an existing stop.
     """
-    new_ratchet = _ratchet_for_pnl(current_pnl_pct)
-    if new_ratchet is None:
-        current_ratchet = _ratchet_stops.get(symbol)
-        if current_ratchet is not None:
-            return current_ratchet
-        return -base_stop_pct
+    # Find applicable tier
+    applicable = None
+    for min_gain, lock_floor, atr_mult in _ATR_RATCHET_TIERS:
+        if current_pnl_pct >= min_gain:
+            applicable = (min_gain, lock_floor, atr_mult)
+            break
 
-    current_ratchet = _ratchet_stops.get(symbol, -base_stop_pct)
-    if new_ratchet > current_ratchet:
-        _ratchet_stops[symbol] = new_ratchet
+    if applicable is None:
+        # Below lowest tier — use existing ratchet or base stop
+        existing = _ratchet_stops.get(symbol)
+        return existing if existing is not None else -base_stop_pct
+
+    _, lock_floor, atr_mult = applicable
+
+    # Compute ATR-based stop price
+    atr = _get_current_atr(symbol)
+    if atr > 0 and entry_price > 0:
+        atr_room_pct = (atr * atr_mult) / entry_price
+        atr_stop_pct = current_pnl_pct - atr_room_pct
+    else:
+        atr_stop_pct = lock_floor  # fallback if ATR unavailable
+
+    # Take the higher of lock_floor and ATR stop (never go below the floor)
+    new_stop_pct = max(lock_floor, atr_stop_pct)
+
+    # Never loosen existing stop
+    existing = _ratchet_stops.get(symbol, -base_stop_pct)
+    if new_stop_pct > existing:
+        _ratchet_stops[symbol] = new_stop_pct
+        atr_str = f"ATR=${atr:.2f}" if atr > 0 else "ATR=n/a"
         logger.info(
-            f"[Ratchet] {symbol} P&L={current_pnl_pct:+.1f}% → "
-            f"stop ratcheted to {new_ratchet:+.0%}"
+            f"[Ratchet] {symbol} P&L={current_pnl_pct:+.1%} {atr_str} → "
+            f"stop locked at {new_stop_pct:+.2%} (floor={lock_floor:+.0%})"
         )
 
     return _ratchet_stops.get(symbol, -base_stop_pct)
+
+
+# Keep backward-compatible wrapper used by restore_trade_management_state
+def _ratchet_for_pnl(current_pnl_pct: float):
+    """Return a simple lock_pct for the tier (used during state restore)."""
+    for min_gain, lock_floor, _ in _ATR_RATCHET_TIERS:
+        if current_pnl_pct >= min_gain:
+            return lock_floor
+    return None
+
+
+def _get_ratchet_stop(symbol: str, current_pnl_pct: float, base_stop_pct: float,
+                      entry_price: float = 0.0, current_price: float = 0.0) -> float:
+    """Wrapper — use ATR ratchet if prices available, else fall back to floor-only."""
+    if entry_price > 0 and current_price > 0:
+        return _atr_ratchet_stop_pct(
+            symbol, current_pnl_pct, entry_price, current_price, base_stop_pct
+        )
+    # Fallback: floor-only (no ATR data)
+    for min_gain, lock_floor, _ in _ATR_RATCHET_TIERS:
+        if current_pnl_pct >= min_gain:
+            existing = _ratchet_stops.get(symbol, -base_stop_pct)
+            new_stop = max(lock_floor, existing)
+            if new_stop > existing:
+                _ratchet_stops[symbol] = new_stop
+            return _ratchet_stops.get(symbol, -base_stop_pct)
+    existing = _ratchet_stops.get(symbol)
+    return existing if existing is not None else -base_stop_pct
 
 
 def update_peak(symbol: str, current_price: float) -> float:
