@@ -617,6 +617,115 @@ def recency_auditor(client: anthropic.Anthropic, symbol: str, context: dict, the
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# v45: Claude pre-earnings check for held positions
+# ─────────────────────────────────────────────────────────────────────────────
+
+_pre_earnings_checked: dict = {}  # symbol -> date last checked
+
+def check_held_positions_pre_earnings(positions, broker: AlpacaBroker, db_conn):
+    """For each held position with earnings in 0-2 days, ask Claude: HOLD / TIGHTEN / EXIT."""
+    try:
+        from utils.earnings_calendar import get_next_earnings_date
+        import anthropic, os
+        from utils import notify
+        from strategies.trade_management import apply_earnings_stop_tightening
+    except Exception as e:
+        logger.warning(f"[PreEarnings] import failed: {e}")
+        return
+
+    today = datetime.now(timezone.utc).date()
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+
+    for pos in positions:
+        sym = pos["symbol"]
+        try:
+            # Skip if checked today
+            if _pre_earnings_checked.get(sym) == today:
+                continue
+
+            earn_date = get_next_earnings_date(sym)
+            if earn_date is None:
+                continue
+            days_to_earnings = (earn_date - today).days
+            if days_to_earnings < 0 or days_to_earnings > 2:
+                continue
+
+            gain_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
+            current_price = float(pos.get("current_price") or 0.0)
+
+            # Fetch recent news headlines
+            headlines = []
+            try:
+                import yfinance as yf
+                news = yf.Ticker(sym).news or []
+                headlines = [n.get("title", "") for n in news[:5] if n.get("title")]
+            except Exception:
+                pass
+            headlines_str = "; ".join(headlines) if headlines else "No recent headlines available."
+
+            # Analyst consensus from yfinance
+            consensus_str = "N/A"
+            avg_target = 0.0
+            try:
+                info = yf.Ticker(sym).info
+                rec = info.get("recommendationKey", "N/A")
+                avg_target = float(info.get("targetMeanPrice") or 0.0)
+                consensus_str = rec
+            except Exception:
+                pass
+
+            prompt = (
+                f"Symbol: {sym}, Current gain: {gain_pct:+.1f}%, "
+                f"Earnings in {days_to_earnings} day(s), Current price: ${current_price:.2f}.\n"
+                f"Recent headlines: {headlines_str}\n"
+                f"Analyst consensus: {consensus_str}"
+                + (f", avg target ${avg_target:.2f}" if avg_target > 0 else "") + ".\n\n"
+                f"In 2 sentences max: Is the risk/reward of holding through earnings favourable?\n"
+                f"Answer with exactly: HOLD, TIGHTEN, or EXIT — then one sentence of reasoning."
+            )
+
+            msg = client.messages.create(
+                model="claude-sonnet-4-5",
+                max_tokens=120,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            response = msg.content[0].text.strip()
+
+            # Parse verdict (first word)
+            verdict = response.split()[0].upper().rstrip(".,:")
+            reasoning = " ".join(response.split()[1:])
+
+            logger.info(f"[PreEarnings] Claude verdict for {sym}: {verdict} — {reasoning}")
+            notify.send(
+                title=f"🤖 Pre-earnings: {sym} → {verdict}",
+                body=f"{sym} (gain {gain_pct:+.1f}%, earnings {days_to_earnings}d): {response}",
+                priority="high" if verdict == "EXIT" else "default"
+            )
+
+            if verdict == "EXIT":
+                logger.info(f"[PreEarnings] Closing {sym} on Claude EXIT verdict")
+                broker.close_position(sym, "ai_research_pre_earnings")
+                from db import log_trade
+                log_trade(db_conn, "ai_research_pre_earnings", sym, "sell_pre_earnings",
+                          float(pos.get("qty", 0)), current_price,
+                          float(pos.get("unrealized_pnl") or 0.0))
+            elif verdict == "TIGHTEN":
+                # Apply tighter-than-normal stop: 1.0x ATR multiplier
+                from strategies.trade_management import _atr_tighten, _resolve_entry_price
+                entry = _resolve_entry_price(sym, pos, db_conn)
+                tightened, new_stop = _atr_tighten(sym, entry, current_price,
+                                                    min_gain_pct=max(0.0, gain_pct/100 - 0.05),
+                                                    atr_mult=1.0)
+                if tightened:
+                    logger.info(f"[PreEarnings] {sym} stop tightened to ${new_stop:.2f} on TIGHTEN verdict")
+
+            _pre_earnings_checked[sym] = today
+
+        except Exception as e:
+            logger.warning(f"[PreEarnings] {sym} failed: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main strategy runner
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -639,6 +748,15 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     client = anthropic.Anthropic(api_key=api_key)
+
+    # ── v45: Pre-earnings check for held positions (only when market is open) ─
+    try:
+        from utils.market_hours import is_entry_allowed
+        if is_entry_allowed():
+            all_positions = broker.get_positions()
+            check_held_positions_pre_earnings(all_positions, broker, db_conn)
+    except Exception as e:
+        logger.warning(f"[AIResearch] pre-earnings check failed: {e}")
 
     # ── 1. Exit checks — ALWAYS run, no time gate ─────────────────────────────
     all_positions = broker.get_positions()

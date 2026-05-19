@@ -25,6 +25,7 @@ DUST CLEANUP:
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+import pandas as pd
 from broker import AlpacaBroker
 from db import log_trade
 from utils import notify
@@ -588,6 +589,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
 # ── v44: Earnings-aware autonomous stop tightening ───────────────────────────
 # RSI(14) helper — cached 10 minutes so repeated cycles don't re-fetch.
 _rsi_cache: dict = {}   # symbol -> (rsi_value, cached_at_epoch)
+_atr_cache: dict = {}   # symbol -> (atr_value, cached_at_epoch)
 _RSI_TTL = 600          # 10 minutes
 
 # Symbols whose post-earnings review has already fired (don't re-act).
@@ -630,6 +632,34 @@ def _get_current_rsi(symbol: str) -> float:
     return rsi_val
 
 
+def _get_current_atr(symbol: str) -> float:
+    """Compute ATR(14) from last 20 days of daily OHLC. Returns 0.0 on failure."""
+    now_ts = time.time()
+    cached = _atr_cache.get(symbol)
+    if cached is not None and (now_ts - cached[1]) < _RSI_TTL:  # reuse same 10-min TTL
+        return cached[0]
+    atr_val = 0.0
+    try:
+        from utils import yf_cache
+        hist = yf_cache.get_history(symbol, period="1mo", interval="1d")
+        if hist is not None and not hist.empty and len(hist) >= 15:
+            high = hist["High"].dropna()
+            low = hist["Low"].dropna()
+            close = hist["Close"].dropna()
+            prev_close = close.shift(1)
+            tr = pd.concat([
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ], axis=1).max(axis=1).dropna()
+            if len(tr) >= 14:
+                atr_val = float(tr.tail(14).mean())
+    except Exception as e:
+        logger.debug(f"[ATR] {symbol}: compute failed — {e}")
+    _atr_cache[symbol] = (atr_val, now_ts)
+    return atr_val
+
+
 def _resolve_entry_price(symbol: str, pos: dict, db_conn) -> float:
     """Best-effort entry price: prefer most-recent BUY in trades table."""
     try:
@@ -650,18 +680,37 @@ def _resolve_entry_price(symbol: str, pos: dict, db_conn) -> float:
         return 0.0
 
 
-def _maybe_tighten(symbol: str, target_multiplier: float) -> tuple:
-    """Ratchet stop up to target_multiplier (e.g. 1.16 → lock in +16%).
-
-    Never loosens — `max(current_lock, new_lock)` is enforced.
-    Returns (tightened: bool, new_lock_pct: float).
+def _atr_tighten(symbol: str, entry_price: float, current_price: float,
+                 min_gain_pct: float, atr_mult: float) -> tuple[bool, float]:
     """
-    target_lock = target_multiplier - 1.0
+    Compute ATR-aware stop and tighten _ratchet_stops if it improves on the current lock.
+
+    Stop = max(
+        entry * (1 + min_gain_pct),      # never give back more than min_gain
+        current - atr * atr_mult          # breathing room based on volatility
+    )
+
+    Never loosens an existing stop. Returns (tightened: bool, new_stop_price: float).
+    """
+    atr = _get_current_atr(symbol)
+    if atr <= 0:
+        # Fallback: use min_gain_pct only
+        new_stop = entry_price * (1.0 + min_gain_pct)
+    else:
+        gain_floor = entry_price * (1.0 + min_gain_pct)
+        atr_stop   = current_price - (atr * atr_mult)
+        new_stop   = max(gain_floor, atr_stop)
+
+    # Convert to a gain-fraction relative to entry for storage in _ratchet_stops
+    if entry_price <= 0:
+        return False, 0.0
+    new_lock = (new_stop / entry_price) - 1.0
+
     current_lock = _ratchet_stops.get(symbol)
-    if current_lock is None or target_lock > current_lock:
-        _ratchet_stops[symbol] = target_lock
-        return True, target_lock
-    return False, current_lock if current_lock is not None else 0.0
+    if current_lock is None or new_lock > current_lock:
+        _ratchet_stops[symbol] = new_lock
+        return True, new_stop
+    return False, entry_price * (1.0 + current_lock)
 
 
 def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
@@ -693,6 +742,10 @@ def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
             if entry_price <= 0:
                 continue
 
+            current_price = float(pos.get("current_price") or pos.get("price") or 0.0)
+            if current_price <= 0:
+                continue
+
             earn_date = None
             try:
                 earn_date = get_next_earnings_date(sym)
@@ -703,59 +756,59 @@ def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
             rsi = _get_current_rsi(sym)
 
             tightened = False
-            new_lock = 0.0
+            new_stop = 0.0
             tier = ""
 
             if days_to_earnings is not None and days_to_earnings <= 1:
                 if rsi > 80 and gain_pct > 15:
-                    tightened, new_lock = _maybe_tighten(sym, 1.16)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.12, 1.5)
                     tier = "earnings≤1d / RSI>80 / +15%"
                 elif rsi > 70 and gain_pct > 10:
-                    tightened, new_lock = _maybe_tighten(sym, 1.10)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.07, 1.5)
                     tier = "earnings≤1d / RSI>70 / +10%"
                 elif gain_pct > 5:
-                    tightened, new_lock = _maybe_tighten(sym, 1.05)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.03, 2.0)
                     tier = "earnings≤1d / +5%"
                 else:
-                    tightened, new_lock = _maybe_tighten(sym, 0.97)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, -0.03, 2.0)
                     tier = "earnings≤1d / floor -3%"
             elif days_to_earnings is not None and days_to_earnings <= 3:
                 if rsi > 85 and gain_pct > 20:
-                    tightened, new_lock = _maybe_tighten(sym, 1.14)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.10, 2.0)
                     tier = "earnings≤3d / RSI>85 / +20%"
                 elif rsi > 75 and gain_pct > 10:
-                    tightened, new_lock = _maybe_tighten(sym, 1.08)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.06, 2.0)
                     tier = "earnings≤3d / RSI>75 / +10%"
             elif days_to_earnings is not None and days_to_earnings <= 7:
                 if rsi > 90:
-                    tightened, new_lock = _maybe_tighten(sym, 1.12)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.08, 2.0)
                     tier = "earnings≤7d / RSI>90"
             else:
                 # Feature 2: extreme RSI tightening even without imminent earnings
                 if rsi > 90 and gain_pct > 20:
-                    tightened, new_lock = _maybe_tighten(sym, 1.15)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.12, 2.0)
                     tier = "no-earnings / RSI>90 / +20%"
                 elif rsi > 85 and gain_pct > 15:
-                    tightened, new_lock = _maybe_tighten(sym, 1.10)
+                    tightened, new_stop = _atr_tighten(sym, entry_price, current_price, 0.08, 2.0)
                     tier = "no-earnings / RSI>85 / +15%"
 
             if tightened:
-                new_stop_price = entry_price * (1.0 + new_lock)
                 days_txt = (
                     f"{days_to_earnings} day(s)" if days_to_earnings is not None else "n/a"
                 )
+                atr_val = _get_current_atr(sym)
                 logger.info(
-                    f"[EarningsTighten] {sym} → stop locked at +{new_lock:.0%} "
-                    f"(${new_stop_price:.2f}) | gain={gain_pct:+.1f}% RSI={rsi:.0f} "
+                    f"[EarningsTighten] {sym} → stop ${new_stop:.2f} "
+                    f"(ATR=${atr_val:.2f}) | gain={gain_pct:+.1f}% RSI={rsi:.0f} "
                     f"earnings_in={days_txt} | tier={tier}"
                 )
                 try:
                     notify.send(
                         title=f"🔒 Stop tightened: {sym}",
                         body=(
-                            f"🔒 Stop tightened: {sym} → ${new_stop_price:.2f} "
-                            f"(+{new_lock * 100:.1f}% locked) — "
-                            f"earnings in {days_txt}, RSI={rsi:.0f}"
+                            f"🔒 {sym}: stop → ${new_stop:.2f} "
+                            f"(ATR=${atr_val:.2f}, {days_txt} to earnings, "
+                            f"RSI={rsi:.0f}, gain={gain_pct:+.1f}%)"
                         ),
                         priority="default",
                         tags="lock",
