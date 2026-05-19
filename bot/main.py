@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v44"
+VERSION = "v49"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -68,7 +68,7 @@ from strategies.trade_management import (
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
 from strategies import event_driven
-from strategies import earnings_nlp
+from strategies import earnings_prediction
 from strategies import ts_momentum
 from strategies import vwap_reclaim
 from utils import regime_detector
@@ -587,11 +587,11 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     except Exception as e:
         logger.error(f"Event-driven error: {e}", exc_info=True)
 
-    # ── Earnings NLP: Claude-driven PEAD trades on earnings events ──────────
+    # ── Earnings Prediction (v49): 5-signal pre-earnings LONG entries ───────
     try:
-        earnings_nlp.run(broker, db_conn)
+        earnings_prediction.run(broker, db_conn)
     except Exception as e:
-        logger.error(f"Earnings NLP error: {e}", exc_info=True)
+        logger.error(f"Earnings prediction error: {e}", exc_info=True)
 
     # ── TS Momentum: monthly rebalance, macro/sector ETF trend-following ────
     try:
