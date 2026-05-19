@@ -146,6 +146,18 @@ def get_trades(conn: sqlite3.Connection, strategy: Optional[str] = None,
     return [dict(r) for r in rows]
 
 
+def get_trades_for_symbol(conn: sqlite3.Connection, symbol: str) -> list[dict]:
+    """Return all trade records for a symbol, ordered by created_at desc."""
+    try:
+        rows = conn.execute(
+            "SELECT * FROM trades WHERE symbol=? ORDER BY created_at DESC LIMIT 20",
+            (symbol,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def get_strategy_performance(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
         SELECT

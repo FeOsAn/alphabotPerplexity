@@ -376,11 +376,42 @@ def run(broker: AlpacaBroker, db_conn):
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:
-            logger.info(
-                f"[BRK] {sym}: insufficient cash (available=${cash:.0f}, "
-                f"need=${notional:.0f}, reserve=${min_cash:.0f})"
+            # Try capital rotation before giving up
+            from utils.capital_rotator import find_rotation_candidate, execute_rotation
+            rotation_candidate = find_rotation_candidate(
+                new_symbol=sym,
+                new_score=0.30,  # fixed breakout confidence — no continuous score
+                new_notional=notional,
+                current_positions=broker.get_positions(),
+                broker=broker,
+                db_conn=db_conn,
             )
-            continue
+            if rotation_candidate:
+                rotated = execute_rotation(
+                    sell_symbol=rotation_candidate,
+                    buy_symbol=sym,
+                    buy_notional=notional,
+                    buy_score=0.30,
+                    broker=broker,
+                    db_conn=db_conn,
+                    strategy_name=STRATEGY_NAME,
+                )
+                if not rotated:
+                    continue
+                cash, portfolio_value = broker.get_live_cash()
+                min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
+                if cash - notional < min_cash:
+                    logger.info(
+                        f"[BRK] {sym}: still insufficient after rotation "
+                        f"(cash=${cash:.0f}, need=${notional:.0f}) — skipping"
+                    )
+                    continue
+            else:
+                logger.info(
+                    f"[BRK] {sym}: insufficient cash (available=${cash:.0f}, "
+                    f"need=${notional:.0f}, reserve=${min_cash:.0f})"
+                )
+                continue
 
         logger.info(
             f"[BRK] ENTER {sym} — "
