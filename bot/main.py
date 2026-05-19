@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v55"
+VERSION = "v56"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -406,9 +406,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         _gap_protection_run_date = today_utc
         _persist_daily_state(db_conn)
 
-    # ── Daily P&L recap: 20:30–22:59 UTC, weekdays only (wider window for late restarts) ─
-    # Fires after market close, so checked here BEFORE any early-return paths.
-    if (((now_utc.hour == 20 and now_utc.minute >= 30) or now_utc.hour in (21, 22))
+    # ── Daily P&L recap: 20:00–22:59 UTC (9 PM–midnight BST), weekdays only ─
+    # Fires after market close (4 PM ET = 9 PM BST = 20:00 UTC).
+    if (now_utc.hour in (20, 21, 22)
             and weekday < 5 and _recap_sent_date != today_utc):
         try:
             success = send_daily_recap(broker)
