@@ -23,6 +23,7 @@ Exit logic:
 import logging
 import yfinance as yf
 import pandas as pd
+from utils.clock import now_utc as _now_utc
 from datetime import datetime, timedelta
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
@@ -121,7 +122,7 @@ def _holding_too_long(symbol: str) -> bool:
     if entry is None:
         return False
     # approximation: 5 trading days ≈ 7 calendar days × (5/7); outer cap at 10 calendar days
-    calendar_days = (datetime.now() - entry).days
+    calendar_days = (_now_utc() - entry).days
     if calendar_days >= 10:
         return True
     approx_trading_days = calendar_days * (5 / 7)
@@ -201,7 +202,7 @@ def run(broker: AlpacaBroker, db_conn):
     tag_symbol("SPY", STRATEGY_NAME)
     log_trade(db_conn, STRATEGY_NAME, "SPY", "buy", 0, sig["spy_price"], 0,
               metadata={"notional": notional, "vixy_spike_ratio": sig["spike_ratio"]})
-    _entry_dates["SPY"] = datetime.now()
+    _entry_dates["SPY"] = _now_utc()
 
     cash, portfolio_value = broker.get_live_cash()
     if cash < 0:

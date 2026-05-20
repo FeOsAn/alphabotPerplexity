@@ -15,6 +15,7 @@ import gc
 import logging
 import pandas as pd
 import yfinance as yf
+from utils.clock import now_utc as _now_utc
 from datetime import datetime
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
@@ -96,26 +97,26 @@ def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
     if current_sr_symbols:
         # Already holding sector rotation positions — only rebalance if timer expired
         if _last_rebalance is not None:
-            if (datetime.now() - _last_rebalance).days < SR_REBALANCE_DAYS:
+            if (_now_utc() - _last_rebalance).days < SR_REBALANCE_DAYS:
                 return False
         else:
             # No in-memory timer but we have live positions — set timer now and skip
-            _last_rebalance = datetime.now()
+            _last_rebalance = _now_utc()
             return False
 
     # No live positions — check DB for when we last bought
     db_ts = _load_last_rebalance(db_conn)
     if db_ts is not None:
         _last_rebalance = db_ts
-        return (datetime.now() - db_ts).days >= SR_REBALANCE_DAYS
+        return (_now_utc() - db_ts).days >= SR_REBALANCE_DAYS
 
     # Also check dedicated state key — survives forced exits (dead money, stop loss)
     if _last_rebalance is None:
         ts_str = get_state(db_conn, "sector_rotation_last_rebalance")
         if ts_str:
             try:
-                _last_rebalance = datetime.fromisoformat(ts_str)
-                return (datetime.now() - _last_rebalance).days >= SR_REBALANCE_DAYS
+                _last_rebalance = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc) if datetime.fromisoformat(ts_str).tzinfo is None else datetime.fromisoformat(ts_str)
+                return (_now_utc() - _last_rebalance).days >= SR_REBALANCE_DAYS
             except Exception:
                 pass
 
@@ -298,7 +299,7 @@ def run(broker: AlpacaBroker, db_conn):
             logger.warning(f"[{STRATEGY_NAME}] Cash floor hit (${cash:,.0f}) — halting entries")
             break
 
-    _last_rebalance = datetime.now()
+    _last_rebalance = _now_utc()
     try:
         set_state(db_conn, "sector_rotation_last_rebalance", _last_rebalance.isoformat())
     except Exception:

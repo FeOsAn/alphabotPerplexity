@@ -29,6 +29,7 @@ Hold period: max 15 trading days.
 """
 
 import logging, time, gc, sqlite3
+from utils.clock import now_utc as _now_utc
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 import urllib.request, json, xml.etree.ElementTree as ET
@@ -311,7 +312,7 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     # Prune stale cooldown entries
-    now = datetime.now()
+    now = _now_utc()
     stale = [s for s, dt in _cooldown.items() if (now - dt).days >= COOLDOWN_DAYS]
     for s in stale:
         del _cooldown[s]
@@ -326,7 +327,7 @@ def run(broker: AlpacaBroker, db_conn):
         sym = sig["sym"]
 
         if sym in _cooldown:
-            days_since = (datetime.now() - _cooldown[sym]).days
+            days_since = (_now_utc() - _cooldown[sym]).days
             if days_since < COOLDOWN_DAYS:
                 continue
 
@@ -349,7 +350,7 @@ def run(broker: AlpacaBroker, db_conn):
         try:
             order = broker.market_buy(sym, notional, strategy=STRATEGY_NAME)
             if order:
-                _cooldown[sym] = datetime.now()
+                _cooldown[sym] = _now_utc()
                 entered += 1
 
                 buyer_names = ", ".join(set(b["owner_name"] for b in sig["buys"]))

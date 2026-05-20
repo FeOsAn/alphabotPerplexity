@@ -23,7 +23,7 @@ import gc
 import logging
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta as _pta
 from datetime import datetime
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
@@ -152,7 +152,7 @@ def _compute_signals(sym: str) -> Optional[dict]:
         above_ma50 = bool(ma50 is not None and price_now > ma50)
 
         # RSI(14)
-        rsi_series = close.ta.rsi(length=14)
+        rsi_series = _pta.rsi(close, length=14)
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
         # Volume ratio — use previous completed day (iloc[-2]), not today's partial bar.

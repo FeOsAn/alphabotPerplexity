@@ -17,7 +17,7 @@ import logging
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta as _pta
 from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
     TREND_FAST_EMA, TREND_SLOW_EMA, TREND_VIX_MAX,
@@ -121,12 +121,12 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     close  = df["close"]
     volume = df["volume"]
 
-    ema_fast = close.ta.ema(length=TREND_FAST_EMA)
-    ema_slow = close.ta.ema(length=TREND_SLOW_EMA)
+    ema_fast = _pta.ema(close, length=TREND_FAST_EMA)
+    ema_slow = _pta.ema(close, length=TREND_SLOW_EMA)
 
     # ADX(14) trend strength — primary whipsaw filter
     try:
-        adx_series = high.ta.adx(high=high, low=low, close=close, length=14)['ADX_14']
+        adx_series = _pta.adx(high, low, close, length=14)['ADX_14']
         adx_val = float(adx_series.iloc[-1])
         if pd.isna(adx_val):
             adx_val = _compute_adx(high, low, close, period=14)

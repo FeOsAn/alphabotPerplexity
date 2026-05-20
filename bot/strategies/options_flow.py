@@ -26,6 +26,7 @@ Max positions: 3 concurrent options_flow positions.
 """
 
 import logging, gc, math
+from utils.clock import now_utc as _now_utc
 from datetime import datetime, timezone
 from typing import Optional
 import yfinance as yf
@@ -164,7 +165,7 @@ def run(broker: AlpacaBroker, db_conn):
     logger.info("=== Options Flow Strategy: Daily Scan ===")
 
     # Prune stale cooldown entries
-    now_prune = datetime.now()
+    now_prune = _now_utc()
     stale = [s for s, dt in _cooldown.items() if (now_prune - dt).days >= COOLDOWN_DAYS]
     for s in stale:
         del _cooldown[s]
@@ -172,7 +173,7 @@ def run(broker: AlpacaBroker, db_conn):
     signals = []
     for sym in UNIVERSE:
         if sym in _cooldown:
-            if (datetime.now() - _cooldown[sym]).days < COOLDOWN_DAYS:
+            if (_now_utc() - _cooldown[sym]).days < COOLDOWN_DAYS:
                 continue
         if any(p["symbol"] == sym for p in positions):
             continue
@@ -204,7 +205,7 @@ def run(broker: AlpacaBroker, db_conn):
         try:
             order = broker.market_buy(sym, notional, strategy=STRATEGY_NAME)
             if order:
-                _cooldown[sym] = datetime.now()
+                _cooldown[sym] = _now_utc()
                 entered += 1
                 notify(
                     title=f"📊 Options Flow: {sym}",

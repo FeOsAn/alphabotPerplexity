@@ -13,7 +13,8 @@ import gc
 import logging
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta as _pta
+from utils.clock import now_utc as _now_utc
 from datetime import datetime
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
@@ -72,12 +73,12 @@ def _should_rebalance(db_conn=None) -> bool:
         ts_str = get_state(db_conn, "momentum_last_rebalance")
         if ts_str:
             try:
-                _last_rebalance = datetime.fromisoformat(ts_str)
+                _last_rebalance = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc) if datetime.fromisoformat(ts_str).tzinfo is None else datetime.fromisoformat(ts_str)
             except Exception:
                 pass
     if _last_rebalance is None:
         return True
-    return (datetime.now() - _last_rebalance).days >= MOMENTUM_REBALANCE_DAYS
+    return (_now_utc() - _last_rebalance).days >= MOMENTUM_REBALANCE_DAYS
 
 
 def _conviction_allocation_pct(score: float, rsi: float = 50, vol_ratio: float = 1.0) -> float:
@@ -138,7 +139,7 @@ def _compute_score(sym: str) -> Optional[dict]:
         ma50 = float(close.tail(50).mean()) if len(close) >= 50 else None
         above_ma50 = bool(ma50 is not None and price_now > ma50)
 
-        rsi_series = close.ta.rsi(length=14)
+        rsi_series = _pta.rsi(close, length=14)
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
         # Volume ratio — use the PREVIOUS completed day (iloc[-2]), not today's
@@ -269,7 +270,7 @@ def run(broker: AlpacaBroker, db_conn):
     filtered.sort(key=lambda x: x["score"], reverse=True)
     if not filtered:
         logger.info("[MOM] No candidates passed entry filters")
-        _last_rebalance = datetime.now()
+        _last_rebalance = _now_utc()
         try:
             set_state(db_conn, "momentum_last_rebalance", _last_rebalance.isoformat())
         except Exception:
@@ -456,7 +457,7 @@ def run(broker: AlpacaBroker, db_conn):
             _notify("⚠️ Cash Floor Hit", f"{{STRATEGY_NAME}}: cash ${{cash:,.0f}} below floor — entries halted", priority="high")
             break
 
-    _last_rebalance = datetime.now()
+    _last_rebalance = _now_utc()
     try:
         set_state(db_conn, "momentum_last_rebalance", _last_rebalance.isoformat())
     except Exception:

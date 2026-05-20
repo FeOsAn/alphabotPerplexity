@@ -9,7 +9,7 @@ import gc
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta as _pta
 
 from broker import AlpacaBroker, tag_symbol
 from config import MIN_CASH_RESERVE_PCT
@@ -51,7 +51,7 @@ def _get_signals(symbol: str) -> Optional[dict]:
         price = float(close.iloc[-1])
 
         # RSI
-        rsi = float(close.ta.rsi(length=14).iloc[-1])
+        rsi = float(_pta.rsi(close, length=14).iloc[-1])
 
         # 5-day slope (is the inverse ETF itself trending up = market trending down)
         price_5d = float(close.iloc[-6]) if len(close) >= 6 else float(close.iloc[0])
@@ -67,7 +67,7 @@ def _get_signals(symbol: str) -> Optional[dict]:
         above_ma20 = price > ma20
 
         # ADX (trend strength)
-        _adx_df = close.ta.adx(high=hist["High"], low=hist["Low"], length=14)
+        _adx_df = _pta.adx(hist["High"], hist["Low"], close, length=14)
         adx = float(_adx_df['ADX_14'].iloc[-1]) if _adx_df is not None and 'ADX_14' in _adx_df.columns else 0.0
 
         # Entry: inverse ETF is rising (market falling), above MA20, ADX > 18, volume elevated

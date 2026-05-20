@@ -16,7 +16,7 @@ import gc
 import logging
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+import pandas_ta as _pta
 import yfinance as yf
 from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
@@ -71,10 +71,10 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     close = df["close"]
     volume = df["volume"]
 
-    rsi = close.ta.rsi(length=MR_RSI_PERIOD)
-    _bb = close.ta.bbands(length=MR_BB_PERIOD, std=MR_BB_STD)
-    bb_lower = _bb[f'BBL_{MR_BB_PERIOD}_{MR_BB_STD}']
-    bb_mid   = _bb[f'BBM_{MR_BB_PERIOD}_{MR_BB_STD}']
+    rsi = _pta.rsi(close, length=MR_RSI_PERIOD)
+    _bb = _pta.bbands(close, length=MR_BB_PERIOD, std=float(MR_BB_STD))
+    bb_lower = _bb[[c for c in _bb.columns if c.startswith('BBL_')][0]]
+    bb_mid   = _bb[[c for c in _bb.columns if c.startswith('BBM_')][0]]
 
     vol_avg = volume.rolling(20).mean()
     vol_elevated = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 1.2)

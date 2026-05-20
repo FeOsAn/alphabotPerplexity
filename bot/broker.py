@@ -10,6 +10,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from utils.clock import now_utc as _now_utc
 from datetime import datetime, timedelta
 import pandas as pd
 
@@ -156,7 +157,7 @@ class AlpacaBroker:
 
     # -------------------------------------------------------------------- data
     def get_bars(self, symbols: list[str], days: int = 300) -> dict[str, pd.DataFrame]:
-        end = datetime.now()
+        end = _now_utc()
         start = end - timedelta(days=days + 50)  # buffer for weekends/holidays
         req = StockBarsRequest(
             symbol_or_symbols=symbols,

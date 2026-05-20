@@ -23,6 +23,7 @@ import gc
 import logging
 import yfinance as yf
 import pandas as pd
+from utils.clock import now_utc as _now_utc
 from datetime import datetime, timedelta
 import pytz
 from typing import Optional
@@ -205,7 +206,7 @@ def _holding_too_long(symbol: str) -> bool:
     if entry is None:
         return False
     # approximation: 5 trading days ≈ 7 calendar days × (5/7); outer cap at 10 calendar days
-    calendar_days = (datetime.now() - entry).days
+    calendar_days = (_now_utc() - entry).days
     if calendar_days >= 10:
         return True
     approx_trading_days = calendar_days * (5 / 7)
@@ -323,7 +324,7 @@ def run(broker: AlpacaBroker, db_conn):
         tag_symbol(sym, STRATEGY_NAME)
         log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0, sig["pre_price"], 0,
                   metadata={"notional": notional, "gap_pct": sig["gap_pct"]})
-        _entry_dates[sym] = datetime.now()
+        _entry_dates[sym] = _now_utc()
         cash -= notional
         current_gap_count += 1
 

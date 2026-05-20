@@ -13,6 +13,7 @@ Expected alpha: 3-6% per trade in backtests (Fama, Ball & Brown 1968+).
 import logging
 import yfinance as yf
 import pandas as pd
+from utils.clock import now_utc as _now_utc
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
@@ -40,7 +41,7 @@ def _get_earnings_beats(db_conn) -> list:
     so we hit the yFinance API once per day instead of every 5-minute cycle.
     """
     global _earnings_cache, _earnings_cache_date
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _now_utc().strftime("%Y-%m-%d")
 
     if _earnings_cache_date == today and _earnings_cache is not None:
         logger.info("[PEAD] Using cached earnings data (fetched today)")
@@ -75,7 +76,7 @@ def _get_earnings_surprise(symbol: str) -> Optional[dict]:
         earnings.index = pd.to_datetime(earnings.index, utc=True).tz_convert(None)
 
         # cutoff must also be tz-naive for comparison
-        cutoff = datetime.utcnow() - timedelta(days=5)
+        cutoff = _now_utc() - timedelta(days=5)
         recent = earnings[earnings.index >= cutoff]
 
         if recent.empty:
@@ -109,7 +110,7 @@ def _holding_too_long(symbol: str) -> bool:
     entry = _entry_dates.get(symbol)
     if entry is None:
         return False
-    trading_days_held = (datetime.now() - entry).days * (5 / 7)  # approx
+    trading_days_held = (_now_utc() - entry).days * (5 / 7)  # approx
     return trading_days_held >= PEAD_HOLD_DAYS
 
 
@@ -206,7 +207,7 @@ def run(broker: AlpacaBroker, db_conn):
             "surprise_pct": beat["surprise_pct"],
             "earnings_date": beat["earnings_date"],
         })
-        _entry_dates[sym] = datetime.now()
+        _entry_dates[sym] = _now_utc()
         cash -= notional
         current_pead_count += 1
 
