@@ -23,7 +23,7 @@ from config import (
     CONVICTION_TIER_LOW, CONVICTION_TIER_MIN,
     CONVICTION_RSI_BONUS, CONVICTION_VOL_BONUS, MAX_SINGLE_POSITION_PCT,
 )
-from db import log_trade, log_signal
+from db import log_trade, log_signal, get_state, set_state
 
 logger = logging.getLogger("alphabot.momentum")
 STRATEGY_NAME = "momentum"
@@ -66,8 +66,15 @@ MOMENTUM_UNIVERSE = list(dict.fromkeys(MOMENTUM_UNIVERSE))
 _last_rebalance: Optional[datetime] = None
 
 
-def _should_rebalance() -> bool:
+def _should_rebalance(db_conn=None) -> bool:
     global _last_rebalance
+    if _last_rebalance is None and db_conn is not None:
+        ts_str = get_state(db_conn, "momentum_last_rebalance")
+        if ts_str:
+            try:
+                _last_rebalance = datetime.fromisoformat(ts_str)
+            except Exception:
+                pass
     if _last_rebalance is None:
         return True
     return (datetime.now() - _last_rebalance).days >= MOMENTUM_REBALANCE_DAYS
@@ -213,7 +220,7 @@ def run(broker: AlpacaBroker, db_conn):
     """
     global _last_rebalance
 
-    if not _should_rebalance():
+    if not _should_rebalance(db_conn):
         _check_stops(broker, db_conn)
         return
 
@@ -263,6 +270,10 @@ def run(broker: AlpacaBroker, db_conn):
     if not filtered:
         logger.info("[MOM] No candidates passed entry filters")
         _last_rebalance = datetime.now()
+        try:
+            set_state(db_conn, "momentum_last_rebalance", _last_rebalance.isoformat())
+        except Exception:
+            pass
         return
 
     scores_sorted = sorted([s["score"] for s in filtered])
@@ -446,6 +457,10 @@ def run(broker: AlpacaBroker, db_conn):
             break
 
     _last_rebalance = datetime.now()
+    try:
+        set_state(db_conn, "momentum_last_rebalance", _last_rebalance.isoformat())
+    except Exception:
+        pass
 
     active = len([p for p in broker.get_positions() if p["strategy"] == STRATEGY_NAME])
     logger.info(f"[MOM] Rebalance complete — {active} active positions, next in {MOMENTUM_REBALANCE_DAYS} days")

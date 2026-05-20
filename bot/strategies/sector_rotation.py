@@ -39,7 +39,7 @@ def _conviction_multiplier(momentum: float) -> float:
         return 0.75  # weak, borderline top-3
 
 
-from db import log_trade, log_signal
+from db import log_trade, log_signal, get_state, set_state
 
 logger = logging.getLogger("alphabot.sector_rotation")
 STRATEGY_NAME = "sector_rotation"
@@ -108,6 +108,16 @@ def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
     if db_ts is not None:
         _last_rebalance = db_ts
         return (datetime.now() - db_ts).days >= SR_REBALANCE_DAYS
+
+    # Also check dedicated state key — survives forced exits (dead money, stop loss)
+    if _last_rebalance is None:
+        ts_str = get_state(db_conn, "sector_rotation_last_rebalance")
+        if ts_str:
+            try:
+                _last_rebalance = datetime.fromisoformat(ts_str)
+                return (datetime.now() - _last_rebalance).days >= SR_REBALANCE_DAYS
+            except Exception:
+                pass
 
     # Truly no positions and no history — rebalance now
     return True
@@ -289,6 +299,10 @@ def run(broker: AlpacaBroker, db_conn):
             break
 
     _last_rebalance = datetime.now()
+    try:
+        set_state(db_conn, "sector_rotation_last_rebalance", _last_rebalance.isoformat())
+    except Exception:
+        pass
     logger.info("[SR] Sector rotation rebalance complete")
 
 

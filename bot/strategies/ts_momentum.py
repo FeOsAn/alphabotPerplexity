@@ -106,6 +106,16 @@ def run(broker, db_conn=None):
     now = datetime.now(timezone.utc)
     month_key = now.strftime("%Y-%m")
 
+    # Hydrate from DB on first run after restart
+    if not _last_rebalance and db_conn is not None:
+        try:
+            from db import get_state
+            ts_str = get_state(db_conn, "ts_momentum_last_rebalance")
+            if ts_str:
+                _last_rebalance = ts_str
+        except Exception:
+            pass
+
     # Only rebalance once per month (first trading day of month OR first run)
     if _last_rebalance == month_key:
         return
@@ -124,6 +134,12 @@ def run(broker, db_conn=None):
 
     logger.info("[TSMomentum] Monthly rebalance triggered")
     _last_rebalance = month_key
+    if db_conn is not None:
+        try:
+            from db import set_state
+            set_state(db_conn, "ts_momentum_last_rebalance", _last_rebalance)
+        except Exception:
+            pass
 
     try:
         account = broker.get_account()
