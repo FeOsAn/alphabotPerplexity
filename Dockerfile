@@ -2,20 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# gcc required — ta-lib and alpaca-py C extensions need it on python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-
-# Install Python dependencies
+# Install Python dependencies (all packages have prebuilt wheels — no gcc needed)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt || \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy bot source
 COPY bot/ ./bot/
 
-# cache-bust: 2026-05-19-v58b
+# cache-bust: 2026-05-20-v58c
 # Default: run the trading bot
 # Railway will use the start command from railway.toml
 CMD ["python", "bot/main.py"]
