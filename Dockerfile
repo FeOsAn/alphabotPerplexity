@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12.10-slim
 
 WORKDIR /app
 
@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy bot source
 COPY bot/ ./bot/
 
-# cache-bust: 2026-05-20-v59
+# cache-bust: 2026-05-20-v59b
 # Default: run the trading bot
 # Railway will use the start command from railway.toml
 CMD ["python", "bot/main.py"]
