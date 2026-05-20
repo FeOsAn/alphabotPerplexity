@@ -16,7 +16,7 @@ import gc
 import logging
 import pandas as pd
 import numpy as np
-import ta
+import pandas_ta as ta
 import yfinance as yf
 from broker import AlpacaBroker, tag_symbol, is_correlated_position
 from config import (
@@ -71,10 +71,10 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     close = df["close"]
     volume = df["volume"]
 
-    rsi = ta.momentum.RSIIndicator(close, window=MR_RSI_PERIOD).rsi()
-    bb = ta.volatility.BollingerBands(close, window=MR_BB_PERIOD, window_dev=MR_BB_STD)
-    bb_lower = bb.bollinger_lband()
-    bb_mid   = bb.bollinger_mavg()
+    rsi = close.ta.rsi(length=MR_RSI_PERIOD)
+    _bb = close.ta.bbands(length=MR_BB_PERIOD, std=MR_BB_STD)
+    bb_lower = _bb[f'BBL_{MR_BB_PERIOD}_{MR_BB_STD}']
+    bb_mid   = _bb[f'BBM_{MR_BB_PERIOD}_{MR_BB_STD}']
 
     vol_avg = volume.rolling(20).mean()
     vol_elevated = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 1.2)

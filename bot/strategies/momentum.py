@@ -13,7 +13,7 @@ import gc
 import logging
 import pandas as pd
 import yfinance as yf
-import ta
+import pandas_ta as ta
 from datetime import datetime
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
@@ -138,7 +138,7 @@ def _compute_score(sym: str) -> Optional[dict]:
         ma50 = float(close.tail(50).mean()) if len(close) >= 50 else None
         above_ma50 = bool(ma50 is not None and price_now > ma50)
 
-        rsi_series = ta.momentum.RSIIndicator(close, window=14).rsi()
+        rsi_series = close.ta.rsi(length=14)
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
         # Volume ratio — use the PREVIOUS completed day (iloc[-2]), not today's

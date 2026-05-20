@@ -2,15 +2,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install Python dependencies (all packages have prebuilt wheels — no gcc needed)
+# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt || \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy bot source
 COPY bot/ ./bot/
 
-# cache-bust: 2026-05-20-v58c
+# cache-bust: 2026-05-20-v59
 # Default: run the trading bot
 # Railway will use the start command from railway.toml
 CMD ["python", "bot/main.py"]
