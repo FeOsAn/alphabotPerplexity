@@ -310,6 +310,12 @@ def run(broker: AlpacaBroker, db_conn):
         _ran_today = today
         return
 
+    # Prune stale cooldown entries
+    now = datetime.now()
+    stale = [s for s, dt in _cooldown.items() if (now - dt).days >= COOLDOWN_DAYS]
+    for s in stale:
+        del _cooldown[s]
+
     slots_available = MAX_POSITIONS - len(existing)
     entered = 0
 

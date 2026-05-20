@@ -25,8 +25,8 @@ Data source: yfinance option chains (free).
 Max positions: 3 concurrent options_flow positions.
 """
 
-import logging, gc
-from datetime import datetime, timezone, timedelta
+import logging, gc, math
+from datetime import datetime, timezone
 from typing import Optional
 import yfinance as yf
 
@@ -92,7 +92,6 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
                     continue
 
                 top = unusual.sort_values("vol_oi", ascending=False).iloc[0]
-                import math
                 flow_score = (top["vol_oi"] * math.sqrt(float(top["volume"]))) / 10.0
 
                 if best is None or flow_score > best["flow_score"]:
@@ -163,6 +162,12 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     logger.info("=== Options Flow Strategy: Daily Scan ===")
+
+    # Prune stale cooldown entries
+    now_prune = datetime.now()
+    stale = [s for s, dt in _cooldown.items() if (now_prune - dt).days >= COOLDOWN_DAYS]
+    for s in stale:
+        del _cooldown[s]
 
     signals = []
     for sym in UNIVERSE:

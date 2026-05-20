@@ -211,6 +211,7 @@ def clear_symbol(symbol: str):
     _peak_prices.pop(symbol, None)
     _partial_taken.discard(symbol)
     _ratchet_stops.pop(symbol, None)
+    _post_earnings_checked.discard(symbol)  # allow re-review if re-entered
 
 
 def restore_trade_management_state(broker: AlpacaBroker, db_conn):

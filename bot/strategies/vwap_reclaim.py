@@ -10,6 +10,7 @@ import gc
 import logging
 from datetime import datetime, timezone, time as _time
 import pytz as _pytz
+from config import MIN_CASH_RESERVE_PCT
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,11 @@ def run(broker, db_conn=None):
                     "qty": qty,
                 }
                 logger.info(f"[VWAPReclaim] BUY {qty} {sym} @ ${current:.2f} (VWAP ${vwap:.2f})")
+                # Cash guard
+                _cash, _pv = broker.get_live_cash()
+                if _cash < 0 or (_pv > 0 and _cash / _pv < MIN_CASH_RESERVE_PCT):
+                    logger.warning("[VWAPReclaim] Cash floor hit — halting entries")
+                    break
             except Exception as e:
                 logger.error(f"[VWAPReclaim] Order error {sym}: {e}")
         else:
