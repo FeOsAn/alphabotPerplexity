@@ -780,6 +780,15 @@ def run(broker: AlpacaBroker, db_conn):
     from datetime import time as dtime
     in_window  = dtime(9, 30) <= now_et.time() <= dtime(15, 45)
     today_str  = now_et.strftime("%Y-%m-%d")
+    # DB gate — survives restarts
+    if db_conn is not None:
+        try:
+            from db import get_state as _get_state
+            if _get_state(db_conn, "ai_research_ran_date") == today_str:
+                logger.info(f"[AI Research] Already ran today (DB gate) — exits only")
+                return
+        except Exception:
+            pass
     already_fired = getattr(run, "_fired_date", "") == today_str
 
     if not in_window:
@@ -802,6 +811,12 @@ def run(broker: AlpacaBroker, db_conn):
     if current_ai_count >= MAX_AI_POSITIONS:
         logger.info(f"[AI Research] At max positions ({MAX_AI_POSITIONS}) — skipping new research")
         run._fired_date = today_str
+    if db_conn is not None:
+        try:
+            from db import set_state as _set_state
+            _set_state(db_conn, "ai_research_ran_date", today_str)
+        except Exception:
+            pass
         return
 
     slots_available  = MAX_AI_POSITIONS - current_ai_count
