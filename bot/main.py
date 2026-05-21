@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v65"
+VERSION = "v66"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -335,12 +335,7 @@ def check_circuit_breaker(broker: AlpacaBroker, db_conn=None):
             if db_conn is not None:
                 _persist_cb_state(db_conn)
             try:
-                notify.send(
-                    title="🚨 Circuit Breaker TRIGGERED",
-                    body=f"Portfolio down {day_pct:.2%} today. New entries halted.",
-                    priority="high",
-                    tags="rotating_light",
-                )
+                notify.emergency("🚨 Circuit Breaker", f"Daily drawdown -{drawdown_pct:.1%} — entries halted", key="circuit_breaker")
             except Exception as e:
                 logger.warning(f"[CircuitBreaker] ntfy failed: {e}")
         elif day_pct > -0.02 and _circuit_breaker_active:
@@ -352,12 +347,7 @@ def check_circuit_breaker(broker: AlpacaBroker, db_conn=None):
             if db_conn is not None:
                 _persist_cb_state(db_conn)
             try:
-                notify.send(
-                    title="✅ Circuit Breaker Reset",
-                    body=f"Portfolio recovered to {day_pct:.2%}. Trading resumed.",
-                    priority="default",
-                    tags="white_check_mark",
-                )
+                notify.emergency("🚨 Circuit Breaker", f"Daily drawdown -{drawdown_pct:.1%} — entries halted", key="circuit_breaker")
             except Exception as e:
                 logger.warning(f"[CircuitBreaker] ntfy reset failed: {e}")
     except Exception as e:

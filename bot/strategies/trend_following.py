@@ -281,8 +281,8 @@ def run(broker: AlpacaBroker, db_conn):
         cash, portfolio_value = broker.get_live_cash()
         if cash < 0:
             logger.critical(f"[{STRATEGY_NAME}] Cash went negative (${cash:,.0f}) — halting entries")
-            from utils.notify import send as _notify
-            _notify("🚨 Negative Cash", f"[{STRATEGY_NAME}] cash ${cash:,.0f} — halting entries", priority="urgent")
+            from utils.notify import send as _notify, emergency as _notify_emergency
+            _notify_emergency("🚨 Cash went negative", f"[trend_following] cash ${cash:,.0f} — halting entries", key="negative_cash_trend_following")
             break
         if cash < portfolio_value * MIN_CASH_RESERVE_PCT:
             logger.warning(f"[{STRATEGY_NAME}] Cash floor hit (${cash:,.0f}) — halting entries")

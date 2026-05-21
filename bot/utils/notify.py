@@ -1,29 +1,36 @@
 """
-Unified ntfy notification helper.
-Wraps requests.post(NTFY_URL, ...) with consistent headers and timeouts.
-All bot ntfy alerts should route through send() for uniformity.
+notify.py — Centralised ntfy notifications for AlphaBot.
+
+Rules:
+  - Daily recap fires once at 21:00 BST.
+  - Emergency alerts (cash < 0, circuit breaker) fire ONCE per day max.
+  - Cash floor breached = bot handles it silently, NO alert to user.
+  - Everything else = logged only, no ntfy.
 """
-import os
 import logging
 import requests
+import os
+from datetime import timezone
+from utils.clock import now_utc, today_utc
 
 logger = logging.getLogger(__name__)
-NTFY_URL = f"https://ntfy.sh/{os.getenv('NTFY_TOPIC', 'perplexitybotnr1foa_goat')}"
+NTFY_URL = os.getenv("NTFY_URL", f"https://ntfy.sh/{os.getenv('NTFY_TOPIC', 'alphabot')}")
+
+# Dedup: track which alert keys have fired today
+_fired_today: dict[str, str] = {}  # key -> date_str
 
 
-def send(title: str, body: str = "", priority: str = "default", tags: str = "") -> bool:
+def send(title: str, body: str, priority: str = "default", tags: str = "") -> bool:
     """
-    Send an ntfy notification. Returns True on HTTP 200.
+    Send ntfy notification. Only fires for genuine emergencies.
     priority: "min" | "low" | "default" | "high" | "urgent"
-    tags: comma-separated ntfy tag names (e.g. "warning,rotating_light")
     """
     try:
-        # Use requests with json payload so UTF-8 emojis work in title
         payload = {
             "topic": NTFY_URL.rstrip("/").split("/")[-1],
             "title": title,
             "message": body,
-            "priority": {"min":1,"low":2,"default":3,"high":4,"urgent":5}.get(priority, 3),
+            "priority": {"min": 1, "low": 2, "default": 3, "high": 4, "urgent": 5}.get(priority, 3),
         }
         if tags:
             payload["tags"] = [t.strip() for t in tags.split(",")]
@@ -33,3 +40,25 @@ def send(title: str, body: str = "", priority: str = "default", tags: str = "") 
     except Exception as e:
         logger.warning(f"[ntfy] Failed to send notification: {e}")
         return False
+
+
+def emergency(title: str, body: str, key: str, priority: str = "urgent") -> bool:
+    """
+    Send an emergency alert — fires AT MOST ONCE PER DAY per key.
+    Use this for: cash < 0, circuit breaker triggered.
+    Do NOT use for cash floor breached (bot handles that silently).
+    
+    key: unique string identifying this alert type e.g. "negative_cash_momentum"
+    """
+    today = today_utc()
+    if _fired_today.get(key) == today:
+        logger.debug(f"[ntfy] Emergency '{key}' already fired today — suppressed")
+        return False
+    _fired_today[key] = today
+    logger.critical(f"[EMERGENCY] {title}: {body}")
+    return send(title, body, priority=priority)
+
+
+def recap(title: str, body: str) -> bool:
+    """Send the daily recap. No dedup — fires once at scheduled time."""
+    return send(title, body, priority="default")
