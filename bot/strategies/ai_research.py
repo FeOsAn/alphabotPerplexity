@@ -449,7 +449,7 @@ def checker_agent(client: anthropic.Anthropic, symbol: str, context: dict, thesi
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5",
             max_tokens=1200,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -580,7 +580,7 @@ def recency_auditor(client: anthropic.Anthropic, symbol: str, context: dict, the
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-haiku-4-5",
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -685,7 +685,7 @@ def check_held_positions_pre_earnings(positions, broker: AlpacaBroker, db_conn):
             )
 
             msg = client.messages.create(
-                model="claude-sonnet-4-5",
+                model="claude-haiku-4-5",
                 max_tokens=120,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -819,6 +819,9 @@ def run(broker: AlpacaBroker, db_conn):
     # Deduplicate preserving order
     seen = set()
     candidates = [s for s in candidates if not (s in seen or seen.add(s))]
+    # Hard cap: max 15 symbols per day — AI cluster always gets priority slots
+    DAILY_SCAN_CAP = 15
+    candidates = candidates[:DAILY_SCAN_CAP]
     logger.info(
         f"[AI] Candidates: {len(candidates)} | Slots: {slots_available} | "
         f"List: {candidates}"
@@ -967,6 +970,10 @@ def run(broker: AlpacaBroker, db_conn):
         )
 
         # ── Gate 4: Recency Auditor — final staleness check ───────────────────
+        # Skip recency_auditor if checker already rejected — saves a Haiku call
+        if check is None or not check.get("approved", False):
+            logger.info(f"[AI Research] {symbol}: Checker failed — skipping auditor")
+            continue
         audit = recency_auditor(client, symbol, context, thesis)
         if audit is None or audit.get("block_trade", True):
             reason = "auditor_error" if audit is None else (

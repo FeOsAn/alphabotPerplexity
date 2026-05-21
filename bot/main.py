@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v63b"
+VERSION = "v64"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

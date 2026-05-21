@@ -61,7 +61,7 @@ EP_POST_EARNINGS_STOP_PCT = 0.04    # gap-down protection
 EP_MAX_HOLD_DAYS = 7                # exit after 7 days regardless
 
 # Claude model
-CLAUDE_MODEL = "claude-sonnet-4-5"
+CLAUDE_MODEL = "claude-haiku-4-5"
 MAX_TRANSCRIPT_CHARS = 6000
 
 # ── Module-level state ────────────────────────────────────────────────────────
