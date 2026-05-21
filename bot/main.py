@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v62"
+VERSION = "v63"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -303,12 +303,7 @@ def run_gap_protection(broker: AlpacaBroker):
                     )
                     broker.trading.submit_order(req)
                     try:
-                        notify.send(
-                            title=f"🛡️ Gap Protection: {sym} closed",
-                            body=f"{sym} gapped {gap_pct:+.1%} pre-market — closed before open.",
-                            priority="high",
-                            tags="shield",
-                        )
+                        # [ntfy silenced — logged only]
                     except Exception:
                         pass
             except Exception as e:
@@ -730,18 +725,7 @@ def main():
     except Exception as e:
         logger.warning(f"[Startup] trade_management restore failed: {e}")
 
-    # v54: One-time flag — NOW suspicious +23% 1w, force post-earnings review attention
-    try:
-        from utils.notify import send as _ntfy_flag
-        _ntfy_flag(
-            "🔍 NOW flagged for review",
-            "NOW up +23% in 1w — check if post-earnings gap. Review stop placement.",
-            priority="high",
-            tags="eyes",
-        )
-        logger.info("[Startup] NOW flagged for manual post-earnings review")
-    except Exception as e:
-        logger.warning(f"[Startup] NOW flag failed: {e}")
+    logger.info("[Startup] NOW flagged for manual post-earnings review")
 
     # v44 one-time: apply earnings stop tightening on startup for any position
     # that would qualify — catches positions already open before this feature existed

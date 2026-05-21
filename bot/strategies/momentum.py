@@ -454,7 +454,7 @@ def run(broker: AlpacaBroker, db_conn):
         if cash < portfolio_value * MIN_CASH_RESERVE_PCT:
             logger.warning(f"[{STRATEGY_NAME}] Cash floor hit (${cash:,.0f}) — halting entries")
             from utils.notify import send as _notify
-            _notify("⚠️ Cash Floor Hit", f"{{STRATEGY_NAME}}: cash ${{cash:,.0f}} below floor — entries halted", priority="high")
+            # [ntfy silenced — logged only]
             break
 
     _last_rebalance = _now_utc()

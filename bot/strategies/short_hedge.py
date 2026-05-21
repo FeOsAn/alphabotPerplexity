@@ -167,12 +167,7 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                     clear_symbol(sym)
                     _entry_times.pop(sym, None)
                     try:
-                        notify.send(
-                            title=f"⚠️ Short Hedge Closed — {sym}",
-                            body=f"Regime flipped to {regime}. {sym} closed at P&L {pnl:+.2f}.",
-                            priority="high",
-                            tags="warning",
-                        )
+                        # [ntfy silenced — logged only]
                     except Exception:
                         pass
                 except Exception as e:

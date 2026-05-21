@@ -261,11 +261,7 @@ def execute_rotation(
         )
 
         try:
-            notify.send(
-                title="🔄 Capital Rotation",
-                body=f"Closed {sell_symbol} ({sell_gain:+.1%}) → opening {buy_symbol} (score={buy_score:.2f})",
-                priority="default",
-            )
+            # [ntfy silenced — logged only]
         except Exception as _ne:
             logger.debug(f"[Rotator] notify failed: {_ne}")
 

@@ -133,12 +133,7 @@ def _enqueue_event(symbol: str, headline: str, category: str, source: str = "alp
         # M6: alert when events are being dropped — operationally important
         try:
             from utils import notify
-            notify.send(
-                title="⚠️ Event Queue Full",
-                body=f"Dropping {symbol} [{category}] — event queue at capacity.",
-                priority="high",
-                tags="warning",
-            )
+            # [ntfy silenced — logged only]
         except Exception:
             pass
 

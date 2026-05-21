@@ -511,12 +511,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                               })
                     clear_symbol(sym)
                     try:
-                        notify.send(
-                            title=f"📈 Trailing Take-Profit: {sym}",
-                            body=f"{sym} exited at +{pnl_pct/100:.1%} after {drawdown_from_peak:.1%} pullback from peak.",
-                            priority="default",
-                            tags="chart_with_upwards_trend",
-                        )
+                        # [ntfy silenced — logged only]
                     except Exception:
                         pass
                 except Exception as e:
@@ -875,16 +870,7 @@ def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
                     f"earnings_in={days_txt} | tier={tier}"
                 )
                 try:
-                    notify.send(
-                        title=f"🔒 Stop tightened: {sym}",
-                        body=(
-                            f"🔒 {sym}: stop → ${new_stop:.2f} "
-                            f"(ATR=${atr_val:.2f}, {days_txt} to earnings, "
-                            f"RSI={rsi:.0f}, gain={gain_pct:+.1f}%)"
-                        ),
-                        priority="default",
-                        tags="lock",
-                    )
+                    # [ntfy silenced — logged only]
                 except Exception:
                     pass
         except Exception as e:
@@ -991,12 +977,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                               })
                     clear_symbol(sym)
                     try:
-                        notify.send(
-                            title=f"🛡️ Post-earnings gap-down: {sym}",
-                            body=f"{sym} {move_pct:+.1f}% since earnings — closed.",
-                            priority="high",
-                            tags="shield",
-                        )
+                        # [ntfy silenced — logged only]
                     except Exception:
                         pass
                 except Exception as e:
@@ -1017,15 +998,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                                 f"(post-earnings beat: {move_pct:+.1f}%)"
                             )
                             try:
-                                notify.send(
-                                    title=f"📈 Post-earnings beat: {sym}",
-                                    body=(
-                                        f"{sym} {move_pct:+.1f}% post-earnings — "
-                                        f"ratchet upgraded to +{new_ratchet * 100:.0f}%."
-                                    ),
-                                    priority="default",
-                                    tags="chart_with_upwards_trend",
-                                )
+                                # [ntfy silenced — logged only]
                             except Exception:
                                 pass
                 except Exception as e:
@@ -1056,12 +1029,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                     if w_ret > 0.20:
                         logger.warning(f"[PostEarnings] {sym} flagged: +{w_ret:.1%} 1w — manual review needed")
                         try:
-                            notify.send(
-                                title=f"🔍 {sym} +{w_ret:.1%} 1w — review stop",
-                                body=f"{sym} up {w_ret:+.1%} over 5 days. Possible earnings gap or news event. Check stop placement.",
-                                priority="high",
-                                tags="eyes",
-                            )
+                            # [ntfy silenced — logged only]
                         except Exception:
                             pass
                         _post_earnings_checked.add(sym)  # only notify once

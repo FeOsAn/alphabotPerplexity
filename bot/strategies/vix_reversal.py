@@ -216,15 +216,7 @@ def run(broker: AlpacaBroker, db_conn):
 
     try:
         from utils import notify
-        notify.send(
-            title="⚡ VIX Spike Buy: SPY",
-            body=(
-                f"SPY entered at ${sig['spy_price']:.2f} "
-                f"(VIXY ratio {sig['spike_ratio']:.2f}, SPY day {sig['spy_change_today']*100:+.1f}%)."
-            ),
-            priority="high",
-            tags="zap",
-        )
+        # [ntfy silenced — logged only]
     except Exception:
         pass
 

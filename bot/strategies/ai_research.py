@@ -696,11 +696,7 @@ def check_held_positions_pre_earnings(positions, broker: AlpacaBroker, db_conn):
             reasoning = " ".join(response.split()[1:])
 
             logger.info(f"[PreEarnings] Claude verdict for {sym}: {verdict} — {reasoning}")
-            notify.send(
-                title=f"🤖 Pre-earnings: {sym} → {verdict}",
-                body=f"{sym} (gain {gain_pct:+.1f}%, earnings {days_to_earnings}d): {response}",
-                priority="high" if verdict == "EXIT" else "default"
-            )
+            # [ntfy silenced — logged only]
 
             if verdict == "EXIT":
                 logger.info(f"[PreEarnings] Closing {sym} on Claude EXIT verdict")

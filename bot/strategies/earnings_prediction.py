@@ -514,7 +514,7 @@ def run(broker, db_conn):
                 log_trade(db_conn, STRATEGY_NAME, sym, "sell_max_hold",
                           abs(float(pos.get("qty", 0))), current_price,
                           float(pos.get("unrealized_pnl", 0) or 0))
-                notify.send(f"📅 EP Exit: {sym}", f"Max hold {EP_MAX_HOLD_DAYS}d. Gain: {gain_pct:+.1%}")
+                # [ntfy silenced — logged only]
             except Exception as e:
                 logger.warning(f"[EP] {sym} max_hold exit failed: {e}")
             del _ep_positions[sym]
@@ -528,7 +528,7 @@ def run(broker, db_conn):
                 log_trade(db_conn, STRATEGY_NAME, sym, "sell_stop_loss",
                           abs(float(pos.get("qty", 0))), current_price,
                           float(pos.get("unrealized_pnl", 0) or 0))
-                notify.send(f"🛑 EP Stop: {sym}", f"Stop loss hit: {gain_pct:+.1%}", priority="high")
+                # [ntfy silenced — logged only]
             except Exception as e:
                 logger.warning(f"[EP] {sym} stop_loss exit failed: {e}")
             del _ep_positions[sym]
@@ -549,10 +549,7 @@ def run(broker, db_conn):
                                                 type="market", time_in_force="day")
                             log_trade(db_conn, STRATEGY_NAME, sym, "sell_partial_earnings",
                                       half_qty, current_price, 0.0)
-                            notify.send(
-                                f"✅ EP Partial: {sym}",
-                                f"Post-earnings +{gain_pct:.1%} → took 50% profit",
-                            )
+                            # [ntfy silenced — logged only]
                     except Exception as e:
                         logger.warning(f"[EP] {sym} partial profit failed: {e}")
                 elif gain_pct <= -EP_POST_EARNINGS_STOP_PCT:
@@ -561,11 +558,7 @@ def run(broker, db_conn):
                         log_trade(db_conn, STRATEGY_NAME, sym, "sell_post_earnings_gap",
                                   abs(float(pos.get("qty", 0))), current_price,
                                   float(pos.get("unrealized_pnl", 0) or 0))
-                        notify.send(
-                            f"🔴 EP Gap Down: {sym}",
-                            f"Post-earnings gap: {gain_pct:+.1%}",
-                            priority="high",
-                        )
+                        # [ntfy silenced — logged only]
                     except Exception as e:
                         logger.warning(f"[EP] {sym} gap-down exit failed: {e}")
                     del _ep_positions[sym]
@@ -662,16 +655,7 @@ def run(broker, db_conn):
             log_signal(db_conn, STRATEGY_NAME, symbol, f"score_{score}",
                        score / 4.0, scored["details"])
 
-            notify.send(
-                title=f"📊 EP Entry: {symbol}",
-                body=(
-                    f"Earnings in 1d. Score={score}/4 ({alloc_pct:.0%} alloc). "
-                    f"Beat streak: {scored['beat_streak']}q. "
-                    f"Sentiment: {scored['details'].get('transcript_sentiment','?')}. "
-                    f"Revision: {scored['revision_delta']:+.4f}"
-                ),
-                priority="default",
-            )
+            # [ntfy silenced — logged only]
 
             cash, portfolio_value = broker.get_live_cash()
             if cash < 0:
