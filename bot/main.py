@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v66"
+VERSION = "v66b"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -419,10 +419,8 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             run_trade_management(broker, db_conn)  # still run exits
             return
         if live_pv > 0 and live_cash / live_pv < MIN_CASH_RESERVE_PCT:
-            msg = f"⚠️ Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
-            logger.warning(msg)
-            from utils.notify import send as _notify_health
-            _notify_health("⚠️ Cash Floor Breached", msg, priority="high")
+            msg = f"Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
+            logger.warning(msg)  # silent — bot handles this itself
             run_trade_management(broker, db_conn)
             return
     except Exception as e:

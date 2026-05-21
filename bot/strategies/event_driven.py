@@ -154,7 +154,7 @@ def _execute_trade(symbol: str, direction: str, broker, db_conn, portfolio_value
             if _cash < 0 or (_pv > 0 and _cash / _pv < MIN_CASH_RESERVE_PCT):
                 logger.warning("[EventDriven] Cash floor hit after order")
                 from utils.notify import send as _n
-                _n("⚠️ EventDriven Cash Floor", f"Cash ${_cash:,.0f} after buying {symbol}", priority="high")
+                logger.warning(f"[EventDriven] Cash floor after buying {symbol}: ${_cash:,.0f}")  # silent
 
     except Exception as e:
         logger.error(f"[event_driven] Trade execution error for {symbol}: {e}")
