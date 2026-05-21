@@ -375,6 +375,17 @@ def run(broker: AlpacaBroker, db_conn):
         notional = portfolio_value * size_pct * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
+        # Hard cap: total exposure per symbol cannot exceed MAX_SINGLE_POSITION_PCT
+        existing_mv = sum(
+            float(p["market_value"]) for p in broker.get_positions()
+            if p["symbol"] == sym
+        )
+        max_notional = portfolio_value * MAX_SINGLE_POSITION_PCT
+        if existing_mv >= max_notional:
+            logger.info(f"[BRK] {sym}: already at position cap ({existing_mv/portfolio_value:.1%}) — skipping")
+            continue
+        notional = min(notional, max_notional - existing_mv)
+
         if cash - notional < min_cash:
             # Try capital rotation before giving up
             from utils.capital_rotator import find_rotation_candidate, execute_rotation

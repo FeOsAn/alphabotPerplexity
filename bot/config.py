@@ -44,7 +44,7 @@ CONVICTION_RSI_BONUS  = 0.015
 # Volume bonus: vol_ratio >= 1.2 (institutional buying) → +1.5% to allocation
 CONVICTION_VOL_BONUS  = 0.015
 # Hard max single position: never exceed 20% of portfolio regardless of conviction
-MAX_SINGLE_POSITION_PCT = 0.20
+MAX_SINGLE_POSITION_PCT = 0.15  # hard cap per symbol across all buys
 # Cash floor: keep at least 15% cash at all times
 MIN_CASH_RESERVE_PCT = 0.15
 # Non-momentum strategies that lack a score-based conviction use this flat base.
