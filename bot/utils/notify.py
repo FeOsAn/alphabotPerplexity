@@ -18,10 +18,17 @@ def send(title: str, body: str = "", priority: str = "default", tags: str = "") 
     tags: comma-separated ntfy tag names (e.g. "warning,rotating_light")
     """
     try:
-        headers = {"Title": title, "Priority": priority}
+        # Use requests with json payload so UTF-8 emojis work in title
+        payload = {
+            "topic": NTFY_URL.rstrip("/").split("/")[-1],
+            "title": title,
+            "message": body,
+            "priority": {"min":1,"low":2,"default":3,"high":4,"urgent":5}.get(priority, 3),
+        }
         if tags:
-            headers["Tags"] = tags
-        r = requests.post(NTFY_URL, data=body.encode("utf-8"), headers=headers, timeout=5)
+            payload["tags"] = [t.strip() for t in tags.split(",")]
+        base_url = "/".join(NTFY_URL.rstrip("/").split("/")[:-1])
+        r = requests.post(base_url, json=payload, timeout=5)
         return r.status_code == 200
     except Exception as e:
         logger.warning(f"[ntfy] Failed to send notification: {e}")

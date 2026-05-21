@@ -34,7 +34,7 @@ import gc
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 import yfinance as yf
-import ta
+import pandas_ta as _pta
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ def _calibrate_market() -> dict:
             volume = hist["Volume"].dropna()
 
             # RSI
-            rsi_s = ta.momentum.RSIIndicator(close, window=14).rsi()
+            rsi_s = _pta.rsi(close, length=14)
             rsi   = float(rsi_s.iloc[-1]) if not rsi_s.empty else None
 
             # Volume ratio (prev completed day)
