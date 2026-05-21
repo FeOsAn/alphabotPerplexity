@@ -511,7 +511,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                               })
                     clear_symbol(sym)
                     try:
-                        # [ntfy silenced — logged only]
+                        pass  # [ntfy silenced — logged only]
                     except Exception:
                         pass
                 except Exception as e:
@@ -870,7 +870,7 @@ def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
                     f"earnings_in={days_txt} | tier={tier}"
                 )
                 try:
-                    # [ntfy silenced — logged only]
+                    pass  # [ntfy silenced — logged only]
                 except Exception:
                     pass
         except Exception as e:
@@ -977,7 +977,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                               })
                     clear_symbol(sym)
                     try:
-                        # [ntfy silenced — logged only]
+                        pass  # [ntfy silenced — logged only]
                     except Exception:
                         pass
                 except Exception as e:
@@ -998,7 +998,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                                 f"(post-earnings beat: {move_pct:+.1f}%)"
                             )
                             try:
-                                # [ntfy silenced — logged only]
+                                pass  # [ntfy silenced — logged only]
                             except Exception:
                                 pass
                 except Exception as e:
@@ -1029,7 +1029,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                     if w_ret > 0.20:
                         logger.warning(f"[PostEarnings] {sym} flagged: +{w_ret:.1%} 1w — manual review needed")
                         try:
-                            # [ntfy silenced — logged only]
+                            pass  # [ntfy silenced — logged only]
                         except Exception:
                             pass
                         _post_earnings_checked.add(sym)  # only notify once

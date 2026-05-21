@@ -167,7 +167,7 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                     clear_symbol(sym)
                     _entry_times.pop(sym, None)
                     try:
-                        # [ntfy silenced — logged only]
+                        pass  # [ntfy silenced — logged only]
                     except Exception:
                         pass
                 except Exception as e:

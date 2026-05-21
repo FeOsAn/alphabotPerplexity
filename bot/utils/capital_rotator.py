@@ -261,7 +261,7 @@ def execute_rotation(
         )
 
         try:
-            # [ntfy silenced — logged only]
+            pass  # [ntfy silenced — logged only]
         except Exception as _ne:
             logger.debug(f"[Rotator] notify failed: {_ne}")
 
