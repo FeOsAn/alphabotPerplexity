@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v61"
+VERSION = "v62"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -700,7 +700,9 @@ def _scheduled_recap(broker: AlpacaBroker, db_conn):
 
 
 def main():
+    from utils.clock import log_timestamp, now_et, market_open_et, minutes_to_close
     logger.info(f"=== AlphaBot Starting ({VERSION}) ===")
+    logger.info(f"[Clock] {log_timestamp()} | Market open: {market_open_et()} | Mins to close: {minutes_to_close()}")
 
     start_health_server()  # Must bind to $PORT or Railway kills the container
 
