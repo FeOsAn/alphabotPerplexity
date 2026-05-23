@@ -57,7 +57,7 @@ DEFAULT_STRATEGY_ALLOCATION_PCT = 0.05
 # Momentum strategy
 MOMENTUM_LOOKBACK = 120        # ~6 months (safe under yFinance ~179 day limit)
 MOMENTUM_SKIP = 21             # Skip last month (reversal avoidance)
-MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month
+MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month (academic standard for 3m momentum)
 
 # Mean Reversion strategy
 MR_RSI_PERIOD = 14
@@ -89,7 +89,7 @@ PEAD_WATCHLIST = [
 # Sector Rotation strategy
 SR_TOP_N = 5                  # was 3 — hold top 5 sectors for more exposure
 SR_LOOKBACK_DAYS = 63         # ~3 months of trading days
-SR_REBALANCE_DAYS = 21        # Rebalance monthly
+SR_REBALANCE_DAYS = 21         # Sector rotation monthly is correct
 SR_MAX_POSITION_PCT = 0.08    # 8% per sector ETF (individual names can go higher)
 SR_MAX_ETF_SLOTS = 3          # Cap ETF positions at 3 if individual signals are firing
                                # ETFs are backup exposure, not the main bet

@@ -21,7 +21,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v67"
+VERSION = "v68"
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,7 +59,7 @@ from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
-from strategies import insider_buying, options_flow
+from strategies import insider_buying, options_flow, squeeze_screener
 from strategies.trade_management import (
     run_global_trade_management,
     restore_trade_management_state,
@@ -556,6 +556,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         (pairs_trading.run,   "Pairs trading"),  # market-neutral — long/short pairs via cointegration
         (insider_buying.run,  "Insider buying"), # SEC Form 4 daily scan
         (options_flow.run,    "Options flow"),   # unusual call volume daily scan
+        (squeeze_screener.run, "Squeeze screener"), # short interest squeeze daily scan
     ]
 
     for fn, name in strategies:
