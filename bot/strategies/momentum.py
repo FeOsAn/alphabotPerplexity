@@ -388,7 +388,8 @@ def run(broker: AlpacaBroker, db_conn):
         size_pct = _conviction_allocation_pct(
             sig["score"], sig.get("rsi", 50), sig.get("vol_ratio", 1.0)
         )
-        notional = portfolio_value * size_pct * regime_mult
+        deployable = portfolio_value * (1 - MIN_CASH_RESERVE_PCT)
+        notional = deployable * size_pct * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         # Hard cap: total exposure to this symbol cannot exceed MAX_SINGLE_POSITION_PCT
