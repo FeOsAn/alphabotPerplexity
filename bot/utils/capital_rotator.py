@@ -14,6 +14,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from utils.clock import now_utc
+
 logger = logging.getLogger(__name__)
 
 # --- Config ---
@@ -22,6 +24,7 @@ ROTATION_EDGE_THRESHOLD  = 0.15   # new opp score must beat weakest position's s
 ROTATION_MIN_GAIN_TO_KEEP = 0.12  # never rotate out of a position up >12% (let winners run)
 ROTATION_MAX_LOSS_TO_KEEP = -0.05 # always rotate out of positions down >5% if better opp exists
 ROTATION_PROTECTED_TAGS  = {"pairs_trading", "short_hedge"}  # never rotate out of these
+MIN_HOLD_DAYS            = 1      # v69 churn guard — never rotate a position held <1d
 
 
 def _compute_stay_score(pos: dict, rsi: float, gain_pct: float, days_held: int,
@@ -160,7 +163,7 @@ def find_rotation_candidate(
             rsi = 50.0
             momentum_score = 0.0
 
-        # Days held — try DB first, fallback to 0
+        # Days held — try DB first, fallback to 0 (safe default: treated as <MIN_HOLD_DAYS, skipped)
         days_held = 0
         try:
             trades = get_trades_for_symbol(db_conn, sym)
@@ -177,9 +180,18 @@ def find_rotation_candidate(
                             entry_dt = datetime.strptime(created_at[:19], "%Y-%m-%d %H:%M:%S")
                         if entry_dt.tzinfo is None:
                             entry_dt = entry_dt.replace(tzinfo=timezone.utc)
-                        days_held = (datetime.now(timezone.utc) - entry_dt).days
+                        days_held = (now_utc() - entry_dt).days
         except Exception:
             pass
+
+        # v69 churn guard: don't rotate a position held less than MIN_HOLD_DAYS.
+        # Missing entry_date => days_held=0 => skipped (safe default).
+        if days_held < MIN_HOLD_DAYS:
+            logger.info(
+                f"[Rotator] Skipping {sym} for rotation — only held {days_held}d "
+                f"(min {MIN_HOLD_DAYS}d)"
+            )
+            continue
 
         stay_score = _compute_stay_score(pos, rsi, gain_pct, days_held, momentum_score)
 

@@ -16,7 +16,7 @@ import logging
 import pandas as pd
 import yfinance as yf
 from utils.clock import now_utc as _now_utc
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
@@ -80,48 +80,54 @@ def _load_last_rebalance(db_conn) -> Optional[datetime]:
 
 def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
     """
-    Rebalance only if:
-    1. We don't already hold the top sectors (live Alpaca check — survives restarts), AND
-    2. Either the in-memory timer has expired OR it's a fresh start with no DB record
+    Rebalance if:
+    1. We hold zero sector-rotation positions on Alpaca (FORCE rebalance — overrides
+       the timer; without this the strategy never redeploys after being emptied), OR
+    2. We hold positions AND the rebalance timer (SR_REBALANCE_DAYS) has expired.
 
-    Checking live positions is the primary guard — it prevents double-buying after
-    container restarts where the DB is wiped (Railway ephemeral filesystem).
+    Live Alpaca positions are the source of truth (survives container restarts where
+    the local DB is wiped on Railway's ephemeral filesystem).
     """
     global _last_rebalance
 
-    # Primary guard: check what we actually hold right now on Alpaca
+    # Source of truth: live Alpaca positions tagged with this strategy
     current_sr_symbols = {
         p["symbol"] for p in broker.get_positions()
         if p["strategy"] == STRATEGY_NAME
     }
-    if current_sr_symbols:
-        # Already holding sector rotation positions — only rebalance if timer expired
-        if _last_rebalance is not None:
-            if (_now_utc() - _last_rebalance).days < SR_REBALANCE_DAYS:
-                return False
-        else:
-            # No in-memory timer but we have live positions — set timer now and skip
-            _last_rebalance = _now_utc()
-            return False
 
-    # No live positions — check DB for when we last bought
+    # v69 fix: zero live positions => force rebalance regardless of timer.
+    # This is the path that breaks after a flush (dead money, stops, manual close).
+    if not current_sr_symbols:
+        logger.info("Sector rotation: no positions found, triggering force rebalance")
+        return True
+
+    # We hold positions — honour the timer.
+    if _last_rebalance is not None:
+        return (_now_utc() - _last_rebalance).days >= SR_REBALANCE_DAYS
+
+    # No in-memory timer but live positions exist — hydrate from DB / state key.
     db_ts = _load_last_rebalance(db_conn)
     if db_ts is not None:
+        if db_ts.tzinfo is None:
+            db_ts = db_ts.replace(tzinfo=timezone.utc)
         _last_rebalance = db_ts
         return (_now_utc() - db_ts).days >= SR_REBALANCE_DAYS
 
-    # Also check dedicated state key — survives forced exits (dead money, stop loss)
-    if _last_rebalance is None:
-        ts_str = get_state(db_conn, "sector_rotation_last_rebalance")
-        if ts_str:
-            try:
-                _last_rebalance = datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc) if datetime.fromisoformat(ts_str).tzinfo is None else datetime.fromisoformat(ts_str)
-                return (_now_utc() - _last_rebalance).days >= SR_REBALANCE_DAYS
-            except Exception:
-                pass
+    ts_str = get_state(db_conn, "sector_rotation_last_rebalance")
+    if ts_str:
+        try:
+            parsed = datetime.fromisoformat(ts_str)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            _last_rebalance = parsed
+            return (_now_utc() - parsed).days >= SR_REBALANCE_DAYS
+        except Exception:
+            pass
 
-    # Truly no positions and no history — rebalance now
-    return True
+    # Positions exist but no timer history — set the timer now and skip this cycle.
+    _last_rebalance = _now_utc()
+    return False
 
 
 def _get_sector_scores(etfs: list[str]) -> dict[str, float]:
