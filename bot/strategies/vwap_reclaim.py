@@ -36,6 +36,38 @@ _scan_date: str = ""
 _state_restored: bool = False
 
 
+def _vwap_scanned_db_key(date_str: str) -> str:
+    return f"vwap_scanned_{date_str}"
+
+
+def _load_scanned_today(db_conn, today: str) -> None:
+    """v71: load _scanned_today from DB so a restart doesn't re-scan a name we already entered."""
+    global _scanned_today, _scan_date
+    if db_conn is None:
+        _scanned_today = set()
+        _scan_date = today
+        return
+    try:
+        from db import get_state
+        raw = get_state(db_conn, _vwap_scanned_db_key(today)) or ""
+        _scanned_today = {s for s in raw.split(",") if s}
+        _scan_date = today
+    except Exception as e:
+        logger.debug(f"[VWAPReclaim] _load_scanned_today failed: {e}")
+        _scanned_today = set()
+        _scan_date = today
+
+
+def _persist_scanned_today(db_conn, today: str) -> None:
+    if db_conn is None:
+        return
+    try:
+        from db import set_state
+        set_state(db_conn, _vwap_scanned_db_key(today), ",".join(sorted(_scanned_today)))
+    except Exception as e:
+        logger.debug(f"[VWAPReclaim] _persist_scanned_today failed: {e}")
+
+
 def _restore_state(broker):
     """Rebuild _active_positions from broker on startup (intraday only)."""
     global _state_restored
@@ -215,10 +247,11 @@ def run(broker, db_conn=None):
     if not _is_entry_window():
         return
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    from utils.clock import today_utc as _today_utc
+    today = _today_utc()
     if _scan_date != today:
-        _scanned_today = set()
-        _scan_date = today
+        # v71: load _scanned_today from DB on date change / first run after restart
+        _load_scanned_today(db_conn, today)
 
     if len(_active_positions) >= MAX_POSITIONS:
         return
@@ -232,10 +265,15 @@ def run(broker, db_conn=None):
         logger.error(f"[VWAPReclaim] Account error: {e}")
         return
 
+    from utils.cooldown import is_on_cooldown as _is_on_cooldown
     for sym in VWAP_UNIVERSE:
         if sym in _scanned_today:
             continue
         if sym in _active_positions:
+            continue
+        # v71: respect cooldown
+        if _is_on_cooldown(sym):
+            logger.debug(f"[VWAPReclaim] {sym} on cooldown — skipping")
             continue
         if len(_active_positions) >= MAX_POSITIONS:
             break
@@ -251,6 +289,7 @@ def run(broker, db_conn=None):
 
         if gap_pct <= -GAP_DOWN_MIN and above_vwap and current > 0:
             _scanned_today.add(sym)
+            _persist_scanned_today(db_conn, today)
             logger.info(
                 f"[VWAPReclaim] SIGNAL: {sym} gapped {gap_pct:.2%} at open, "
                 f"now ${current:.2f} above VWAP ${vwap:.2f} — entering"

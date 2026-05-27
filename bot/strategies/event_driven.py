@@ -14,6 +14,10 @@ import time
 from datetime import datetime, timezone
 
 from utils.news_scanner import EVENT_QUEUE
+from utils.clock import now_utc, today_utc
+from utils.market_hours import is_entry_allowed
+from utils.cooldown import is_on_cooldown
+from db import get_state, set_state
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,43 @@ POSITION_PCT = 0.04            # 4% of portfolio per event trade (smaller, faste
 MAX_EVENT_POSITIONS = 3        # Cap concurrent event-driven positions
 
 _event_positions: set = set()  # Track open event-driven positions
+
+# v71: Per-symbol "already fired today" gate. Persisted to DB so a restart
+# doesn't allow event_driven to re-fire on the same symbol the same day.
+_event_traded_today: dict[str, str] = {}  # symbol -> UTC date string
+
+
+def _event_db_key(symbol: str) -> str:
+    return f"event_driven_traded_{symbol}"
+
+
+def _is_event_traded_today(db_conn, symbol: str) -> bool:
+    """True if event_driven already traded this symbol today (in-process or DB)."""
+    today = today_utc()
+    if _event_traded_today.get(symbol) == today:
+        return True
+    if db_conn is None:
+        return False
+    try:
+        stored = get_state(db_conn, _event_db_key(symbol))
+        if stored == today:
+            _event_traded_today[symbol] = today
+            return True
+    except Exception as e:
+        logger.debug(f"[event_driven] DB check failed for {symbol}: {e}")
+    return False
+
+
+def _mark_event_traded_today(db_conn, symbol: str) -> None:
+    """Mark this symbol as traded today, both in-process and DB."""
+    today = today_utc()
+    _event_traded_today[symbol] = today
+    if db_conn is None:
+        return
+    try:
+        set_state(db_conn, _event_db_key(symbol), today)
+    except Exception as e:
+        logger.debug(f"[event_driven] DB persist failed for {symbol}: {e}")
 
 
 def _get_price_move(symbol: str, broker) -> float:
@@ -59,7 +100,7 @@ def _research_event(symbol: str, headline: str, category: str) -> dict:
 Symbol: {symbol}
 Category: {category}
 Headline: {headline}
-Current time (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}
+Current time (UTC): {now_utc().strftime('%Y-%m-%d %H:%M')}
 
 Assess whether this news event creates an actionable intraday trading opportunity.
 
@@ -100,10 +141,8 @@ def _is_market_open(broker) -> bool:
     try:
         return broker.is_market_open()
     except Exception:
-        import pytz
-        from datetime import datetime
-        et = pytz.timezone("America/New_York")
-        now = datetime.now(et)
+        from utils.clock import now_et
+        now = now_et()
         market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
         market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
         return market_open <= now <= market_close and now.weekday() < 5
@@ -121,6 +160,32 @@ def _get_portfolio_value(broker) -> float:
 def _execute_trade(symbol: str, direction: str, broker, db_conn, portfolio_value: float):
     """Execute the event-driven trade."""
     try:
+        # v71-E3: No cross-direction flip on the same symbol — refuse to short
+        # a name we are currently long (or buy a name we are currently short).
+        try:
+            existing_positions = broker.get_positions()
+            for p in existing_positions:
+                if p.get("symbol") != symbol:
+                    continue
+                try:
+                    qty_signed = float(p.get("qty", 0))
+                except Exception:
+                    qty_signed = 0.0
+                if qty_signed > 0 and direction == "short":
+                    logger.warning(
+                        f"[EventDriven] Refusing cross-direction flip on {symbol} "
+                        f"within same session (currently long, news says short)"
+                    )
+                    return
+                if qty_signed < 0 and direction == "long":
+                    logger.warning(
+                        f"[EventDriven] Refusing cross-direction flip on {symbol} "
+                        f"within same session (currently short, news says long)"
+                    )
+                    return
+        except Exception as e:
+            logger.debug(f"[event_driven] cross-direction check failed for {symbol}: {e}")
+
         import yfinance as yf
         trade_value = portfolio_value * POSITION_PCT
         price = getattr(yf.Ticker(symbol).fast_info, "last_price", None)
@@ -145,6 +210,8 @@ def _execute_trade(symbol: str, direction: str, broker, db_conn, portfolio_value
             time_in_force="day",
         )
         _event_positions.add(symbol)
+        # v71-E2: mark symbol as traded today, persists to DB
+        _mark_event_traded_today(db_conn, symbol)
         logger.info(f"[event_driven] Order placed: {side} {qty} {symbol}")
         # Cash guard
         if side == "buy":
@@ -215,6 +282,21 @@ def run(broker, db_conn):
         # Gate 1: Market must be open
         if not _is_market_open(broker):
             logger.info(f"[event_driven] Market closed — skipping {symbol}")
+            continue
+
+        # v71-E1: respect safe entry window (skip open/close blackouts)
+        if not is_entry_allowed():
+            logger.info(f"[EventDriven] Outside entry window, skipping {symbol}")
+            continue
+
+        # v71-E2: per-symbol "already fired today" gate
+        if _is_event_traded_today(db_conn, symbol):
+            logger.info(f"[EventDriven] Already traded {symbol} today, skipping")
+            continue
+
+        # v71-E4: respect cooldowns
+        if is_on_cooldown(symbol):
+            logger.info(f"[EventDriven] {symbol} on cooldown, skipping event")
             continue
 
         # Gate 2: Cap concurrent event positions

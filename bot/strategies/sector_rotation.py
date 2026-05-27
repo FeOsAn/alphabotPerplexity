@@ -98,8 +98,20 @@ def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
 
     # v69 fix: zero live positions => force rebalance regardless of timer.
     # This is the path that breaks after a flush (dead money, stops, manual close).
+    # v71 fix: cap force-rebalance to once per UTC day so we don't hammer yfinance
+    # every 5 minutes while empty.
     if not current_sr_symbols:
-        logger.info("Sector rotation: no positions found, triggering force rebalance")
+        from utils.clock import today_utc as _today_utc
+        today = _today_utc()
+        last_force = get_state(db_conn, "sr_last_force_rebalance_date") or ""
+        if last_force == today:
+            logger.info("Sector rotation: no positions but force rebalance already ran today — skipping")
+            return False
+        logger.info("Sector rotation: no positions found, triggering force rebalance (once-per-day)")
+        try:
+            set_state(db_conn, "sr_last_force_rebalance_date", today)
+        except Exception as e:
+            logger.debug(f"[SR] persist force_rebalance_date failed: {e}")
         return True
 
     # We hold positions — honour the timer.
@@ -273,7 +285,12 @@ def run(broker: AlpacaBroker, db_conn):
 
     # Hoist out of loop (QW4)
     # Enter new top sectors
+    from utils.cooldown import is_on_cooldown as _is_on_cooldown
     for etf in to_enter:
+        # v71: respect cooldown on sector ETFs that were stopped out recently
+        if _is_on_cooldown(etf):
+            logger.info(f"[SR] {etf} on cooldown — skipping")
+            continue
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
         if cash - notional_per_sector < min_cash:
             logger.info(f"[SR] Insufficient cash for {etf}")

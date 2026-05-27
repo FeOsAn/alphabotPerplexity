@@ -30,10 +30,54 @@ from broker import AlpacaBroker, tag_symbol
 from config import (
     MIN_CASH_RESERVE_PCT, DEFAULT_STRATEGY_ALLOCATION_PCT, MAX_SINGLE_POSITION_PCT,
 )
-from db import log_trade, log_signal
+from db import log_trade, log_signal, get_state, set_state
+from utils.clock import today_utc
 
 logger = logging.getLogger("alphabot.breakout")
 STRATEGY_NAME = "breakout"
+
+# v71: Per-day re-entry guard. A symbol that was bought today by breakout
+# cannot be re-bought by breakout the same day, even if its current position
+# is closed. Persisted to DB so restart doesn't wipe it.
+_traded_today: set[str] = set()
+_traded_today_date: str = ""
+_TRADED_DB_KEY = "breakout_traded_today"
+_TRADED_DATE_DB_KEY = "breakout_traded_today_date"
+
+
+def _load_traded_today(db_conn) -> None:
+    """Reload _traded_today from DB if stored date != today UTC (auto-reset at midnight UTC)."""
+    global _traded_today, _traded_today_date
+    today = today_utc()
+    if _traded_today_date == today:
+        return
+    try:
+        stored_date = get_state(db_conn, _TRADED_DATE_DB_KEY)
+        if stored_date == today:
+            raw = get_state(db_conn, _TRADED_DB_KEY) or ""
+            _traded_today = {s for s in raw.split(",") if s}
+        else:
+            _traded_today = set()
+        _traded_today_date = today
+    except Exception as e:
+        logger.debug(f"[breakout] _load_traded_today failed: {e}")
+        _traded_today = set()
+        _traded_today_date = today
+
+
+def _mark_traded_today(db_conn, sym: str) -> None:
+    """Add symbol to _traded_today and persist."""
+    global _traded_today, _traded_today_date
+    today = today_utc()
+    if _traded_today_date != today:
+        _traded_today = set()
+        _traded_today_date = today
+    _traded_today.add(sym)
+    try:
+        set_state(db_conn, _TRADED_DATE_DB_KEY, today)
+        set_state(db_conn, _TRADED_DB_KEY, ",".join(sorted(_traded_today)))
+    except Exception as e:
+        logger.debug(f"[breakout] _mark_traded_today persist failed: {e}")
 
 BREAKOUT_MAX_POSITIONS = 4
 STOP_LOSS_PCT = 0.05            # 5% trailing stop — tight for fast-fail detection
@@ -271,6 +315,9 @@ def run(broker: AlpacaBroker, db_conn):
         logger.info("[breakout] Outside safe entry window — skipping")
         return
 
+    # v71: reload _traded_today (auto-resets at midnight UTC)
+    _load_traded_today(db_conn)
+
     # ── Scan universe one symbol at a time ──────────────────────────────────
     signals: dict[str, dict] = {}
     for sym in BREAKOUT_UNIVERSE:
@@ -347,6 +394,11 @@ def run(broker: AlpacaBroker, db_conn):
         from utils.cooldown import is_on_cooldown
         if is_on_cooldown(sym):
             logger.debug(f"[STRATEGY] {sym} on cooldown — skipping")
+            continue
+
+        # v71: daily re-entry guard — don't re-buy a symbol breakout already traded today
+        if sym in _traded_today:
+            logger.info(f"[BRK] {sym} already traded today by breakout — skipping (daily re-entry guard)")
             continue
 
         from utils.earnings_calendar import has_upcoming_earnings
@@ -433,6 +485,7 @@ def run(broker: AlpacaBroker, db_conn):
 
         broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
+        _mark_traded_today(db_conn, sym)
         log_trade(
             db_conn, STRATEGY_NAME, sym, "buy", 0, sig["price"], 0,
             metadata={

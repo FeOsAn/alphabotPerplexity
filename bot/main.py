@@ -335,7 +335,7 @@ def check_circuit_breaker(broker: AlpacaBroker, db_conn=None):
             if db_conn is not None:
                 _persist_cb_state(db_conn)
             try:
-                notify.emergency("🚨 Circuit Breaker", f"Daily drawdown -{drawdown_pct:.1%} — entries halted", key="circuit_breaker")
+                notify.emergency("🚨 Circuit Breaker", f"Daily drawdown {day_pct:.1%} — entries halted", key="circuit_breaker")
             except Exception as e:
                 logger.warning(f"[CircuitBreaker] ntfy failed: {e}")
         elif day_pct > -0.02 and _circuit_breaker_active:
@@ -347,7 +347,7 @@ def check_circuit_breaker(broker: AlpacaBroker, db_conn=None):
             if db_conn is not None:
                 _persist_cb_state(db_conn)
             try:
-                notify.emergency("🚨 Circuit Breaker", f"Daily drawdown -{drawdown_pct:.1%} — entries halted", key="circuit_breaker")
+                notify.emergency("🚨 Circuit Breaker", f"Daily drawdown reset (now {day_pct:.1%}) — entries resumed", key="circuit_breaker")
             except Exception as e:
                 logger.warning(f"[CircuitBreaker] ntfy reset failed: {e}")
     except Exception as e:

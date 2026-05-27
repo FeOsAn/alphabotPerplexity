@@ -223,3 +223,12 @@ def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
         conn.commit()
     except Exception as e:
         logger.warning(f"[db.set_state] {key}: {e}")
+
+
+def del_state(conn: sqlite3.Connection, key: str) -> None:
+    """Delete a bot_state key."""
+    try:
+        conn.execute("DELETE FROM bot_state WHERE key=?", (key,))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[db.del_state] {key}: {e}")

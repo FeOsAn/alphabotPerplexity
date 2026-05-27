@@ -29,6 +29,8 @@ import pandas as pd
 from broker import AlpacaBroker
 from db import log_trade
 from utils import notify
+from utils.cooldown import set_cooldown
+from utils.clock import now_utc
 
 logger = logging.getLogger("alphabot.trade_management")
 
@@ -48,8 +50,7 @@ def _is_post_earnings_window(symbol: str, days: int = 2) -> bool:
             dates = [cal.loc["Earnings Date"]]
         else:
             return False
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc).date()
+        now = now_utc().date()
         for d in dates:
             try:
                 earn_date = d.date() if hasattr(d, "date") else d
@@ -445,7 +446,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 if entry_dt is not None:
                     if entry_dt.tzinfo is None:
                         entry_dt = entry_dt.replace(tzinfo=timezone.utc)
-                    age_days = (datetime.now(timezone.utc) - entry_dt).days
+                    age_days = (now_utc() - entry_dt).days
                     if age_days >= DEAD_MONEY_DAYS:
                         logger.info(
                             f"[TRADE MGT] DEAD MONEY EXIT {sym} ({strategy}): held {age_days}d "
@@ -462,6 +463,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                           "pnl_pct": pnl_pct,
                                       })
                             clear_symbol(sym)
+                            set_cooldown(sym)
+                            logger.info(f"[TradeManagement] {sym} cooldown set after sell_dead_money")
                             continue
                         except Exception as e:
                             logger.error(f"[TRADE MGT] Dead money close failed for {sym}: {e}")
@@ -485,6 +488,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                               "pnl_pct": pnl_pct,
                           })
                 clear_symbol(sym)
+                set_cooldown(sym)
+                logger.info(f"[TradeManagement] {sym} cooldown set after sell_dust_close")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed dust close for {sym}: {e}")
             continue
@@ -510,6 +515,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                   "drawdown_from_peak_pct": round(drawdown_from_peak * 100, 2),
                               })
                     clear_symbol(sym)
+                    set_cooldown(sym)
+                    logger.info(f"[TradeManagement] {sym} cooldown set after sell_trail_take")
                     try:
                         pass  # [ntfy silenced — logged only]
                     except Exception:
@@ -539,6 +546,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                   pos["qty"], current_price, pos["unrealized_pnl"],
                                   metadata={"reason": "ofi_sell_pressure", "pnl_pct": pnl_pct})
                         clear_symbol(sym)
+                        set_cooldown(sym)
+                        logger.info(f"[TradeManagement] {sym} cooldown set after sell_ofi")
                     except Exception as e:
                         logger.error(f"[TradeManagement] OFI close failed for {sym}: {e}")
                     continue
@@ -558,8 +567,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={"reason": "trailing_stop", "peak_price": peak})
                 clear_symbol(sym)
-                from utils.cooldown import set_cooldown
                 set_cooldown(sym)
+                logger.info(f"[TradeManagement] {sym} cooldown set after sell_trail_stop")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
@@ -593,9 +602,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                               "pnl_pct_at_stop": pnl_pct,
                           })
                 clear_symbol(sym)
-                if reason == "base_stop":
-                    from utils.cooldown import set_cooldown
-                    set_cooldown(sym)
+                set_cooldown(sym)
+                logger.info(f"[TradeManagement] {sym} cooldown set after {action}")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
@@ -632,6 +640,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                               "max_value": max_value,
                                               "trim_qty": trim_qty,
                                           })
+                                set_cooldown(sym)
+                                logger.info(f"[TradeManagement] {sym} cooldown set after sell_etf_cap")
                                 continue
                             except Exception as e:
                                 logger.error(f"[TRADE MGT] ETF cap trim failed for {sym}: {e}")
@@ -647,8 +657,8 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={"reason": "hard_floor_stop"})
                 clear_symbol(sym)
-                from utils.cooldown import set_cooldown
                 set_cooldown(sym)
+                logger.info(f"[TradeManagement] {sym} cooldown set after hard_floor_stop")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
 
@@ -792,7 +802,7 @@ def apply_earnings_stop_tightening(positions, broker: AlpacaBroker, db_conn):
         logger.warning(f"[EarningsTighten] earnings_calendar import failed: {e}")
         return
 
-    today = datetime.now(timezone.utc).date()
+    today = now_utc().date()
 
     for pos in positions:
         sym = pos["symbol"]
@@ -885,7 +895,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
     - Flat (±3%) → no change
     Each symbol acted-on at most once (tracked in _post_earnings_checked).
     """
-    today = datetime.now(timezone.utc).date()
+    today = now_utc().date()
 
     for pos in positions:
         sym = pos["symbol"]

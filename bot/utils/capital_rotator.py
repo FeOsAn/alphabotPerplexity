@@ -272,6 +272,14 @@ def execute_rotation(
             sell_qty, sell_price, realized_pnl,
         )
 
+        # v71: cooldown the rotated-out symbol so it isn't immediately re-bought next cycle
+        try:
+            from utils.cooldown import set_cooldown
+            set_cooldown(sell_symbol)
+            logger.info(f"[Rotator] Cooldown set on rotated-out symbol {sell_symbol}")
+        except Exception as _ce:
+            logger.debug(f"[Rotator] set_cooldown failed: {_ce}")
+
         try:
             pass  # [ntfy silenced — logged only]
         except Exception as _ne:

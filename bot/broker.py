@@ -386,9 +386,24 @@ def check_pyramid_adds(broker_instance) -> None:
     import logging, yfinance as yf
     logger = logging.getLogger(__name__)
 
+    # v71: respect open/close blackout windows — no pyramid adds outside safe entry window
+    try:
+        from utils.market_hours import is_entry_allowed
+        if not is_entry_allowed():
+            logger.debug("[Pyramid] Outside safe entry window — skipping all adds this cycle")
+            return
+    except Exception:
+        pass
+
+    from utils.cooldown import is_on_cooldown
+
     for symbol, state in list(_pyramid_state.items()):
         if state["add1_done"] and state["add2_done"]:
             del _pyramid_state[symbol]
+            continue
+        # v71: don't add to a position currently on cooldown
+        if is_on_cooldown(symbol):
+            logger.debug(f"[Pyramid] {symbol} on cooldown — skipping add")
             continue
         try:
             current_price = None
