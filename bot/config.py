@@ -50,6 +50,22 @@ MIN_CASH_RESERVE_PCT = 0.15
 # Non-momentum strategies that lack a score-based conviction use this flat base.
 DEFAULT_STRATEGY_ALLOCATION_PCT = 0.05
 
+# Portfolio-wide gross exposure ceiling: (|long MV| + |short MV|) / equity
+# Pairs trading + short_hedge can push gross above 1.0 even when net is flat.
+MAX_GROSS_EXPOSURE_PCT = 1.5
+
+# Per-strategy capital ceiling — keep one strategy from starving the rest.
+STRATEGY_CAPITAL_LIMITS = {
+    "momentum":         0.30,
+    "ai_research":      0.20,
+    "sector_rotation":  0.25,
+    "breakout":         0.20,
+    "ts_momentum":      0.20,
+    "trend_following":  0.15,
+    "pairs_trading":    0.15,
+    "default":          0.15,  # all other strategies
+}
+
 # ============================================================
 # Strategy Parameters
 # ============================================================
@@ -70,7 +86,7 @@ MR_MAX_POSITIONS = 5
 # Trend Following strategy
 TREND_FAST_EMA = 9
 TREND_SLOW_EMA = 21
-TREND_VIX_MAX = 35             # Pause trend-following above this VIX level
+TREND_VIX_MAX = 25             # VIXY price ~25 ≈ VIX ~20 (moderate stress) — pause trend-following above this
 TREND_MAX_POSITIONS = 5
 
 # Post-Earnings Announcement Drift (PEAD) strategy

@@ -59,13 +59,11 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
     try:
         tk = yf.Ticker(sym)
         hist = tk.history(period="5d", interval="1d")
-        gc.collect()
         if hist.empty:
             return None
         current_price = float(hist["Close"].iloc[-1])
 
         expiries = tk.options
-        gc.collect()
         if not expiries:
             return None
 
@@ -74,7 +72,6 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
         for expiry in expiries[:2]:
             try:
                 chain = tk.option_chain(expiry)
-                gc.collect()
                 calls = chain.calls
 
                 otm_mask = (
@@ -125,7 +122,6 @@ def _passes_filters(sym: str) -> bool:
             return False
         tk = yf.Ticker(sym)
         hist = tk.history(period="3mo", interval="1d")
-        gc.collect()
         if hist.empty or len(hist) < 15:
             return False
         closes = hist["Close"].dropna()

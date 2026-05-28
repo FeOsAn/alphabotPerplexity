@@ -85,6 +85,24 @@ def init_db():
         )
     """)
 
+    # Indexes — multiple callers do `WHERE symbol=? AND side LIKE 'buy%'
+    # ORDER BY created_at DESC LIMIT 1`; without an index these are full table
+    # scans once the trades table grows past a few thousand rows.
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS trades_sym_side_dt
+        ON trades(symbol, side, created_at DESC)
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS trades_strategy_dt
+        ON trades(strategy, created_at DESC)
+    """)
+    # bot_state primary key already indexes 'key', but make it explicit so
+    # future schema migrations don't accidentally drop the implicit index.
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS bot_state_key
+        ON bot_state(key)
+    """)
+
     conn.commit()
     conn.close()
     logger.info("Database initialized")

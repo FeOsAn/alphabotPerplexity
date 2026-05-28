@@ -238,7 +238,7 @@ def _get_eps_surprise(symbol: str) -> float:
         logger.debug(f"[EarningsNLP] EPS surprise error for {symbol}: {e}")
         return 0.0
     finally:
-        gc.collect()
+        pass
 
 
 def _get_price_reaction(symbol: str, earnings_date: datetime) -> float:
@@ -259,7 +259,7 @@ def _get_price_reaction(symbol: str, earnings_date: datetime) -> float:
     except Exception:
         return 0.0
     finally:
-        gc.collect()
+        pass
 
 
 def _fetch_transcript_text(symbol: str) -> str:
@@ -287,7 +287,7 @@ def _fetch_transcript_text(symbol: str) -> str:
     except Exception:
         pass
     finally:
-        gc.collect()
+        pass
 
     return transcript_text or f"No transcript available for {symbol}"
 
@@ -587,4 +587,4 @@ def run(broker, db_conn=None):
         except Exception as e:
             logger.error(f"[EarningsNLP] Order failed for {sym}: {e}")
         finally:
-            gc.collect()
+            pass

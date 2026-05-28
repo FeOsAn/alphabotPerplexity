@@ -585,7 +585,10 @@ def run(broker, db_conn):
                 continue
 
             days_until = (earn_date - today).days
-            if days_until != EP_DAYS_BEFORE_EARNINGS:
+            # Allow any day inside the [0, EP_DAYS_BEFORE_EARNINGS] window so we
+            # don't permanently lose an entry when the bot was down on the exact
+            # day-before-earnings tick.
+            if not (0 <= days_until <= EP_DAYS_BEFORE_EARNINGS):
                 continue
 
             logger.info(f"[EP] {symbol}: earnings in {days_until}d — scoring...")

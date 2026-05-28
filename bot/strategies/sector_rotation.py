@@ -144,37 +144,49 @@ def _should_rebalance(db_conn, broker: "AlpacaBroker") -> bool:
 
 def _get_sector_scores(etfs: list[str]) -> dict[str, float]:
     """
-    Return momentum score for each sector ETF relative to SPY.
-    Score = ETF 20-day return minus SPY 20-day return.
+    Return momentum score for each sector ETF relative to SPY using the SAME
+    3-month lookback as the top-N ranker (SR_LOOKBACK_DAYS). Single metric for
+    both ranking and confirmation — avoids the prior 3-month/20-day inconsistency
+    that cancelled the rotation signal exactly during regime changes.
+    Score = ETF 3-month return minus SPY 3-month return.
     Positive = outperforming, Negative = underperforming.
     """
     scores = {}
     try:
         spy = yf.Ticker("SPY")
-        spy_hist = spy.history(period="2mo", interval="1d")
-        gc.collect()
-        if spy_hist.empty or len(spy_hist) < 20:
+        spy_hist = spy.history(period="6mo", interval="1d")
+        if spy_hist.empty or len(spy_hist) < SR_LOOKBACK_DAYS:
             return {etf: 0.0 for etf in etfs}
-        spy_ret = (spy_hist["Close"].iloc[-1] - spy_hist["Close"].iloc[-20]) / spy_hist["Close"].iloc[-20]
+        spy_then = float(spy_hist["Close"].iloc[-SR_LOOKBACK_DAYS])
+        spy_now = float(spy_hist["Close"].iloc[-1])
+        if spy_then <= 0:
+            return {etf: 0.0 for etf in etfs}
+        spy_ret = (spy_now - spy_then) / spy_then
 
         for etf in etfs:
             try:
                 ticker = yf.Ticker(etf)
-                hist = ticker.history(period="2mo", interval="1d")
-                gc.collect()
-                if hist.empty or len(hist) < 20:
+                hist = ticker.history(period="6mo", interval="1d")
+                if hist.empty or len(hist) < SR_LOOKBACK_DAYS:
                     scores[etf] = 0.0
                     continue
-                ret = (hist["Close"].iloc[-1] - hist["Close"].iloc[-20]) / hist["Close"].iloc[-20]
-                scores[etf] = ret - spy_ret  # relative momentum
+                price_then = float(hist["Close"].iloc[-SR_LOOKBACK_DAYS])
+                price_now = float(hist["Close"].iloc[-1])
+                if price_then <= 0:
+                    scores[etf] = 0.0
+                    continue
+                ret = (price_now - price_then) / price_then
+                scores[etf] = ret - spy_ret
             except Exception:
                 scores[etf] = 0.0
     except Exception as e:
         logger.warning(f"[SR] Sector scoring failed: {e}")
         return {etf: 0.0 for etf in etfs}
+    finally:
+        pass
 
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    logger.info(f"[SR] Sector heat map: {[(s, f'{v:+.1%}') for s, v in sorted_scores]}")
+    logger.info(f"[SR] Sector heat map (3m rel SPY): {[(s, f'{v:+.1%}') for s, v in sorted_scores]}")
     return scores
 
 
@@ -212,7 +224,6 @@ def _score_sectors() -> pd.Series:
             logger.warning(f"[SR] Error fetching {etf}: {e}")
 
     # QW7: single gc.collect after the loop instead of per-iteration
-    gc.collect()
     logger.info(f"[SR] Scored {len(scores)}/{len(SECTOR_ETFS)} sectors")
     return pd.Series(scores).sort_values(ascending=False)
 
@@ -236,11 +247,11 @@ def run(broker: AlpacaBroker, db_conn):
     logger.info(f"[SR] Top sectors (3m momentum): {[(s, SECTOR_ETFS[s], f'{scores[s]:.1%}') for s in top_sectors]}")
     logger.info(f"[SR] All scores: {scores.to_dict()}")
 
-    # ── Sector heat map filter: only rotate into sectors outperforming SPY (20d) ──
+    # ── Sector heat map filter: only rotate into sectors outperforming SPY (3-month) ──
     rel_scores = _get_sector_scores(top_sectors)
     outperforming = [s for s in top_sectors if rel_scores.get(s, 0.0) > 0]
     if not outperforming:
-        logger.info("[SR] Heat map: no top sector is outperforming SPY on 20-day basis — skipping rotation")
+        logger.info("[SR] Heat map: no top sector is outperforming SPY on 3-month basis — skipping rotation")
         _check_stops(broker, db_conn)
         return
     # Preserve top-N rank but restrict to outperformers

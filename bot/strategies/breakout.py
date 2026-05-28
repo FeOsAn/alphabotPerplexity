@@ -125,7 +125,6 @@ def _confirm_4h_breakout(symbol: str, breakout_level: float) -> bool:
     try:
         ticker = yf.Ticker(symbol)
         hist_4h = ticker.history(period="5d", interval="1h")
-        gc.collect()
         if hist_4h.empty:
             logger.debug(f"[BRK] No 4H data for {symbol} — skipping MTF check")
             return True
@@ -241,7 +240,7 @@ def _compute_signals(sym: str) -> Optional[dict]:
         logger.debug(f"[BRK] Error computing signals for {sym}: {e}")
         return None
     finally:
-        gc.collect()
+        pass
 
 
 def _check_exits(broker: AlpacaBroker, db_conn, signals: dict):

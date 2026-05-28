@@ -77,7 +77,11 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     bb_mid   = _bb[[c for c in _bb.columns if c.startswith('BBM_')][0]]
 
     vol_avg = volume.rolling(20).mean()
-    vol_elevated = bool(volume.iloc[-1] > vol_avg.iloc[-1] * 1.2)
+    # Use prior completed day (iloc[-2]) — today's bar is partial during RTH
+    # and would read ~0.2x avg in the morning, masking real volume.
+    vol_last = volume.iloc[-2] if len(volume) >= 2 else volume.iloc[-1]
+    vol_avg_last = vol_avg.iloc[-2] if len(vol_avg) >= 2 else vol_avg.iloc[-1]
+    vol_elevated = bool(vol_last > vol_avg_last * 1.2)
 
     latest_rsi   = float(rsi.iloc[-1])
     latest_close = float(close.iloc[-1])
@@ -88,7 +92,7 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     ma50 = float(close.tail(50).mean()) if len(close) >= 50 else latest_close
     not_in_freefall = latest_close >= ma50 * 0.85
 
-    vol_ratio = float(volume.iloc[-1] / vol_avg.iloc[-1]) if vol_avg.iloc[-1] > 0 else 1.0
+    vol_ratio = float(vol_last / vol_avg_last) if vol_avg_last and vol_avg_last > 0 else 1.0
 
     from utils.adaptive_filters import get_thresholds
     oversold_threshold = get_thresholds()["mr_rsi_oversold"]
@@ -145,7 +149,7 @@ def run(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.debug(f"[MR] Error fetching {sym}: {e}")
         finally:
-            gc.collect()
+            pass
 
     # ── Exit existing positions ─────────────────────────────────────────────────
     all_positions = broker.get_positions()

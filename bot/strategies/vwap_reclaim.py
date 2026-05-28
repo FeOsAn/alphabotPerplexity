@@ -145,7 +145,7 @@ def _get_intraday_data(symbol: str) -> dict:
         logger.debug(f"[VWAPReclaim] Data error {symbol}: {e}")
         return {}
     finally:
-        gc.collect()
+        pass
 
 
 def _is_entry_window() -> bool:
@@ -193,7 +193,7 @@ def _manage_positions(broker):
         except Exception as e:
             logger.debug(f"[VWAPReclaim] Position check error {sym}: {e}")
         finally:
-            gc.collect()
+            pass
 
 
 def _get_equity(broker) -> float:

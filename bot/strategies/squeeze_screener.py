@@ -93,7 +93,6 @@ def _compute_signal(sym: str) -> Optional[dict]:
             return None
 
         hist = tk.history(period="3mo", interval="1d")
-        gc.collect()
         if hist.empty or len(hist) < 25:
             return None
 
@@ -113,7 +112,9 @@ def _compute_signal(sym: str) -> Optional[dict]:
         avg_vol_20 = float(volumes.iloc[-21:-1].mean())
         if avg_vol_20 <= 0:
             return None
-        cur_vol = float(volumes.iloc[-1])
+        # Use prior completed day (iloc[-2]) — today's bar is partial during RTH
+        # and reads ~0.15x at 10am, falsely blocking real volume signals.
+        cur_vol = float(volumes.iloc[-2]) if len(volumes) >= 2 else float(volumes.iloc[-1])
         vol_ratio = cur_vol / avg_vol_20
         if vol_ratio < VOL_RATIO_MIN:
             return None

@@ -15,7 +15,7 @@ import pandas as pd
 import yfinance as yf
 import pandas_ta as _pta
 from utils.clock import now_utc as _now_utc
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from broker import AlpacaBroker, tag_symbol
 from config import (
@@ -131,7 +131,9 @@ def _compute_score(sym: str) -> Optional[dict]:
 
         ret_3m = (price_now - price_63d) / price_63d if price_63d > 0 else 0.0
         ret_1m = (price_now - price_21d) / price_21d if price_21d > 0 else 0.0
-        score = ret_3m
+        # Jegadeesh-Titman 12-1 momentum (scaled to 3-1): skip the most recent month
+        # to avoid chasing exhausted moves / short-term mean reversion.
+        score = ret_3m - ret_1m
 
         price_42d = float(close.iloc[-43]) if len(close) >= 43 else price_21d
         ret_1m_prior = (price_21d - price_42d) / price_42d if price_42d > 0 else 0.0
@@ -164,7 +166,7 @@ def _compute_score(sym: str) -> Optional[dict]:
         logger.debug(f"[MOM] Error computing score for {sym}: {e}")
         return None
     finally:
-        gc.collect()
+        pass
 
 
 def _passes_entry_filters(sig: dict) -> bool:

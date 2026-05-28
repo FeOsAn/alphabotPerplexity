@@ -811,12 +811,12 @@ def run(broker: AlpacaBroker, db_conn):
     if current_ai_count >= MAX_AI_POSITIONS:
         logger.info(f"[AI Research] At max positions ({MAX_AI_POSITIONS}) — skipping new research")
         run._fired_date = today_str
-    if db_conn is not None:
-        try:
-            from db import set_state as _set_state
-            _set_state(db_conn, "ai_research_ran_date", today_str)
-        except Exception:
-            pass
+        if db_conn is not None:
+            try:
+                from db import set_state as _set_state
+                _set_state(db_conn, "ai_research_ran_date", today_str)
+            except Exception:
+                pass
         return
 
     slots_available  = MAX_AI_POSITIONS - current_ai_count
@@ -986,7 +986,7 @@ def run(broker: AlpacaBroker, db_conn):
 
         # ── Gate 4: Recency Auditor — final staleness check ───────────────────
         # Skip recency_auditor if checker already rejected — saves a Haiku call
-        if check is None or not check.get("approved", False):
+        if check is None or not check.get("overall_go", False):
             logger.info(f"[AI Research] {symbol}: Checker failed — skipping auditor")
             continue
         audit = recency_auditor(client, symbol, context, thesis)

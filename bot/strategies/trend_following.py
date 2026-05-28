@@ -62,7 +62,11 @@ TREND_WATCHLIST = [
 
 
 def _get_vix() -> float:
-    """Get current VIXY level as market regime filter (via yFinance, not IEX)."""
+    """
+    VIXY ETF price as the trend-pause regime filter (paired with TREND_VIX_MAX=25
+    in config — VIXY ~25 ≈ real VIX ~20). VIXY price is NOT the same scale as
+    the ^VIX index — this filter is intentionally calibrated to VIXY, not VIX.
+    """
     try:
         ticker = yf.Ticker("VIXY")
         hist = ticker.history(period="5d")
@@ -201,7 +205,6 @@ def run(broker: AlpacaBroker, db_conn):
                     signals[sym] = sig
         except Exception as e:
             logger.debug(f"[TF] Error fetching {sym}: {e}")
-    gc.collect()
 
     _check_exits_and_stops(broker, db_conn, signals)
 

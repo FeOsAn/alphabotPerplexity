@@ -14,7 +14,11 @@ from utils.clock import now_utc as _now_utc
 from datetime import datetime, timedelta
 import pandas as pd
 
-from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
+from config import (
+    ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL,
+    MAX_TOTAL_POSITIONS, MAX_GROSS_EXPOSURE_PCT, STRATEGY_CAPITAL_LIMITS,
+)
+import time as _time
 
 # OCC option symbol: ROOT (1-5 letters) + YYMMDD + C|P + 8-digit strike price.
 # e.g. SPY250117C00500000
@@ -32,6 +36,10 @@ class AlpacaBroker:
             paper=paper
         )
         self.data = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+        # 30-second cache of open orders to avoid hammering the API on every
+        # market_buy/market_sell dedup check.
+        self._open_orders_cache: list[dict] = []
+        self._open_orders_cache_ts: float = 0.0
         logger.info(f"Connected to Alpaca ({'paper' if paper else 'live'} trading)")
 
     # ------------------------------------------------------------------ account
@@ -83,9 +91,141 @@ class AlpacaBroker:
         except Exception:
             return None
 
+    # ---------------------------------------------------------- safety gates
+    def _open_orders_cached(self) -> list[dict]:
+        """Return open orders with a 30s cache so order checks don't spam the API."""
+        now = _time.time()
+        if now - self._open_orders_cache_ts < 30 and self._open_orders_cache_ts > 0:
+            return self._open_orders_cache
+        try:
+            self._open_orders_cache = self.get_orders(status="open")
+            self._open_orders_cache_ts = now
+        except Exception as e:
+            logger.warning(f"[Broker] get_orders failed (dedup check): {e}")
+            self._open_orders_cache = []
+            self._open_orders_cache_ts = now
+        return self._open_orders_cache
+
+    def _has_pending_order(self, symbol: str, side: str) -> bool:
+        """True if an open order already exists for symbol+side (case-insensitive)."""
+        side_l = side.lower()
+        for o in self._open_orders_cached():
+            if o.get("symbol") == symbol and (o.get("side") or "").lower() == side_l:
+                return True
+        return False
+
+    def _gross_exposure_pct(self, positions: Optional[list[dict]] = None,
+                            equity: Optional[float] = None) -> float:
+        """Return (|long MV| + |short MV|) / equity. 0.0 on any error."""
+        try:
+            if positions is None:
+                positions = self.get_positions()
+            if equity is None:
+                equity = float(self.get_account().get("equity") or 0.0)
+            if equity <= 0:
+                return 0.0
+            gross = sum(abs(float(p.get("market_value", 0.0))) for p in positions)
+            return gross / equity
+        except Exception as e:
+            logger.warning(f"[Broker] gross_exposure calc failed: {e}")
+            return 0.0
+
+    def _strategy_capital_pct(self, strategy: str,
+                              positions: Optional[list[dict]] = None,
+                              equity: Optional[float] = None) -> float:
+        """Return absolute MV held by this strategy as a fraction of equity."""
+        try:
+            if positions is None:
+                positions = self.get_positions()
+            if equity is None:
+                equity = float(self.get_account().get("equity") or 0.0)
+            if equity <= 0:
+                return 0.0
+            strat_mv = sum(
+                abs(float(p.get("market_value", 0.0))) for p in positions
+                if p.get("strategy") == strategy
+            )
+            return strat_mv / equity
+        except Exception as e:
+            logger.warning(f"[Broker] strategy_capital calc failed: {e}")
+            return 0.0
+
+    def _entry_blocked(self, symbol: str, side: str, strategy: str,
+                       notional: float) -> bool:
+        """
+        Centralised pre-order gate. Returns True if the order should be blocked.
+        Enforces:
+          - MAX_TOTAL_POSITIONS (only for NEW symbol buys)
+          - per-strategy capital ceiling
+          - portfolio gross exposure cap
+          - open-order deduplication (same symbol + side already pending)
+        """
+        # --- Order dedup --------------------------------------------------
+        if self._has_pending_order(symbol, side):
+            logger.info(
+                f"[Broker] Duplicate order skipped: {symbol} {side} already pending"
+            )
+            return True
+
+        try:
+            positions = self.get_positions()
+        except Exception as e:
+            logger.warning(f"[Broker] get_positions failed in gate: {e}")
+            positions = []
+        try:
+            equity = float(self.get_account().get("equity") or 0.0)
+        except Exception:
+            equity = 0.0
+
+        # --- MAX_TOTAL_POSITIONS (only enforce for new-symbol buys) -------
+        if side.lower() == "buy":
+            held_syms = {p["symbol"] for p in positions}
+            if symbol not in held_syms and len(positions) >= MAX_TOTAL_POSITIONS:
+                logger.info(
+                    f"[Broker] MAX_TOTAL_POSITIONS={MAX_TOTAL_POSITIONS} reached, "
+                    f"skipping buy for {symbol}"
+                )
+                return True
+
+        # --- Per-strategy capital ceiling --------------------------------
+        if equity > 0 and notional and strategy and strategy != "manual":
+            limit = STRATEGY_CAPITAL_LIMITS.get(
+                strategy, STRATEGY_CAPITAL_LIMITS["default"]
+            )
+            current = self._strategy_capital_pct(strategy, positions, equity)
+            projected = current + (float(notional) / equity)
+            if current >= limit:
+                logger.info(
+                    f"[{strategy}] Capital ceiling hit ({current:.1%} ≥ {limit:.0%}), "
+                    f"skipping entry for {symbol}"
+                )
+                return True
+            if projected > limit:
+                logger.info(
+                    f"[{strategy}] Capital ceiling would be breached "
+                    f"(projected {projected:.1%} > {limit:.0%}), skipping {symbol}"
+                )
+                return True
+
+        # --- Gross exposure cap ------------------------------------------
+        if equity > 0 and notional:
+            gross = self._gross_exposure_pct(positions, equity)
+            projected_gross = gross + (float(notional) / equity)
+            if projected_gross > MAX_GROSS_EXPOSURE_PCT:
+                logger.warning(
+                    f"[Broker] Gross exposure cap would be exceeded "
+                    f"({projected_gross:.1%} > {MAX_GROSS_EXPOSURE_PCT:.0%}), "
+                    f"skipping {side} {symbol}"
+                )
+                return True
+
+        return False
+
     # ------------------------------------------------------------------ orders
-    def market_buy(self, symbol: str, notional: float, strategy: str = "manual") -> dict:
-        """Buy $notional worth of symbol."""
+    def market_buy(self, symbol: str, notional: float, strategy: str = "manual") -> Optional[dict]:
+        """Buy $notional worth of symbol. Returns None if blocked by safety gates."""
+        if self._entry_blocked(symbol, "buy", strategy, notional):
+            return None
         req = MarketOrderRequest(
             symbol=symbol,
             notional=round(notional, 2),
@@ -93,11 +233,16 @@ class AlpacaBroker:
             time_in_force=TimeInForce.DAY,
         )
         order = self.trading.submit_order(req)
+        # Invalidate dedup cache so subsequent calls see this new open order
+        self._open_orders_cache_ts = 0.0
         logger.info(f"[{strategy}] BUY ${notional:.0f} {symbol} — order {order.id}")
         return {"id": str(order.id), "symbol": symbol, "side": "buy", "notional": notional, "strategy": strategy}
 
-    def market_sell(self, symbol: str, qty: float, strategy: str = "manual") -> dict:
-        """Sell qty shares of symbol."""
+    def market_sell(self, symbol: str, qty: float, strategy: str = "manual") -> Optional[dict]:
+        """Sell qty shares of symbol. Dedup only — sells don't add exposure."""
+        if self._has_pending_order(symbol, "sell"):
+            logger.info(f"[Broker] Duplicate order skipped: {symbol} sell already pending")
+            return None
         req = MarketOrderRequest(
             symbol=symbol,
             qty=qty,
@@ -105,6 +250,7 @@ class AlpacaBroker:
             time_in_force=TimeInForce.DAY,
         )
         order = self.trading.submit_order(req)
+        self._open_orders_cache_ts = 0.0
         logger.info(f"[{strategy}] SELL {qty} {symbol} — order {order.id}")
         return {"id": str(order.id), "symbol": symbol, "side": "sell", "qty": qty, "strategy": strategy}
 
@@ -120,6 +266,13 @@ class AlpacaBroker:
                 return None
             order_side = OrderSide.BUY if side.lower() in ("buy", "long") else OrderSide.SELL
             tif = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.GTC
+            normalized_side = "buy" if order_side == OrderSide.BUY else "sell"
+            # Dedup guard (open same-symbol/side order)
+            if self._has_pending_order(symbol, normalized_side):
+                logger.info(
+                    f"[Broker] Duplicate order skipped: {symbol} {normalized_side} already pending"
+                )
+                return None
             req = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
@@ -127,6 +280,7 @@ class AlpacaBroker:
                 time_in_force=tif,
             )
             result = self.trading.submit_order(req)
+            self._open_orders_cache_ts = 0.0
             logger.info(f"[Broker] submit_order: {side} {qty} {symbol} → {result.id if result else 'no result'}")
             return result
         except Exception as e:
@@ -181,6 +335,15 @@ class AlpacaBroker:
     def is_market_open(self) -> bool:
         clock = self.trading.get_clock()
         return clock.is_open
+
+    def get_live_cash(self) -> tuple[float, float]:
+        """Fetch real-time cash and portfolio_value from Alpaca. Use after every order."""
+        try:
+            acc = self.get_account()
+            return float(acc["cash"]), float(acc["portfolio_value"])
+        except Exception as e:
+            logger.warning(f"[broker] get_live_cash failed: {e}")
+            return 0.0, 0.0
 
 
 # ------------------------------------------------------------------ helpers
@@ -432,12 +595,3 @@ def check_pyramid_adds(broker_instance) -> None:
             logger.warning(f"[Pyramid] Error checking adds for {symbol}: {e}")
 
 
-def get_live_cash(self) -> tuple[float, float]:
-    """Fetch real-time cash and portfolio_value from Alpaca. Use after every order."""
-    try:
-        acc = self.get_account()
-        return float(acc["cash"]), float(acc["portfolio_value"])
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"[broker] get_live_cash failed: {e}")
-        return 0.0, 0.0

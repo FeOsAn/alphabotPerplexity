@@ -41,7 +41,6 @@ def _is_post_earnings_window(symbol: str, days: int = 2) -> bool:
         import yfinance as yf, gc
         ticker = yf.Ticker(symbol)
         cal = ticker.calendar
-        gc.collect()
         if cal is None or cal.empty:
             return False
         if "Earnings Date" in cal.columns:
@@ -916,7 +915,6 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                 import yfinance as yf, gc as _gc
                 ticker = yf.Ticker(sym)
                 cal = ticker.calendar
-                _gc.collect()
                 raw_dates = []
                 if cal is None:
                     pass

@@ -42,7 +42,6 @@ def _get_signals(symbol: str) -> Optional[dict]:
     try:
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="3mo", interval="1d")
-        gc.collect()
         if hist.empty or len(hist) < 30:
             return None
 

@@ -31,7 +31,6 @@ def has_upcoming_earnings(symbol: str, days_ahead: int = 2) -> bool:
     try:
         ticker = yf.Ticker(symbol)
         cal = ticker.calendar
-        gc.collect()
         if cal is None:
             return False
         # cal may be a DataFrame or a dict, depending on yfinance version
@@ -115,7 +114,7 @@ def _fetch_calendar_for_symbol(sym: str, horizon_days: int = 14) -> list:
     except Exception as e:
         logger.debug(f"[EarningsCalendar] Error fetching {sym}: {e}")
     finally:
-        gc.collect()
+        pass
     return results
 
 
@@ -254,7 +253,6 @@ def get_next_earnings_date(symbol: str):
         try:
             ticker = yf.Ticker(symbol)
             cal = ticker.calendar
-            gc.collect()
             raw_dates = []
             if cal is None:
                 pass

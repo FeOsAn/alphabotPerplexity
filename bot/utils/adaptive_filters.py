@@ -106,7 +106,6 @@ def _calibrate_market() -> dict:
     except Exception as e:
         logger.warning(f"[Calibrate] Parallel fetch failed, falling back to defaults: {e}")
         return _safe_defaults()
-    gc.collect()
 
     for sym in CALIBRATION_UNIVERSE:
         try:
@@ -186,7 +185,6 @@ def _assess_regime() -> tuple[str, dict]:
     try:
         spy  = yf.Ticker("SPY")
         hist = spy.history(period="1y", interval="1d")
-        gc.collect()
 
         if hist.empty or len(hist) < 50:
             return "BULL_NORMAL", {}
@@ -199,7 +197,6 @@ def _assess_regime() -> tuple[str, dict]:
 
         try:
             vix_h    = yf.Ticker("^VIX").history(period="5d")
-            gc.collect()
             vix_proxy = float(vix_h["Close"].iloc[-1]) if not vix_h.empty else 20.0
         except Exception:
             vix_proxy = 20.0

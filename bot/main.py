@@ -17,11 +17,21 @@ except ImportError:
 import gc
 import logging
 import schedule
+import threading
 import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v68b"
+VERSION = "v72"
+
+# --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
+# Updated at the top of every run_all_strategies(). Health endpoint serves 503
+# when this gets stale (>15min) so Railway can detect a dead trading loop.
+_last_cycle_ts: float = 0.0
+# Re-entrancy guard: if a cycle is still running when the next 5-min tick fires,
+# skip the new one rather than running two concurrent copies (duplicate orders,
+# DB race conditions).
+_cycle_lock = threading.Lock()
 
 # Resolve base directory robustly (works in Docker, Railway, local)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,8 +51,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("alphabot.main")
 
-# Suppress yFinance 404 noise — ETFs have no fundamentals, that's expected
-logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+# Keep yFinance warnings visible — real data outages must surface in logs.
+logging.getLogger("yfinance").setLevel(logging.WARNING)
 
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
@@ -359,247 +369,261 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
     global _last_report_date, _last_metrics_date
     global _recap_sent_date, _gap_protection_run_date
     global _circuit_breaker_active, _circuit_breaker_reset_date
+    global _last_cycle_ts
 
-    # Clear per-cycle yfinance memoize at the top of every run
+    # Fix 9: Re-entrancy guard — if a prior cycle is still running (e.g. a
+    # strategy hung past the 5-minute tick), skip this tick rather than
+    # spawning a concurrent run that could double-submit orders.
+    if not _cycle_lock.acquire(blocking=False):
+        logger.warning("[Main] Previous cycle still running, skipping this tick")
+        return
+
     try:
-        yf_cache.clear_cycle_cache()
-    except Exception:
-        pass
+        # Fix 8: liveness heartbeat for the health endpoint
+        _last_cycle_ts = time.time()
 
-    now_utc = datetime.now(timezone.utc)
-    today_utc = now_utc.strftime("%Y-%m-%d")
-    weekday = now_utc.weekday()
+        # Clear per-cycle yfinance memoize at the top of every run
+        try:
+            yf_cache.clear_cycle_cache()
+        except Exception:
+            pass
 
-    # ── Reset circuit breaker at start of each new trading day (after 13:30 UTC) ──
-    # Fires on the first cycle of the day at/after 13:30 UTC even if the exact
-    # 13:30-13:59 window was missed (e.g. bot restart at 14:00).
-    if (weekday < 5
-            and _circuit_breaker_reset_date != today_utc
-            and (now_utc.hour > 13 or (now_utc.hour == 13 and now_utc.minute >= 30))):
+        now_utc = datetime.now(timezone.utc)
+        today_utc = now_utc.strftime("%Y-%m-%d")
+        weekday = now_utc.weekday()
+
+        # ── Reset circuit breaker at start of each new trading day (after 13:30 UTC) ──
+        # Fires on the first cycle of the day at/after 13:30 UTC even if the exact
+        # 13:30-13:59 window was missed (e.g. bot restart at 14:00).
+        if (weekday < 5
+                and _circuit_breaker_reset_date != today_utc
+                and (now_utc.hour > 13 or (now_utc.hour == 13 and now_utc.minute >= 30))):
+            if _circuit_breaker_active:
+                logger.info("[CircuitBreaker] New trading day — resetting active flag")
+            _circuit_breaker_active = False
+            _circuit_breaker_reset_date = today_utc
+            _persist_cb_state(db_conn)
+
+        # ── Pre-market gap protection: 13:00–13:10 UTC (8:00–8:10 AM ET), weekdays ─
+        if (now_utc.hour == 13 and now_utc.minute < 10 and weekday < 5
+                and _gap_protection_run_date != today_utc):
+            try:
+                run_gap_protection(broker)
+            except Exception as e:
+                logger.error(f"[GapProtect] Outer failure: {e}")
+            _gap_protection_run_date = today_utc
+            _persist_daily_state(db_conn)
+
+        # ── Daily P&L recap: 20:00–22:59 UTC (9 PM–midnight BST), weekdays only ─
+        # Fires after market close (4 PM ET = 9 PM BST = 20:00 UTC).
+        if (now_utc.hour in (20, 21, 22)
+                and weekday < 5 and _recap_sent_date != today_utc):
+            try:
+                success = send_daily_recap(broker)
+                if success:
+                    _recap_sent_date = today_utc
+                    _persist_daily_state(db_conn)
+                else:
+                    logger.warning("[Recap] Send failed — will retry next cycle")
+            except Exception as e:
+                logger.error(f"[Recap] Outer failure: {e}")
+
+        # ── Account health check — halt on negative cash / margin ─────────────────
+        try:
+            acc = broker.get_account()
+            live_cash = float(acc["cash"])
+            live_pv   = float(acc["portfolio_value"])
+            if live_cash < 0:
+                msg = f"🚨 MARGIN: cash=${live_cash:,.0f}. Halting all entries this cycle."
+                logger.critical(msg)
+                from utils.notify import send as _notify_health
+                _notify_health("🚨 Margin Alert", msg, priority="urgent")
+                run_trade_management(broker, db_conn)  # still run exits
+                return
+            if live_pv > 0 and live_cash / live_pv < MIN_CASH_RESERVE_PCT:
+                msg = f"Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
+                logger.warning(msg)  # silent — bot handles this itself
+                run_trade_management(broker, db_conn)
+                return
+        except Exception as e:
+            logger.warning(f"[HealthCheck] Failed: {e}")
+
+        # ── Circuit breaker check (3% daily drawdown halts new entries) ──────────
+        try:
+            check_circuit_breaker(broker, db_conn)
+        except Exception as e:
+            logger.warning(f"[CircuitBreaker] Outer failure: {e}")
+
         if _circuit_breaker_active:
-            logger.info("[CircuitBreaker] New trading day — resetting active flag")
-        _circuit_breaker_active = False
-        _circuit_breaker_reset_date = today_utc
-        _persist_cb_state(db_conn)
-
-    # ── Pre-market gap protection: 13:00–13:10 UTC (8:00–8:10 AM ET), weekdays ─
-    if (now_utc.hour == 13 and now_utc.minute < 10 and weekday < 5
-            and _gap_protection_run_date != today_utc):
-        try:
-            run_gap_protection(broker)
-        except Exception as e:
-            logger.error(f"[GapProtect] Outer failure: {e}")
-        _gap_protection_run_date = today_utc
-        _persist_daily_state(db_conn)
-
-    # ── Daily P&L recap: 20:00–22:59 UTC (9 PM–midnight BST), weekdays only ─
-    # Fires after market close (4 PM ET = 9 PM BST = 20:00 UTC).
-    if (now_utc.hour in (20, 21, 22)
-            and weekday < 5 and _recap_sent_date != today_utc):
-        try:
-            success = send_daily_recap(broker)
-            if success:
-                _recap_sent_date = today_utc
-                _persist_daily_state(db_conn)
-            else:
-                logger.warning("[Recap] Send failed — will retry next cycle")
-        except Exception as e:
-            logger.error(f"[Recap] Outer failure: {e}")
-
-    # ── Account health check — halt on negative cash / margin ─────────────────
-    try:
-        acc = broker.get_account()
-        live_cash = float(acc["cash"])
-        live_pv   = float(acc["portfolio_value"])
-        if live_cash < 0:
-            msg = f"🚨 MARGIN: cash=${live_cash:,.0f}. Halting all entries this cycle."
-            logger.critical(msg)
-            from utils.notify import send as _notify_health
-            _notify_health("🚨 Margin Alert", msg, priority="urgent")
-            run_trade_management(broker, db_conn)  # still run exits
-            return
-        if live_pv > 0 and live_cash / live_pv < MIN_CASH_RESERVE_PCT:
-            msg = f"Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
-            logger.warning(msg)  # silent — bot handles this itself
-            run_trade_management(broker, db_conn)
-            return
-    except Exception as e:
-        logger.warning(f"[HealthCheck] Failed: {e}")
-
-    # ── Circuit breaker check (3% daily drawdown halts new entries) ──────────
-    try:
-        check_circuit_breaker(broker, db_conn)
-    except Exception as e:
-        logger.warning(f"[CircuitBreaker] Outer failure: {e}")
-
-    if _circuit_breaker_active:
-        logger.info("[CircuitBreaker] ACTIVE — skipping new entries, running exits only")
-        try:
-            run_trade_management(broker, db_conn)
-        except Exception as e:
-            logger.error(f"[CircuitBreaker] Exits-only trade_management failed: {e}", exc_info=True)
-        return
-
-    try:
-        from utils.adaptive_filters import get_thresholds
-        t = get_thresholds()
-        logger.info(
-            f"[Regime] {t['regime']} — thresholds active: "
-            f"RSI_max={t['momentum_rsi_max']}, BRK_vol={t['breakout_vol_min']}x, "
-            f"MR_oversold={t['mr_rsi_oversold']}"
-        )
-    except Exception as e:
-        logger.warning(f"[Regime] Could not assess: {e}")
-
-    now_et = datetime.now(EASTERN)
-    market_open = broker.is_market_open()
-
-    # ── Weekly P&L report: Monday 9:30–10:00 ET, once per day ────────────────
-    if now_et.weekday() == 0 and 9 <= now_et.hour <= 10:
-        today_str = now_et.strftime("%Y-%m-%d")
-        if _last_report_date != today_str:
+            logger.info("[CircuitBreaker] ACTIVE — skipping new entries, running exits only")
             try:
-                generate_weekly_report(broker)
-                _last_report_date = today_str
-                _persist_daily_state(db_conn)
+                run_trade_management(broker, db_conn)
             except Exception as e:
-                logger.error(f"Weekly report error: {e}", exc_info=True)
+                logger.error(f"[CircuitBreaker] Exits-only trade_management failed: {e}", exc_info=True)
+            return
 
-    # ── Daily risk metrics: log once per day after 10 AM ET ──────────────────
-    if now_et.hour >= 10:
-        today_str = now_et.strftime("%Y-%m-%d")
-        if _last_metrics_date != today_str:
-            try:
-                from utils.risk_metrics import compute_metrics
-                from config import ALPACA_BASE_URL
-                compute_metrics(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, db_conn=db_conn)
-                _last_metrics_date = today_str
-                _persist_daily_state(db_conn)
-            except Exception as e:
-                logger.warning(f"[RiskMetrics] Daily log error: {e}")
-
-    # ── Pre-market window: gap scanner only ───────────────────────────────────
-    if is_premarket_window() and not market_open:
-        logger.info(f"Pre-market window ({now_et.strftime('%H:%M ET')}) — running gap scanner")
         try:
-            gap_scanner.run(broker, db_conn)
+            from utils.adaptive_filters import get_thresholds
+            t = get_thresholds()
+            logger.info(
+                f"[Regime] {t['regime']} — thresholds active: "
+                f"RSI_max={t['momentum_rsi_max']}, BRK_vol={t['breakout_vol_min']}x, "
+                f"MR_oversold={t['mr_rsi_oversold']}"
+            )
         except Exception as e:
-            logger.error(f"Gap scanner error: {e}", exc_info=True)
-        return
+            logger.warning(f"[Regime] Could not assess: {e}")
 
-    # ── Market closed ─────────────────────────────────────────────────────────
-    if not market_open:
-        logger.info("Market is closed — skipping strategy run")
-        return
+        now_et = datetime.now(EASTERN)
+        market_open = broker.is_market_open()
 
-    if not is_trading_window():
-        logger.info("Outside trading window — skipping (too close to open/close)")
-        return
+        # ── Weekly P&L report: Monday 9:30–10:00 ET, once per day ────────────────
+        if now_et.weekday() == 0 and 9 <= now_et.hour <= 10:
+            today_str = now_et.strftime("%Y-%m-%d")
+            if _last_report_date != today_str:
+                try:
+                    generate_weekly_report(broker)
+                    _last_report_date = today_str
+                    _persist_daily_state(db_conn)
+                except Exception as e:
+                    logger.error(f"Weekly report error: {e}", exc_info=True)
 
-    logger.info("==========================================")
-    logger.info(f"Running all strategies — {now_str()} | Market: {market_closes_in()}")
-    logger.info("==========================================")
+        # ── Daily risk metrics: log once per day after 10 AM ET ──────────────────
+        if now_et.hour >= 10:
+            today_str = now_et.strftime("%Y-%m-%d")
+            if _last_metrics_date != today_str:
+                try:
+                    from utils.risk_metrics import compute_metrics
+                    from config import ALPACA_BASE_URL
+                    compute_metrics(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, db_conn=db_conn)
+                    _last_metrics_date = today_str
+                    _persist_daily_state(db_conn)
+                except Exception as e:
+                    logger.warning(f"[RiskMetrics] Daily log error: {e}")
 
-    # ── Auto-tag all positions so labels are always current ──────────────────
-    positions = broker.get_positions()
-    retag_all_positions(positions)
+        # ── Pre-market window: gap scanner only ───────────────────────────────────
+        if is_premarket_window() and not market_open:
+            logger.info(f"Pre-market window ({now_et.strftime('%H:%M ET')}) — running gap scanner")
+            try:
+                gap_scanner.run(broker, db_conn)
+            except Exception as e:
+                logger.error(f"Gap scanner error: {e}", exc_info=True)
+            return
 
-    # ── Update OFI watched symbols based on current positions ────────────────
-    try:
-        ofi_monitor.update_watched(broker)
-    except Exception as e:
-        logger.debug(f"[OFI] update_watched failed: {e}")
+        # ── Market closed ─────────────────────────────────────────────────────────
+        if not market_open:
+            logger.info("Market is closed — skipping strategy run")
+            return
 
-    # ── Trade management: v44 — earnings tightening + post-earnings review
-    # run BEFORE the normal ratchet/trailing-stop/partial-take logic.
-    run_trade_management(broker, db_conn)
+        if not is_trading_window():
+            logger.info("Outside trading window — skipping (too close to open/close)")
+            return
 
-    # ── Pyramid entry: check tracked positions for +2% / +4% add triggers ────
-    try:
-        check_pyramid_adds(broker)
-    except Exception as e:
-        logger.error(f"Pyramid add check error: {e}", exc_info=True)
+        logger.info("==========================================")
+        logger.info(f"Running all strategies — {now_str()} | Market: {market_closes_in()}")
+        logger.info("==========================================")
 
-    # ── Market regime check ───────────────────────────────────────────────────
-    regime = get_market_regime()
+        # ── Auto-tag all positions so labels are always current ──────────────────
+        positions = broker.get_positions()
+        retag_all_positions(positions)
 
-    if regime == "bear":
-        logger.info("BEAR MARKET regime — managing exits only, no new entries")
-        for fn, name in [
+        # ── Update OFI watched symbols based on current positions ────────────────
+        try:
+            ofi_monitor.update_watched(broker)
+        except Exception as e:
+            logger.debug(f"[OFI] update_watched failed: {e}")
+
+        # ── Trade management: v44 — earnings tightening + post-earnings review
+        # run BEFORE the normal ratchet/trailing-stop/partial-take logic.
+        run_trade_management(broker, db_conn)
+
+        # ── Pyramid entry: check tracked positions for +2% / +4% add triggers ────
+        try:
+            check_pyramid_adds(broker)
+        except Exception as e:
+            logger.error(f"Pyramid add check error: {e}", exc_info=True)
+
+        # ── Market regime check ───────────────────────────────────────────────────
+        regime = get_market_regime()
+
+        if regime == "bear":
+            logger.info("BEAR MARKET regime — managing exits only, no new entries")
+            for fn, name in [
+                (mean_reversion.run,  "Mean reversion"),
+                (trend_following.run, "Trend following"),
+                (spy_dip.run,         "SPY dip"),
+                (vix_reversal.run,    "VIX reversal"),   # VIX reversal still runs in bear — it's designed for it
+                (gap_scanner.run,     "Gap scanner"),     # exits only
+                (short_hedge.run,     "Short hedge"),     # inverse ETFs — gated by adaptive regime
+                (pairs_trading.run,   "Pairs trading"),   # market-neutral — runs in any regime
+            ]:
+                try:
+                    fn(broker, db_conn)
+                except Exception as e:
+                    logger.error(f"{name} error: {e}", exc_info=True)
+            logger.info("Strategy run complete (bear market — exits only)")
+            return
+
+        # ── Bull market — run all strategies ─────────────────────────────────────
+        strategies = [
             (mean_reversion.run,  "Mean reversion"),
             (trend_following.run, "Trend following"),
             (spy_dip.run,         "SPY dip"),
-            (vix_reversal.run,    "VIX reversal"),   # VIX reversal still runs in bear — it's designed for it
-            (gap_scanner.run,     "Gap scanner"),     # exits only
-            (short_hedge.run,     "Short hedge"),     # inverse ETFs — gated by adaptive regime
-            (pairs_trading.run,   "Pairs trading"),   # market-neutral — runs in any regime
-        ]:
+            (vix_reversal.run,    "VIX reversal"),
+            (gap_scanner.run,     "Gap scanner"),
+            (earnings_drift.run,  "Earnings drift"),
+            (sector_rotation.run, "Sector rotation"),
+            (momentum.run,        "Momentum"),       # internally checks _should_rebalance() for weekly cadence
+            (breakout.run,        "Breakout"),
+            (short_hedge.run,     "Short hedge"),    # inverse ETFs — internally gated by adaptive regime
+            (pairs_trading.run,   "Pairs trading"),  # market-neutral — long/short pairs via cointegration
+            (insider_buying.run,  "Insider buying"), # SEC Form 4 daily scan
+            (options_flow.run,    "Options flow"),   # unusual call volume daily scan
+            (squeeze_screener.run, "Squeeze screener"), # short interest squeeze daily scan
+        ]
+
+        for fn, name in strategies:
             try:
                 fn(broker, db_conn)
             except Exception as e:
                 logger.error(f"{name} error: {e}", exc_info=True)
-        logger.info("Strategy run complete (bear market — exits only)")
-        return
 
-    # ── Bull market — run all strategies ─────────────────────────────────────
-    strategies = [
-        (mean_reversion.run,  "Mean reversion"),
-        (trend_following.run, "Trend following"),
-        (spy_dip.run,         "SPY dip"),
-        (vix_reversal.run,    "VIX reversal"),
-        (gap_scanner.run,     "Gap scanner"),
-        (earnings_drift.run,  "Earnings drift"),
-        (sector_rotation.run, "Sector rotation"),
-        (momentum.run,        "Momentum"),       # internally checks _should_rebalance() for weekly cadence
-        (breakout.run,        "Breakout"),
-        (short_hedge.run,     "Short hedge"),    # inverse ETFs — internally gated by adaptive regime
-        (pairs_trading.run,   "Pairs trading"),  # market-neutral — long/short pairs via cointegration
-        (insider_buying.run,  "Insider buying"), # SEC Form 4 daily scan
-        (options_flow.run,    "Options flow"),   # unusual call volume daily scan
-        (squeeze_screener.run, "Squeeze screener"), # short interest squeeze daily scan
-    ]
+        # Single gc.collect() after the whole loop — was per-iteration before (CPU burn)
+        gc.collect()
 
-    for fn, name in strategies:
+        # ── Event-driven: consume news_scanner EVENT_QUEUE ───────────────────────
         try:
-            fn(broker, db_conn)
+            event_driven.run(broker, db_conn)
         except Exception as e:
-            logger.error(f"{name} error: {e}", exc_info=True)
+            logger.error(f"Event-driven error: {e}", exc_info=True)
 
-    # Single gc.collect() after the whole loop — was per-iteration before (CPU burn)
-    gc.collect()
+        # ── Earnings Prediction (v49): 5-signal pre-earnings LONG entries ───────
+        try:
+            earnings_prediction.run(broker, db_conn)
+        except Exception as e:
+            logger.error(f"Earnings prediction error: {e}", exc_info=True)
 
-    # ── Event-driven: consume news_scanner EVENT_QUEUE ───────────────────────
-    try:
-        event_driven.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"Event-driven error: {e}", exc_info=True)
+        # ── TS Momentum: monthly rebalance, macro/sector ETF trend-following ────
+        try:
+            ts_momentum.run(broker, db_conn)
+        except Exception as e:
+            logger.error(f"TS Momentum error: {e}", exc_info=True)
 
-    # ── Earnings Prediction (v49): 5-signal pre-earnings LONG entries ───────
-    try:
-        earnings_prediction.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"Earnings prediction error: {e}", exc_info=True)
+        # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
+        # Exit checks run every cycle. New research fires once daily inside the strategy.
+        try:
+            ai_research.run(broker, db_conn)
+        except Exception as e:
+            logger.error(f"AI Research error: {e}", exc_info=True)
 
-    # ── TS Momentum: monthly rebalance, macro/sector ETF trend-following ────
-    try:
-        ts_momentum.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"TS Momentum error: {e}", exc_info=True)
+        # ── VWAP Reclaim: intraday gap-down reclaim (9:35–10:30 AM ET entries) ───
+        try:
+            vwap_reclaim.run(broker, db_conn)
+        except Exception as e:
+            logger.error(f"VWAP Reclaim error: {e}", exc_info=True)
 
-    # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
-    # Exit checks run every cycle. New research fires once daily inside the strategy.
-    try:
-        ai_research.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"AI Research error: {e}", exc_info=True)
-
-    # ── VWAP Reclaim: intraday gap-down reclaim (9:35–10:30 AM ET entries) ───
-    try:
-        vwap_reclaim.run(broker, db_conn)
-    except Exception as e:
-        logger.error(f"VWAP Reclaim error: {e}", exc_info=True)
-
-    logger.info("Strategy run complete")
+        logger.info("Strategy run complete")
+    finally:
+        _cycle_lock.release()
 
 
 def take_snapshot(broker: AlpacaBroker, db_conn):
@@ -635,18 +659,28 @@ def start_health_server():
     """
     Bind a minimal HTTP health check server on $PORT (Railway requires this).
     Uses only Python built-ins.
-    Returns 200 OK on GET / so Railway's health check passes.
+    Returns 200 OK on GET / when the trading loop is fresh (<15 min since last
+    cycle), 503 otherwise so Railway can detect a dead loop instead of treating
+    a zombie process as healthy.
     """
-    import threading
     from http.server import HTTPServer, BaseHTTPRequestHandler
 
     port = int(os.environ.get("PORT", 8080))
+    STALE_AFTER_SEC = 15 * 60  # 15 minutes — > 2x CHECK_INTERVAL_MIN cycle
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
+            # Before the first cycle has run, _last_cycle_ts is 0.0 — treat as
+            # healthy during the startup grace window so Railway doesn't kill
+            # the container before strategies have had a chance to fire.
+            if _last_cycle_ts == 0.0 or (time.time() - _last_cycle_ts) < STALE_AFTER_SEC:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_response(503)
+                self.end_headers()
+                self.wfile.write(b"trading loop stalled")
         def log_message(self, *args):
             pass  # suppress access logs
 
@@ -698,7 +732,13 @@ def main():
     db_conn = get_connection()
 
     broker = AlpacaBroker()
-    acct = broker.get_account()
+    # Startup connectivity check — fail fast if Alpaca credentials are bad
+    # so Railway sees a hard exit instead of a zombie process passing /health.
+    try:
+        acct = broker.get_account()
+    except Exception as e:
+        logger.error(f"[Startup] Alpaca connectivity check failed: {e}", exc_info=True)
+        sys.exit(1)
     logger.info(f"Connected | Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f}")
 
     # Restore strategy tags from DB so positions aren't labelled 'unknown' after restart

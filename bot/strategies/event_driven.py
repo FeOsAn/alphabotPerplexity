@@ -81,7 +81,7 @@ def _get_price_move(symbol: str, broker) -> float:
     except Exception:
         return 0.0
     finally:
-        gc.collect()
+        pass
 
 
 def _research_event(symbol: str, headline: str, category: str) -> dict:

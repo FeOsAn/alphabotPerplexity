@@ -91,7 +91,7 @@ def _get_12m_return(symbol: str) -> float:
         logger.debug(f"[TSMomentum] Return calc error {symbol}: {e}")
         return 0.0
     finally:
-        gc.collect()
+        pass
 
 
 def run(broker, db_conn=None):
@@ -222,4 +222,4 @@ def run(broker, db_conn=None):
         except Exception as e:
             logger.error(f"[TSMomentum] Entry error {sym}: {e}")
         finally:
-            gc.collect()
+            pass

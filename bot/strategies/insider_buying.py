@@ -197,7 +197,6 @@ def _passes_filters(sym: str) -> bool:
             return False
         tk = yf.Ticker(sym)
         hist = tk.history(period="3mo", interval="1d")
-        gc.collect()
         if hist.empty or len(hist) < 15:
             return False
         closes = hist["Close"].dropna()

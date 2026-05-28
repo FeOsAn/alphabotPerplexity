@@ -43,10 +43,9 @@ def _compute_regime() -> tuple:
         try:
             t = yf.Ticker(sym)
             h = t.history(period=period, interval=interval, auto_adjust=True)
-            gc.collect()
             return h
         except Exception:
-            gc.collect()
+            pass
             return None
 
     # Fetch in parallel

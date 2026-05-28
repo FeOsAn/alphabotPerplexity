@@ -194,7 +194,7 @@ def _get_gap_signals() -> list[dict]:
             logger.debug(f"[GAP] Error for {sym}: {e}")
             continue
         finally:
-            gc.collect()
+            pass
 
     # Sort by gap size — biggest legitimate gaps first
     signals.sort(key=lambda x: x["gap_pct"], reverse=True)

@@ -112,7 +112,6 @@ def _compute_pair_signals(s1: str, s2: str) -> Optional[dict]:
     try:
         data = yf.download([s1, s2], period="6mo", interval="1d",
                            auto_adjust=True, progress=False)
-        gc.collect()
 
         if data.empty:
             return None

@@ -25,7 +25,6 @@ def is_bull_market() -> bool:
     try:
         spy = yf.Ticker("SPY")
         hist = spy.history(period="3mo", interval="1d")
-        gc.collect()
         if hist.empty or len(hist) < 50:
             logger.warning("[Regime] Not enough SPY data — assuming bull")
             return True

@@ -35,7 +35,7 @@ def _get_returns(symbol: str) -> list:
     except Exception:
         return []
     finally:
-        gc.collect()
+        pass
 
 
 def _pearson_correlation(a: list, b: list) -> float:

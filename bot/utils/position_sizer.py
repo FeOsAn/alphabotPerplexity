@@ -43,7 +43,6 @@ def get_position_size_pct(symbol: str, fallback_pct: float = 0.08,
 
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="1mo", interval="1d")
-        gc.collect()
 
         if hist.empty or len(hist) < 14:
             return fallback_pct
