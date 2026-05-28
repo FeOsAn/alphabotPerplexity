@@ -40,10 +40,13 @@ STRATEGY_NAME = "options_flow"
 MAX_POSITIONS = 3
 HOLD_DAYS = 7
 COOLDOWN_DAYS = 5
-VOL_OI_MIN = 3.0          # volume/OI ratio threshold
-MIN_VOLUME = 1000          # minimum contract volume
-FLOW_SCORE_MID = 2.0       # entry threshold
-FLOW_SCORE_HIGH = 5.0      # high-conviction threshold
+VOL_OI_MIN = 5.0          # volume/OI ratio threshold
+MIN_VOLUME = 3000          # minimum contract volume
+FLOW_SCORE_LOW = 20.0      # entry threshold (skip below)
+FLOW_SCORE_MID = 30.0      # medium conviction → 3% allocation
+FLOW_SCORE_HIGH = 50.0     # high-conviction threshold → 5% allocation
+MIN_DTE = 5                # skip contracts expiring in < 5 days
+MIN_NOTIONAL = 500_000     # minimum $-notional of unusual activity
 ALLOC_MID = 0.03
 ALLOC_HIGH = 0.05
 
@@ -67,9 +70,18 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
             return None
 
         best = None
+        today = datetime.now(timezone.utc).date()
 
         for expiry in expiries[:2]:
             try:
+                try:
+                    exp_date = datetime.strptime(expiry, "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                dte = (exp_date - today).days
+                if dte < MIN_DTE:
+                    continue
+
                 chain = tk.option_chain(expiry)
                 calls = chain.calls
 
@@ -89,6 +101,11 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
                     continue
 
                 top = unusual.sort_values("vol_oi", ascending=False).iloc[0]
+                last_price = float(top.get("lastPrice", 0) or 0)
+                notional = last_price * float(top["volume"]) * 100.0
+                if notional < MIN_NOTIONAL:
+                    continue
+
                 flow_score = (top["vol_oi"] * math.sqrt(float(top["volume"]))) / 10.0
 
                 if best is None or flow_score > best["flow_score"]:
@@ -100,6 +117,8 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
                         "open_interest": int(top["openInterest"]),
                         "vol_oi": round(float(top["vol_oi"]), 2),
                         "expiry": expiry,
+                        "dte": dte,
+                        "notional": round(notional, 0),
                         "current_price": current_price,
                         "iv": round(float(top["impliedVolatility"]), 3),
                     }
@@ -116,8 +135,9 @@ def _compute_flow_score(sym: str) -> Optional[dict]:
 def _passes_filters(sym: str) -> bool:
     """Regime + not overbought."""
     try:
-        from utils.regime import is_bull_market
-        if not is_bull_market():
+        from utils.regime import current_regime
+        regime = current_regime()
+        if regime not in ("BULL_STRONG", "BULL_NORMAL"):
             return False
         tk = yf.Ticker(sym)
         hist = tk.history(period="3mo", interval="1d")
@@ -165,16 +185,27 @@ def run(broker: AlpacaBroker, db_conn):
     for s in stale:
         del _cooldown[s]
 
+    from utils.cooldown import is_on_cooldown
+
     signals = []
     for sym in UNIVERSE:
         if sym in _cooldown:
             if (_now_utc() - _cooldown[sym]).days < COOLDOWN_DAYS:
                 continue
+        if is_on_cooldown(sym):
+            logger.debug(f"[OptionsFlow] {sym} on cooldown, skipping")
+            continue
         if any(p["symbol"] == sym for p in positions):
             continue
         result = _compute_flow_score(sym)
-        if result and result["flow_score"] >= FLOW_SCORE_MID:
-            signals.append(result)
+        if result:
+            if result["flow_score"] >= FLOW_SCORE_LOW:
+                signals.append(result)
+            else:
+                logger.debug(
+                    f"[OptionsFlow] {sym} score={result['flow_score']:.1f} below "
+                    f"FLOW_SCORE_LOW={FLOW_SCORE_LOW}, skipping"
+                )
 
     if not signals:
         logger.info("[OptionsFlow] No unusual call flow detected today")
