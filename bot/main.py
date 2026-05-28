@@ -428,18 +428,28 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             except Exception as e:
                 logger.error(f"[Recap] Outer failure: {e}")
 
-        # ── Account health check — halt on negative cash / margin ─────────────────
+        # ── Account health check — halt on real margin call / cash floor ─────────
         try:
             acc = broker.get_account()
             live_cash = float(acc["cash"])
             live_pv   = float(acc["portfolio_value"])
-            if live_cash < 0:
-                msg = f"🚨 MARGIN: cash=${live_cash:,.0f}. Halting all entries this cycle."
-                logger.critical(msg)
-                from utils.notify import send as _notify_health
-                _notify_health("🚨 Margin Alert", msg, priority="urgent")
-                run_trade_management(broker, db_conn)  # still run exits
-                return
+            equity    = float(acc.get("equity") or 0.0)
+            maint     = float(acc.get("maintenance_margin") or 0.0)
+            if maint > 0:
+                ratio = equity / maint
+                logger.info(
+                    f"[MarginCheck] equity=${equity:,.0f} vs maintenance=${maint:,.0f} — ratio={ratio:.2f}x"
+                )
+                if equity < maint * 1.1:
+                    msg = (
+                        f"🚨 MARGIN CALL RISK: equity=${equity:,.0f} vs maintenance=${maint:,.0f} "
+                        f"(ratio={ratio:.2f}x, threshold=1.10x). Halting all entries this cycle."
+                    )
+                    logger.critical(msg)
+                    from utils.notify import emergency as _notify_emergency
+                    _notify_emergency("🚨 Margin Call Risk", msg, key="margin_call_risk", priority="urgent")
+                    run_trade_management(broker, db_conn)  # still run exits
+                    return
             if live_pv > 0 and live_cash / live_pv < MIN_CASH_RESERVE_PCT:
                 msg = f"Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
                 logger.warning(msg)  # silent — bot handles this itself

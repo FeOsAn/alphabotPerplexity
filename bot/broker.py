@@ -50,6 +50,8 @@ class AlpacaBroker:
             "cash": float(acct.cash),
             "buying_power": float(acct.buying_power),
             "equity": float(acct.equity),
+            "maintenance_margin": float(getattr(acct, "maintenance_margin", 0) or 0),
+            "initial_margin": float(getattr(acct, "initial_margin", 0) or 0),
             "pnl_today": float(acct.equity) - float(acct.last_equity),
             "pnl_today_pct": (float(acct.equity) - float(acct.last_equity)) / float(acct.last_equity) * 100 if float(acct.last_equity) else 0,
         }
