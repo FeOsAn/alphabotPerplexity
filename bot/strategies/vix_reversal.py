@@ -207,17 +207,11 @@ def run(broker: AlpacaBroker, db_conn):
     cash, portfolio_value = broker.get_live_cash()
     if cash < 0:
         logger.critical(f"[{STRATEGY_NAME}] Cash went negative (${cash:,.0f}) — halting entries")
-        from utils.notify import send as _notify, emergency as _notify_emergency
+        from utils.notify import emergency as _notify_emergency
         _notify_emergency("🚨 Cash went negative", f"[vix_reversal] cash ${cash:,.0f} — halting entries", key="negative_cash_vix_reversal")
         return
     if cash < portfolio_value * MIN_CASH_RESERVE_PCT:
         logger.warning(f"[{STRATEGY_NAME}] Cash floor hit (${cash:,.0f}) — halting entries")
         return
-
-    try:
-        from utils import notify
-        # [ntfy silenced — logged only]
-    except Exception:
-        pass
 
     logger.info("[VIX] VIX reversal position opened")

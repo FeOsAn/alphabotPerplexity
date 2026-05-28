@@ -210,8 +210,6 @@ def run(broker, db_conn=None):
             live_cash, live_pv = broker.get_live_cash()
             if live_cash < live_pv * TS_ALLOCATION_PCT:
                 logger.warning(f"[TSMomentum] Cash floor hit (${live_cash:,.0f}) — halting entries")
-                from utils.notify import send as _notify
-                # [ntfy silenced — logged only]
                 break
             broker.submit_order(
                 symbol=sym, qty=qty, side="buy",

@@ -245,7 +245,6 @@ def execute_rotation(
     placing the buy order for buy_symbol after this returns True.
     Returns True if the sell completed successfully.
     """
-    from utils import notify
     from db import log_trade
 
     try:
@@ -279,11 +278,6 @@ def execute_rotation(
             logger.info(f"[Rotator] Cooldown set on rotated-out symbol {sell_symbol}")
         except Exception as _ce:
             logger.debug(f"[Rotator] set_cooldown failed: {_ce}")
-
-        try:
-            pass  # [ntfy silenced — logged only]
-        except Exception as _ne:
-            logger.debug(f"[Rotator] notify failed: {_ne}")
 
         return True
 

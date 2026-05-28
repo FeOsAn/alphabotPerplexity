@@ -143,7 +143,6 @@ def _check_exits(broker: AlpacaBroker, db_conn) -> None:
 def run(broker: AlpacaBroker, db_conn) -> None:
     """Main entry point — called every cycle from main.py."""
     from utils.adaptive_filters import get_regime, get_thresholds
-    from utils import notify
     from strategies.trade_management import clear_symbol
     regime = get_regime()
 
@@ -165,10 +164,6 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                               metadata={"reason": "regime_flip", "new_regime": regime})
                     clear_symbol(sym)
                     _entry_times.pop(sym, None)
-                    try:
-                        pass  # [ntfy silenced — logged only]
-                    except Exception:
-                        pass
                 except Exception as e:
                     logger.error(f"[SHORT] Force-close failed for {sym}: {e}")
         else:

@@ -34,7 +34,6 @@ import yfinance as yf
 from broker import AlpacaBroker
 from config import UNIVERSE, MIN_CASH_RESERVE_PCT
 from db import log_trade, log_signal
-from utils.notify import send as notify
 
 logger = logging.getLogger("alphabot.options_flow")
 STRATEGY_NAME = "options_flow"
@@ -203,17 +202,11 @@ def run(broker: AlpacaBroker, db_conn):
             if order:
                 _cooldown[sym] = _now_utc()
                 entered += 1
-                notify(
-                    title=f"📊 Options Flow: {sym}",
-                    body=(
-                        f"{sym} unusual call flow — score={sig['flow_score']:.1f}, "
-                        f"vol/OI={sig['vol_oi']:.1f}x, "
-                        f"strike=${sig['strike']:.0f} exp {sig['expiry']}. "
-                        f"Entering ${notional:,.0f} ({alloc_pct:.0%}) on the stock."
-                    ),
-                    priority="high" if sig["flow_score"] >= FLOW_SCORE_HIGH else "default",
+                logger.info(
+                    f"[OptionsFlow] Entered {sym} — score={sig['flow_score']:.1f}, "
+                    f"vol/OI={sig['vol_oi']:.1f}x, strike=${sig['strike']:.0f} "
+                    f"exp {sig['expiry']}, ${notional:,.0f} ({alloc_pct:.0%})"
                 )
-                logger.info(f"[OptionsFlow] Entered {sym} — score={sig['flow_score']:.1f}, ${notional:,.0f}")
                 cash, pv = broker.get_live_cash()
                 if cash < 0 or cash / pv < MIN_CASH_RESERVE_PCT:
                     logger.warning("[OptionsFlow] Cash floor — halting")

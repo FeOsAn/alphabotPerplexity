@@ -130,12 +130,6 @@ def _enqueue_event(symbol: str, headline: str, category: str, source: str = "alp
         logger.info(f"[news_scanner] EVENT queued: {symbol} [{category}] — {headline[:80]}")
     except queue.Full:
         logger.warning("[news_scanner] EVENT_QUEUE full — dropping event")
-        # M6: alert when events are being dropped — operationally important
-        try:
-            from utils import notify
-            # [ntfy silenced — logged only]
-        except Exception:
-            pass
 
 
 def _process_news_item(item: dict):

@@ -627,7 +627,6 @@ def check_held_positions_pre_earnings(positions, broker: AlpacaBroker, db_conn):
     try:
         from utils.earnings_calendar import get_next_earnings_date
         import anthropic, os
-        from utils import notify
         from strategies.trade_management import apply_earnings_stop_tightening
     except Exception as e:
         logger.warning(f"[PreEarnings] import failed: {e}")
@@ -1085,7 +1084,7 @@ def run(broker: AlpacaBroker, db_conn):
             cash, portfolio_value = broker.get_live_cash()
             if cash < 0:
                 logger.critical(f"[{STRATEGY_NAME}] Cash went negative (${cash:,.0f}) — halting entries")
-                from utils.notify import send as _notify, emergency as _notify_emergency
+                from utils.notify import emergency as _notify_emergency
                 _notify_emergency("🚨 Cash went negative", f"[ai_research] cash ${cash:,.0f} — halting entries", key="negative_cash_ai_research")
                 break
             if cash < portfolio_value * MIN_CASH_RESERVE_PCT:

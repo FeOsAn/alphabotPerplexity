@@ -42,7 +42,6 @@ import yfinance as yf
 from broker import AlpacaBroker
 from config import UNIVERSE, MIN_CASH_RESERVE_PCT
 from db import log_signal, get_state, set_state
-from utils.notify import send as notify
 
 logger = logging.getLogger("alphabot.squeeze_screener")
 STRATEGY_NAME = "squeeze_screener"
@@ -255,18 +254,13 @@ def run(broker: AlpacaBroker, db_conn):
             if order:
                 _cooldown[sym] = _now_utc()
                 entered += 1
-                notify(
-                    title=f"🔥 Squeeze: {sym}",
-                    body=(
-                        f"{sym} short squeeze setup — score={sig['score']:.3f}, "
-                        f"short={sig['short_pct']*100:.1f}% of float, "
-                        f"5d={sig['price_5d_ret']*100:+.1f}%, "
-                        f"vol={sig['vol_ratio']:.1f}x, RSI={sig['rsi']:.0f}. "
-                        f"Entering ${notional:,.0f} ({alloc_pct:.0%})."
-                    ),
-                    priority="high" if sig["score"] >= SCORE_HIGH else "default",
+                logger.info(
+                    f"[Squeeze] Entered {sym} — score={sig['score']:.3f}, "
+                    f"short={sig['short_pct']*100:.1f}% float, "
+                    f"5d={sig['price_5d_ret']*100:+.1f}%, "
+                    f"vol={sig['vol_ratio']:.1f}x, RSI={sig['rsi']:.0f}, "
+                    f"${notional:,.0f} ({alloc_pct:.0%})"
                 )
-                logger.info(f"[Squeeze] Entered {sym} — score={sig['score']:.3f}, ${notional:,.0f}")
 
                 cash, pv = broker.get_live_cash()
                 if cash < 0 or cash / pv < MIN_CASH_RESERVE_PCT:

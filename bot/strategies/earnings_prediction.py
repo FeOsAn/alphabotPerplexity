@@ -466,7 +466,6 @@ def run(broker, db_conn):
     try:
         from utils.market_hours import is_entry_allowed
         from utils.earnings_calendar import get_next_earnings_date
-        from utils import notify
         from db import log_trade, log_signal
         from config import MIN_CASH_RESERVE_PCT
     except Exception as e:
@@ -663,7 +662,7 @@ def run(broker, db_conn):
             cash, portfolio_value = broker.get_live_cash()
             if cash < 0:
                 logger.critical(f"[{STRATEGY_NAME}] Cash went negative (${cash:,.0f}) — halting entries")
-                from utils.notify import send as _notify, emergency as _notify_emergency
+                from utils.notify import emergency as _notify_emergency
                 _notify_emergency("🚨 Cash went negative", f"[earnings_prediction] cash ${cash:,.0f} — halting entries", key="negative_cash_earnings_prediction")
                 break
             if cash < portfolio_value * MIN_CASH_RESERVE_PCT:

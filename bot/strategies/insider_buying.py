@@ -38,7 +38,6 @@ import yfinance as yf
 from broker import AlpacaBroker
 from config import UNIVERSE, MIN_CASH_RESERVE_PCT, DEFAULT_STRATEGY_ALLOCATION_PCT
 from db import log_trade, log_signal, get_state, set_state
-from utils.notify import send as notify
 
 logger = logging.getLogger("alphabot.insider_buying")
 STRATEGY_NAME = "insider_buying"
@@ -353,18 +352,12 @@ def run(broker: AlpacaBroker, db_conn):
                 entered += 1
 
                 buyer_names = ", ".join(set(b["owner_name"] for b in sig["buys"]))
-                cluster_tag = "🔥 CLUSTER" if sig["is_cluster"] else ""
-                notify(
-                    title=f"📋 Insider Buy: {sym} {cluster_tag}",
-                    body=(
-                        f"{sym}: {sig['insider_count']} insider(s) bought "
-                        f"${sig['notional']:,.0f} total. "
-                        f"Buyers: {buyer_names}. "
-                        f"Entering ${notional:,.0f} ({alloc_pct:.0%})."
-                    ),
-                    priority="high" if sig["is_cluster"] else "default",
+                cluster_tag = "CLUSTER" if sig["is_cluster"] else ""
+                logger.info(
+                    f"[Insider] Entered {sym} {cluster_tag} — "
+                    f"{sig['insider_count']} insider(s) bought ${sig['notional']:,.0f} "
+                    f"({buyer_names}); ${notional:,.0f} ({alloc_pct:.0%})"
                 )
-                logger.info(f"[Insider] Entered {sym} — {sig['insider_count']} insiders, ${notional:,.0f}")
 
                 cash, pv = broker.get_live_cash()
                 if cash < 0 or cash / pv < MIN_CASH_RESERVE_PCT:

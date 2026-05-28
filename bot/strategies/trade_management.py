@@ -28,7 +28,6 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from broker import AlpacaBroker
 from db import log_trade
-from utils import notify
 from utils.cooldown import set_cooldown
 from utils.clock import now_utc
 

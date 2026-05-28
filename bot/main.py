@@ -312,10 +312,6 @@ def run_gap_protection(broker: AlpacaBroker):
                         side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
                     )
                     broker.trading.submit_order(req)
-                    try:
-                        pass  # [ntfy silenced — logged only]
-                    except Exception:
-                        pass
             except Exception as e:
                 logger.error(f"[GapProtect] Error checking {sym}: {e}")
     except Exception as e:
