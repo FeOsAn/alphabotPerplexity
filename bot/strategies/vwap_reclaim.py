@@ -188,7 +188,9 @@ def _manage_positions(broker):
                 except Exception as e:
                     logger.error(f"[VWAPReclaim] Close order failed {sym}: {e}")
                     continue
-                logger.info(f"[VWAPReclaim] Closed {sym} — {reason}")
+                from utils.cooldown import set_cooldown as _set_cooldown
+                _set_cooldown(sym)
+                logger.info(f"[VWAPReclaim] Closed {sym} — {reason} (cooldown set)")
                 del _active_positions[sym]
         except Exception as e:
             logger.debug(f"[VWAPReclaim] Position check error {sym}: {e}")
@@ -299,10 +301,14 @@ def run(broker, db_conn=None):
                 qty = int(trade_value / current)
                 if qty < 1:
                     continue
-                broker.submit_order(
+                order_result = broker.submit_order(
                     symbol=sym, qty=qty, side="buy",
                     type="market", time_in_force="day"
                 )
+                if order_result is None:
+                    continue
+                from broker import tag_symbol as _tag_symbol
+                _tag_symbol(sym, "vwap_reclaim")
                 _active_positions[sym] = {
                     "entry_price": current,
                     "vwap_at_entry": vwap,

@@ -320,6 +320,9 @@ def _check_exits_and_stops(broker: AlpacaBroker, db_conn, signals: dict):
             broker.close_position(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "sell_tp",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
+            from utils.cooldown import set_cooldown
+            set_cooldown(sym)
+            logger.info(f"[TF] {sym} cooldown set after take-profit exit")
             continue
 
         # Trend reversal exit
@@ -328,3 +331,6 @@ def _check_exits_and_stops(broker: AlpacaBroker, db_conn, signals: dict):
             broker.close_position(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "sell",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
+            from utils.cooldown import set_cooldown
+            set_cooldown(sym)
+            logger.info(f"[TF] {sym} cooldown set after trend-reversal exit")

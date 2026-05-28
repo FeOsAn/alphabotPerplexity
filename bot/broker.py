@@ -260,15 +260,41 @@ class AlpacaBroker:
         """
         Unified order submission wrapper used by event_driven, earnings_nlp, ts_momentum, vwap_reclaim.
         Translates keyword-arg call to the correct alpaca-py request objects.
+
+        v73: BUY-side orders now go through the same entry gates as market_buy
+        (cooldown, entry-window, MAX_TOTAL_POSITIONS). Closes the back door
+        that let EP/event_driven/ts_momentum/vwap_reclaim bypass every safety
+        check by calling submit_order directly.
         """
         try:
             qty = abs(float(qty))
             if qty < 0.001:
                 logger.warning(f"[Broker] submit_order: qty {qty} too small for {symbol}, skipping")
                 return None
-            order_side = OrderSide.BUY if side.lower() in ("buy", "long") else OrderSide.SELL
+            order_side = OrderSide.BUY if side.lower() in ("buy", "long", "buy_to_cover") else OrderSide.SELL
             tif = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.GTC
             normalized_side = "buy" if order_side == OrderSide.BUY else "sell"
+
+            # v73 — BUY-side entry gates (cooldown + entry window + position cap)
+            if normalized_side == "buy":
+                from utils.cooldown import is_on_cooldown
+                from utils.market_hours import is_entry_allowed
+                if is_on_cooldown(symbol):
+                    logger.info(f"[Broker] submit_order blocked: {symbol} on cooldown")
+                    return None
+                if not is_entry_allowed():
+                    logger.info(f"[Broker] submit_order blocked: outside entry window ({symbol})")
+                    return None
+                try:
+                    current_positions = self.get_positions()
+                    if len(current_positions) >= MAX_TOTAL_POSITIONS:
+                        logger.info(
+                            f"[Broker] submit_order blocked: MAX_TOTAL_POSITIONS={MAX_TOTAL_POSITIONS} reached ({symbol})"
+                        )
+                        return None
+                except Exception as e:
+                    logger.debug(f"[Broker] submit_order position-count check failed: {e}")
+
             # Dedup guard (open same-symbol/side order)
             if self._has_pending_order(symbol, normalized_side):
                 logger.info(

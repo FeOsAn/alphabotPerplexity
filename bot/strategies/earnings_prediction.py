@@ -466,8 +466,10 @@ def run(broker, db_conn):
     try:
         from utils.market_hours import is_entry_allowed
         from utils.earnings_calendar import get_next_earnings_date
+        from utils.cooldown import is_on_cooldown, set_cooldown
         from db import log_trade, log_signal
         from config import MIN_CASH_RESERVE_PCT
+        from broker import tag_symbol
     except Exception as e:
         logger.error(f"[EP] import failed: {e}")
         return
@@ -492,6 +494,12 @@ def run(broker, db_conn):
 
     for sym, state in list(_ep_positions.items()):
         if sym not in pos_map:
+            # v73 — if a symbol was stopped out and is on cooldown, keep it in
+            # _ep_positions so the scanner doesn't see it as "fresh" and re-buy
+            # before the cooldown expires.
+            if is_on_cooldown(sym):
+                logger.info(f"[EP] {sym} stopped out and on cooldown — keeping in _ep_positions to prevent re-entry")
+                continue
             del _ep_positions[sym]
             continue
 
@@ -513,6 +521,8 @@ def run(broker, db_conn):
                 log_trade(db_conn, STRATEGY_NAME, sym, "sell_max_hold",
                           abs(float(pos.get("qty", 0))), current_price,
                           float(pos.get("unrealized_pnl", 0) or 0))
+                set_cooldown(sym)
+                logger.info(f"[EP] {sym} cooldown set after exit")
                 # [ntfy silenced — logged only]
             except Exception as e:
                 logger.warning(f"[EP] {sym} max_hold exit failed: {e}")
@@ -527,6 +537,8 @@ def run(broker, db_conn):
                 log_trade(db_conn, STRATEGY_NAME, sym, "sell_stop_loss",
                           abs(float(pos.get("qty", 0))), current_price,
                           float(pos.get("unrealized_pnl", 0) or 0))
+                set_cooldown(sym)
+                logger.info(f"[EP] {sym} cooldown set after exit")
                 # [ntfy silenced — logged only]
             except Exception as e:
                 logger.warning(f"[EP] {sym} stop_loss exit failed: {e}")
@@ -548,6 +560,8 @@ def run(broker, db_conn):
                                                 type="market", time_in_force="day")
                             log_trade(db_conn, STRATEGY_NAME, sym, "sell_partial_earnings",
                                       half_qty, current_price, 0.0)
+                            set_cooldown(sym)
+                            logger.info(f"[EP] {sym} cooldown set after partial exit")
                             # [ntfy silenced — logged only]
                     except Exception as e:
                         logger.warning(f"[EP] {sym} partial profit failed: {e}")
@@ -557,6 +571,8 @@ def run(broker, db_conn):
                         log_trade(db_conn, STRATEGY_NAME, sym, "sell_post_earnings_gap",
                                   abs(float(pos.get("qty", 0))), current_price,
                                   float(pos.get("unrealized_pnl", 0) or 0))
+                        set_cooldown(sym)
+                        logger.info(f"[EP] {sym} cooldown set after gap-down exit")
                         # [ntfy silenced — logged only]
                     except Exception as e:
                         logger.warning(f"[EP] {sym} gap-down exit failed: {e}")
@@ -576,6 +592,10 @@ def run(broker, db_conn):
         if symbol in _ep_positions:
             continue
         if symbol in pos_map and pos_map[symbol].get("strategy") == STRATEGY_NAME:
+            continue
+        # v73 — cooldown gate: prevents re-entry on a symbol just stopped out
+        if is_on_cooldown(symbol):
+            logger.info(f"[EP] {symbol} on cooldown, skipping earnings entry")
             continue
 
         try:
@@ -603,6 +623,7 @@ def run(broker, db_conn):
             cash = float(acc["cash"])
             notional = portfolio_value * alloc_pct
 
+            rotated_in = False  # v73 — track whether this entry came via rotation
             if cash - notional < portfolio_value * MIN_CASH_RESERVE_PCT:
                 try:
                     from utils.capital_rotator import find_rotation_candidate, execute_rotation
@@ -613,8 +634,10 @@ def run(broker, db_conn):
                         broker=broker, db_conn=db_conn,
                     )
                     if candidate:
-                        execute_rotation(candidate, symbol, notional, score / 4.0,
-                                         broker, db_conn, STRATEGY_NAME)
+                        rotated_ok = execute_rotation(candidate, symbol, notional, score / 4.0,
+                                                      broker, db_conn, STRATEGY_NAME)
+                        if rotated_ok:
+                            rotated_in = True
                         cash, _ = broker.get_live_cash()
                         if cash - notional < portfolio_value * MIN_CASH_RESERVE_PCT:
                             continue
@@ -641,8 +664,20 @@ def run(broker, db_conn):
                 f"details={scored['details']}"
             )
 
-            broker.submit_order(symbol=symbol, qty=qty, side="buy",
-                                type="market", time_in_force="day")
+            order_result = broker.submit_order(symbol=symbol, qty=qty, side="buy",
+                                               type="market", time_in_force="day")
+            if order_result is None:
+                # Blocked by submit_order safety gates (cooldown / entry window /
+                # MAX_TOTAL_POSITIONS / dedup). Don't record state or log a trade.
+                continue
+
+            # v73 — tag so retag_all_positions doesn't mislabel as trend_following
+            tag_symbol(symbol, STRATEGY_NAME)
+
+            # v73 — if this entry came via rotation, lock the rotation-in symbol
+            if rotated_in:
+                from utils.capital_rotator import mark_rotation_in
+                mark_rotation_in(symbol)
 
             _ep_positions[symbol] = {
                 "entry_date": today,

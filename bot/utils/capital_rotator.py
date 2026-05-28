@@ -231,6 +231,24 @@ def find_rotation_candidate(
     return weakest["symbol"]
 
 
+def mark_rotation_in(buy_symbol: str) -> None:
+    """
+    v73 — Call AFTER the rotation-in buy completes so the freshly bought
+    symbol cannot be re-rotated within COOLDOWN_HOURS.
+
+    Must be invoked by the caller of execute_rotation() once its own
+    market_buy/submit_order succeeds. Doing this inside execute_rotation()
+    would set the cooldown before the buy and have the buy blocked by the
+    cooldown gate in market_buy / submit_order.
+    """
+    try:
+        from utils.cooldown import set_cooldown
+        set_cooldown(buy_symbol)
+        logger.info(f"[Rotator] Cooldown set on rotation-in symbol {buy_symbol}")
+    except Exception as _ce:
+        logger.debug(f"[Rotator] mark_rotation_in set_cooldown failed: {_ce}")
+
+
 def execute_rotation(
     sell_symbol: str,
     buy_symbol: str,
@@ -242,7 +260,8 @@ def execute_rotation(
 ) -> bool:
     """
     Execute the rotation: close sell_symbol. The caller is responsible for
-    placing the buy order for buy_symbol after this returns True.
+    placing the buy order for buy_symbol after this returns True, and for
+    calling mark_rotation_in(buy_symbol) after that buy succeeds.
     Returns True if the sell completed successfully.
     """
     from db import log_trade

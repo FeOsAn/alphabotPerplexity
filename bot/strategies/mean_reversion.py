@@ -178,6 +178,9 @@ def run(broker: AlpacaBroker, db_conn):
             broker.close_position(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "sell",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
+            from utils.cooldown import set_cooldown
+            set_cooldown(sym)
+            logger.info(f"[MR] {sym} cooldown set after exit")
 
     # ── Enter new positions ─────────────────────────────────────────────────────
     current_mr_count = len([

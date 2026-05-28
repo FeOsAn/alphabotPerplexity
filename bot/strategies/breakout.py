@@ -437,6 +437,7 @@ def run(broker: AlpacaBroker, db_conn):
             continue
         notional = min(notional, max_notional - existing_mv)
 
+        rotated_in = False  # v73 — track whether this entry came via rotation
         if cash - notional < min_cash:
             # Try capital rotation before giving up
             from utils.capital_rotator import find_rotation_candidate, execute_rotation
@@ -460,6 +461,7 @@ def run(broker: AlpacaBroker, db_conn):
                 )
                 if not rotated:
                     continue
+                rotated_in = True
                 cash, portfolio_value = broker.get_live_cash()
                 min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
                 if cash - notional < min_cash:
@@ -482,9 +484,13 @@ def run(broker: AlpacaBroker, db_conn):
             f"slope_20d={sig['slope_20d']:.2%}, conviction={mult:.2f}x, notional=${notional:.0f}"
         )
 
-        broker.market_buy(sym, notional, STRATEGY_NAME)
+        _buy_result = broker.market_buy(sym, notional, STRATEGY_NAME)
         tag_symbol(sym, STRATEGY_NAME)
         _mark_traded_today(db_conn, sym)
+        # v73 — if this entry came via rotation, lock the rotation-in symbol
+        if _buy_result is not None and rotated_in:
+            from utils.capital_rotator import mark_rotation_in
+            mark_rotation_in(sym)
         log_trade(
             db_conn, STRATEGY_NAME, sym, "buy", 0, sig["price"], 0,
             metadata={

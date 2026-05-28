@@ -192,11 +192,17 @@ def run(broker, db_conn=None):
                 logger.error(f"[TSMomentum] Exit error {sym}: {e}")
 
     # Enter new positions
+    from utils.cooldown import is_on_cooldown as _is_on_cooldown
+    from broker import tag_symbol as _tag_symbol
     for sym, ret in positive:
         if sym in _ts_positions:
             continue  # already held
         if sym in existing_positions:
             continue  # held by another strategy
+        # v73 — cooldown gate
+        if _is_on_cooldown(sym):
+            logger.info(f"[TSMomentum] {sym} on cooldown, skipping entry")
+            continue
         try:
             import yfinance as yf
             price = getattr(yf.Ticker(sym).fast_info, "last_price", None)
@@ -211,10 +217,13 @@ def run(broker, db_conn=None):
             if live_cash < live_pv * TS_ALLOCATION_PCT:
                 logger.warning(f"[TSMomentum] Cash floor hit (${live_cash:,.0f}) — halting entries")
                 break
-            broker.submit_order(
+            order_result = broker.submit_order(
                 symbol=sym, qty=qty, side="buy",
                 type="market", time_in_force="day"
             )
+            if order_result is None:
+                continue
+            _tag_symbol(sym, "ts_momentum")
             _ts_positions[sym] = "long"
             logger.info(f"[TSMomentum] BUY {qty} {sym} @ ~${price:.2f} (12m return {ret:.2%})")
         except Exception as e:
