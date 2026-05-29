@@ -290,7 +290,8 @@ def _derive_thresholds(stats: dict, regime: str) -> dict:
     mr_rsi_oversold = rsi_p25 + (5 * aggr)  # in bull: ~40 oversold; in bear: ~30
 
     # ── Trend ADX minimum: lower in bull (more trends worth following)
-    tf_adx_min = 35 - (15 * aggr)  # bull_strong=20, bull_normal=22, bear_mild=26
+    # v77: raised ADX floor — 0% WR on whipsaw EMA crossovers in backtest
+    tf_adx_min = 40 - (15 * aggr)  # bull_strong=25, bull_normal=27.25, bear_mild=31
 
     # ── Max positions per cycle: more in bull, fewer in bear
     max_pos = max(1, round(6 * aggr))

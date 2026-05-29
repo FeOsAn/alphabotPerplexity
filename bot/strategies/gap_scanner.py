@@ -35,8 +35,8 @@ logger = logging.getLogger("alphabot.gap_scanner")
 STRATEGY_NAME = "gap_scanner"
 EASTERN = pytz.timezone("America/New_York")
 
-GAP_MIN_PCT      = 0.03   # Minimum 3% gap up
-GAP_MAX_PCT      = 0.15   # Maximum 15% (too extended = mean reverts fast)
+GAP_MIN_PCT      = 0.02   # Minimum 2% gap up — v77: 2-6% sweet spot — backtest: 2-4% gaps +3.70% avg 5d, >6% gaps only +1.14%
+GAP_MAX_PCT      = 0.06   # Maximum 6% — v77: filter out extreme gaps that don't fill reliably
 STOP_LOSS_PCT    = 0.06   # 6% stop — slightly wider, gaps can be volatile
 TAKE_PROFIT_PCT  = 0.12   # 12% take profit
 MAX_HOLD_DAYS    = 5
@@ -90,7 +90,7 @@ def check_overnight_gaps(broker, db_conn):
             # fetch that 404s on ETFs (XLK, XLE, XLRE etc.) and is slow.
             # fast_info is lightweight, works for all symbol types.
             try:
-                pre_price = ticker.fast_info.get("last_price")
+                pre_price = getattr(ticker.fast_info, "last_price", None)
             except Exception:
                 pre_price = None
             if pre_price is None:
@@ -148,17 +148,17 @@ def _get_gap_signals() -> list[dict]:
         try:
             ticker = yf.Ticker(sym)
 
-            # Get recent history for context
+            # Get recent history for context — fetch enough days so iloc[-2] is yesterday
             hist = ticker.history(period="1mo")
             if len(hist) < 20:
                 continue
 
-            yesterday_close = float(hist["Close"].iloc[-1])
+            yesterday_close = float(hist["Close"].iloc[-2])
             ma20 = float(hist["Close"].tail(20).mean())
 
             # Pre-market price via fast_info
             try:
-                pre_price = ticker.fast_info.get("preMarketPrice") or ticker.fast_info.get("lastPrice")
+                pre_price = getattr(ticker.fast_info, "preMarketPrice", None) or getattr(ticker.fast_info, "lastPrice", None)
                 if pre_price is None:
                     continue
                 pre_price = float(pre_price)

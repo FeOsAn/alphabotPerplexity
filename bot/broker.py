@@ -409,6 +409,11 @@ class AlpacaBroker:
                     conn.close()
             except Exception as e:
                 logger.debug(f"[Broker] close_position state-cleanup skipped for {symbol}: {e}")
+            try:
+                from strategies.trade_management import clear_symbol as _tm_clear
+                _tm_clear(symbol)
+            except Exception:
+                pass
             return {"id": str(order.id), "symbol": symbol, "side": "sell", "strategy": strategy}
         except Exception as e:
             logger.warning(f"Could not close {symbol}: {e}")

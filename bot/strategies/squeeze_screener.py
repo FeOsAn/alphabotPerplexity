@@ -197,7 +197,7 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     cash, pv = broker.get_live_cash()
-    if cash < 0 or cash / pv < MIN_CASH_RESERVE_PCT:
+    if cash < 0 or (pv > 0 and cash / pv < MIN_CASH_RESERVE_PCT):
         logger.warning("[Squeeze] Cash floor hit — skipping")
         _ran_today = today
         if db_conn is not None:
@@ -263,7 +263,7 @@ def run(broker: AlpacaBroker, db_conn):
                 )
 
                 cash, pv = broker.get_live_cash()
-                if cash < 0 or cash / pv < MIN_CASH_RESERVE_PCT:
+                if cash < 0 or (pv > 0 and cash / pv < MIN_CASH_RESERVE_PCT):
                     logger.warning("[Squeeze] Cash floor hit after entry — halting")
                     break
         except Exception as e:

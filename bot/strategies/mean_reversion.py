@@ -75,6 +75,7 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     _bb = _pta.bbands(close, length=MR_BB_PERIOD, std=float(MR_BB_STD))
     bb_lower = _bb[[c for c in _bb.columns if c.startswith('BBL_')][0]]
     bb_mid   = _bb[[c for c in _bb.columns if c.startswith('BBM_')][0]]
+    bb_upper = _bb[[c for c in _bb.columns if c.startswith('BBU_')][0]]
 
     vol_avg = volume.rolling(20).mean()
     # Use prior completed day (iloc[-2]) — today's bar is partial during RTH
@@ -87,6 +88,8 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     latest_close = float(close.iloc[-1])
     latest_bb_lower = float(bb_lower.iloc[-1])
     latest_bb_mid   = float(bb_mid.iloc[-1])
+    latest_bb_upper = float(bb_upper.iloc[-1])
+    bb_width = (latest_bb_upper - latest_bb_lower) / latest_bb_mid if latest_bb_mid > 0 else 0.0
 
     # Don't buy if in a longer-term downtrend (price must be within 15% of 50-day MA)
     ma50 = float(close.tail(50).mean()) if len(close) >= 50 else latest_close
@@ -113,11 +116,13 @@ def _compute_signals(df: pd.DataFrame) -> dict:
         "close": latest_close,
         "bb_lower": latest_bb_lower,
         "bb_mid": latest_bb_mid,
+        "bb_width": bb_width,
         "vol_elevated": vol_elevated,
         "vol_ratio": vol_ratio,
         "not_in_freefall": not_in_freefall,
         "buy_signal": buy_signal,
         "sell_signal": sell_signal,
+        "oversold_threshold": oversold_threshold,
     }
 
 
@@ -227,6 +232,11 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[MR] Skipping {sym} — earnings blackout (within 2 days)")
             continue
 
+        bb_width = sig.get("bb_width", 1.0)
+        if bb_width < 0.04:
+            logger.debug(f"[MR] {sym}: skipped — BB width {bb_width:.4f} < 0.04 (flat stock, weak reversion potential)")
+            continue
+
         mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
         size_pct = min(DEFAULT_STRATEGY_ALLOCATION_PCT * mult, MAX_SINGLE_POSITION_PCT)
         notional = portfolio_value * size_pct
@@ -235,7 +245,7 @@ def run(broker: AlpacaBroker, db_conn):
             continue
 
         if sig["rsi"] < MR_RSI_OVERSOLD:
-            logger.info(f"[MR] {sym}: RSI={sig['rsi']:.1f} — EXTREME OVERSOLD signal (institutional-grade reversal, >{MR_RSI_OVERSOLD} threshold)")
+            logger.info(f"[MR] {sym}: RSI={sig['rsi']:.1f} — EXTREME OVERSOLD signal (institutional-grade reversal, <{sig.get('oversold_threshold', MR_RSI_OVERSOLD)} adaptive threshold)")
         logger.info(f"[MR] ENTER {sym} — RSI: {sig['rsi']:.1f}, BB lower: {sig['bb_lower']:.2f}, vol_ratio: {sig.get('vol_ratio',1):.1f}x, conviction: {mult:.2f}x, notional: ${notional:.0f}")
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", sig["rsi"],
                    {"rsi": sig["rsi"], "bb_lower": sig["bb_lower"], "vol_elevated": int(sig["vol_elevated"]), "conviction": mult})

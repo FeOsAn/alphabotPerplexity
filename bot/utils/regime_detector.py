@@ -48,15 +48,6 @@ def _compute_regime() -> tuple:
             pass
             return None
 
-    # Fetch in parallel
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        f_spy_1y = ex.submit(fetch, "SPY", "1y", "1wk")
-        f_spy_1m = ex.submit(fetch, "SPY", "1mo", "1d")
-        f_vix    = ex.submit(fetch, "^VIX", "5d", "1d")
-        f_hyg    = ex.submit(fetch, "HYG", "1mo", "1d")
-        f_lqd    = ex.submit(fetch, "LQD", "1mo", "1d")
-        f_qqq    = ex.submit(fetch, "QQQ", "1mo", "1d")
-
     def _safe_result(f, name):
         try:
             return f.result(timeout=15)
@@ -67,12 +58,21 @@ def _compute_regime() -> tuple:
             logger.warning(f"[RegimeDetector] {name} fetch error: {e}")
             return None
 
-    spy_1y = _safe_result(f_spy_1y, "SPY 1y")
-    spy_1m = _safe_result(f_spy_1m, "SPY 1m")
-    vix_h  = _safe_result(f_vix,    "VIX")
-    hyg_h  = _safe_result(f_hyg,    "HYG")
-    lqd_h  = _safe_result(f_lqd,    "LQD")
-    qqq_h  = _safe_result(f_qqq,    "QQQ")
+    # Fetch in parallel — result collection INSIDE the with block so timeout is enforced
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        f_spy_1y = ex.submit(fetch, "SPY", "1y", "1wk")
+        f_spy_1m = ex.submit(fetch, "SPY", "1mo", "1d")
+        f_vix    = ex.submit(fetch, "^VIX", "5d", "1d")
+        f_hyg    = ex.submit(fetch, "HYG", "1mo", "1d")
+        f_lqd    = ex.submit(fetch, "LQD", "1mo", "1d")
+        f_qqq    = ex.submit(fetch, "QQQ", "1mo", "1d")
+
+        spy_1y = _safe_result(f_spy_1y, "SPY 1y")
+        spy_1m = _safe_result(f_spy_1m, "SPY 1m")
+        vix_h  = _safe_result(f_vix,    "VIX")
+        hyg_h  = _safe_result(f_hyg,    "HYG")
+        lqd_h  = _safe_result(f_lqd,    "LQD")
+        qqq_h  = _safe_result(f_qqq,    "QQQ")
 
     score = 0.0   # positive = bull, negative = bear
     weight = 0.0

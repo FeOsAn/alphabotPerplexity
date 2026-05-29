@@ -34,6 +34,7 @@ STRATEGY_NAME = "momentum"
 MOMENTUM_REBALANCE_DAYS = 5    # rebalance weekly (every 5 trading days)
 STOP_LOSS_PCT = 0.06           # 6% trailing — looser for momentum
 MIN_VOL_RATIO = 1.5   # v76: volume surge required — 1.5-2.0x bucket best by backtest
+MIN_MA20_FILTER = True  # v77: dual MA filter — price must be above both MA20 and MA50
 
 MOMENTUM_UNIVERSE = [
     # Mega-cap
@@ -203,6 +204,8 @@ def _compute_score(sym: str) -> Optional[dict]:
 
         ma50 = float(close.tail(50).mean()) if len(close) >= 50 else None
         above_ma50 = bool(ma50 is not None and price_now > ma50)
+        ma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else None
+        above_ma20 = bool(ma20 is not None and price_now > ma20)
 
         rsi_series = _pta.rsi(close, length=14)
         rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
@@ -222,6 +225,8 @@ def _compute_score(sym: str) -> Optional[dict]:
             "ret_1m_prior": ret_1m_prior,
             "rsi": rsi,
             "above_ma50": above_ma50,
+            "ma20": ma20,
+            "above_ma20": above_ma20,
             "vol_ratio": vol_ratio,
         }
 
@@ -239,11 +244,14 @@ def _passes_entry_filters(sig: dict) -> bool:
     if not sig.get("above_ma50", False):
         logger.debug(f"[MOM] {sig['symbol']}: filtered — below MA50 (price={sig['price']:.2f})")
         return False
+    if sig.get("price", 0) < sig.get("ma20", 0):
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — price below MA20 (short-term trend not aligned)")
+        return False
     if sig.get("rsi", 100) >= t["momentum_rsi_max"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= {t['momentum_rsi_max']} (overbought)")
         return False
-    if sig.get("vol_ratio", 0) < 1.5:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 1.5x (volume surge required)")
+    if sig.get("vol_ratio", 0) < MIN_VOL_RATIO:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < {MIN_VOL_RATIO}x (volume surge required)")
         return False
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")

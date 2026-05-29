@@ -148,13 +148,23 @@ def _get_intraday_data(symbol: str) -> dict:
         pass
 
 
+def _is_circuit_breaker_active() -> bool:
+    try:
+        import main as _main
+        return bool(getattr(_main, "_circuit_breaker_active", False))
+    except Exception:
+        return False
+
+
 def _is_entry_window() -> bool:
-    """Entry window: 9:35–10:30 AM ET, weekdays only."""
+    """Entry window: 10:00–12:30 ET, weekdays only.
+    # v77: post-open only — pre-11:30 reclaims are false dawns (-0.78% avg, 23.5% WR)
+    """
     now_et = datetime.now(_ET)
     if now_et.weekday() >= 5:
         return False
     t = now_et.time()
-    return _time(9, 35) <= t <= _time(10, 30)
+    return _time(10, 0) <= t <= _time(12, 30)
 
 
 def _manage_positions(broker):
@@ -221,15 +231,11 @@ def run(broker, db_conn=None):
     _restore_state(broker)
 
     # Circuit breaker gate
-    try:
-        from main import _circuit_breaker_active
-        if _circuit_breaker_active:
-            logger.info("[VWAPReclaim] Circuit breaker active — skipping")
-            if _active_positions:
-                _manage_positions(broker)
-            return
-    except ImportError:
-        pass
+    if _is_circuit_breaker_active():
+        logger.info("[VWAPReclaim] Circuit breaker active — skipping")
+        if _active_positions:
+            _manage_positions(broker)
+        return
 
     # Regime gate
     try:
