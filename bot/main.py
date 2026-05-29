@@ -75,6 +75,7 @@ from strategies.trade_management import (
     restore_trade_management_state,
     run_trade_management,
     apply_earnings_stop_tightening,
+    check_overnight_exit,
 )
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
@@ -828,6 +829,9 @@ def main():
     schedule.every().day.at("21:05").do(take_snapshot, broker, db_conn)  # 21:05 UTC = 16:05 ET
     # Dedicated recap fire — survives edge cases where the polling window misses (M17)
     schedule.every().day.at("20:35").do(_scheduled_recap, broker, db_conn)
+    # v75 FIX 1 — overnight loser sweep. Polls every minute; the function
+    # itself enforces the 20:15–20:29 BST window via now_london().
+    schedule.every(1).minutes.do(check_overnight_exit, broker, db_conn)
 
     take_snapshot(broker, db_conn)
 

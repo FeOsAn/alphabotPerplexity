@@ -111,6 +111,21 @@ def init_db():
             ON positions_state(strategy)
     """)
 
+    # v75 — per-symbol performance ledger driving the blacklist (FIX 3).
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_performance (
+            symbol      TEXT PRIMARY KEY,
+            trades      INTEGER DEFAULT 0,
+            wins        INTEGER DEFAULT 0,
+            total_pnl   REAL DEFAULT 0.0,
+            avg_pnl     REAL DEFAULT 0.0,
+            win_rate    REAL DEFAULT 0.0,
+            blacklisted INTEGER DEFAULT 0,
+            blacklist_reason TEXT,
+            updated_at  TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     # Indexes — multiple callers do `WHERE symbol=? AND side LIKE 'buy%'
     # ORDER BY created_at DESC LIMIT 1`; without an index these are full table
     # scans once the trades table grows past a few thousand rows.
@@ -132,6 +147,17 @@ def init_db():
     conn.commit()
     conn.close()
     logger.info("Database initialized")
+
+    # v75 — pre-seed symbol_performance with known poor performers from backtest.
+    try:
+        from utils.symbol_performance import _seed_known_performers_if_empty
+        seed_conn = get_connection()
+        try:
+            _seed_known_performers_if_empty(seed_conn)
+        finally:
+            seed_conn.close()
+    except Exception as e:
+        logger.warning(f"[db] symbol_performance seed failed: {e}")
 
 
 def log_trade(conn: sqlite3.Connection, strategy: str, symbol: str, side: str,

@@ -157,11 +157,32 @@ class AlpacaBroker:
         """
         Centralised pre-order gate. Returns True if the order should be blocked.
         Enforces:
+          - symbol blacklist (v75 — FIX 3, BUY only)
           - MAX_TOTAL_POSITIONS (only for NEW symbol buys)
           - per-strategy capital ceiling
           - portfolio gross exposure cap
           - open-order deduplication (same symbol + side already pending)
         """
+        # --- Symbol blacklist (BUY side only) -----------------------------
+        if side.lower() == "buy":
+            try:
+                from utils.symbol_performance import get_blacklisted_symbols
+                from db import get_connection as _bl_get_conn
+                bl_conn = _bl_get_conn()
+                try:
+                    if symbol in get_blacklisted_symbols(bl_conn):
+                        logger.info(
+                            f"[Broker] {symbol} is blacklisted, skipping buy"
+                        )
+                        return True
+                finally:
+                    try:
+                        bl_conn.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"[Broker] blacklist check failed for {symbol}: {e}")
+
         # --- Order dedup --------------------------------------------------
         if self._has_pending_order(symbol, side):
             logger.info(
@@ -310,6 +331,24 @@ class AlpacaBroker:
                 if not is_entry_allowed():
                     logger.info(f"[Broker] submit_order blocked: outside entry window ({symbol})")
                     return None
+                # v75 — symbol blacklist check
+                try:
+                    from utils.symbol_performance import get_blacklisted_symbols
+                    from db import get_connection as _bl_get_conn
+                    bl_conn = _bl_get_conn()
+                    try:
+                        if symbol in get_blacklisted_symbols(bl_conn):
+                            logger.info(
+                                f"[Broker] submit_order blocked: {symbol} is blacklisted"
+                            )
+                            return None
+                    finally:
+                        try:
+                            bl_conn.close()
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.debug(f"[Broker] blacklist check failed for {symbol}: {e}")
                 try:
                     current_positions = self.get_positions()
                     if len(current_positions) >= MAX_TOTAL_POSITIONS:

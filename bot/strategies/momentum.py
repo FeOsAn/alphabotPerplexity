@@ -23,6 +23,8 @@ from config import (
     CONVICTION_TIER_MAX, CONVICTION_TIER_HIGH, CONVICTION_TIER_MID,
     CONVICTION_TIER_LOW, CONVICTION_TIER_MIN,
     CONVICTION_RSI_BONUS, CONVICTION_VOL_BONUS, MAX_SINGLE_POSITION_PCT,
+    CATALYST_SIZING_BOOST, CATALYST_MIN_SCORE, CATALYST_EARNINGS_DAYS,
+    MAX_CATALYST_POSITION_PCT,
 )
 from db import log_trade, log_signal, get_state, set_state
 
@@ -79,6 +81,66 @@ def _should_rebalance(db_conn=None) -> bool:
     if _last_rebalance is None:
         return True
     return (_now_utc() - _last_rebalance).days >= MOMENTUM_REBALANCE_DAYS
+
+
+def _has_earnings_catalyst(sym: str) -> tuple[bool, int]:
+    """v75 FIX 4 — True if `sym` has earnings within CATALYST_EARNINGS_DAYS.
+
+    Wraps yfinance ticker.calendar in try/except — earnings data is best-effort.
+    Returns (has_catalyst, days_to_earnings). days_to_earnings is -1 when unknown.
+    """
+    try:
+        ticker = yf.Ticker(sym)
+        cal = ticker.calendar
+        if cal is None:
+            return False, -1
+        raw_dates = []
+        if isinstance(cal, dict):
+            ed = cal.get("Earnings Date", [])
+            if ed:
+                raw_dates = ed if isinstance(ed, list) else [ed]
+        elif hasattr(cal, "empty") and not cal.empty:
+            if hasattr(cal, "columns") and "Earnings Date" in getattr(cal, "columns", []):
+                raw_dates = cal["Earnings Date"].dropna().tolist()
+            elif hasattr(cal, "index") and "Earnings Date" in getattr(cal, "index", []):
+                val = cal.loc["Earnings Date"]
+                raw_dates = val.tolist() if hasattr(val, "tolist") else [val]
+        if not raw_dates:
+            return False, -1
+        from utils.clock import now_utc as _nu
+        now_ts = pd.Timestamp(_nu()).tz_convert(None)
+        for d in raw_dates:
+            try:
+                ts = pd.Timestamp(d)
+                if ts.tzinfo is not None:
+                    ts = ts.tz_convert(None)
+                days_to = (ts - now_ts).days
+                if 0 < days_to <= CATALYST_EARNINGS_DAYS:
+                    return True, days_to
+            except Exception:
+                continue
+        return False, -1
+    except Exception:
+        return False, -1
+
+
+def _apply_catalyst_boost(sym: str, base_alloc: float, momentum_score: float) -> float:
+    """v75 FIX 4 — boost allocation when both an earnings catalyst exists AND
+    momentum_score >= CATALYST_MIN_SCORE. Capped at MAX_CATALYST_POSITION_PCT,
+    which equals MAX_SINGLE_POSITION_PCT (15%). Boost never breaches the hard cap.
+    """
+    if momentum_score < CATALYST_MIN_SCORE:
+        return base_alloc
+    has_catalyst, days_to = _has_earnings_catalyst(sym)
+    if not has_catalyst:
+        return base_alloc
+    boosted = base_alloc * CATALYST_SIZING_BOOST
+    boosted = min(boosted, MAX_CATALYST_POSITION_PCT)
+    logger.info(
+        f"[Momentum] {sym}: catalyst sizing boost applied → {boosted:.1%} "
+        f"(earnings in {days_to}d, score={momentum_score:.3f})"
+    )
+    return boosted
 
 
 def _conviction_allocation_pct(score: float, rsi: float = 50, vol_ratio: float = 1.0) -> float:
@@ -390,6 +452,8 @@ def run(broker: AlpacaBroker, db_conn):
         size_pct = _conviction_allocation_pct(
             sig["score"], sig.get("rsi", 50), sig.get("vol_ratio", 1.0)
         )
+        # v75 FIX 4 — catalyst sizing boost (earnings within 14 days + score≥0.08)
+        size_pct = _apply_catalyst_boost(sym, size_pct, sig["score"])
         deployable = portfolio_value * (1 - MIN_CASH_RESERVE_PCT)
         notional = deployable * size_pct * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT

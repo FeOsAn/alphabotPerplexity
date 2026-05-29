@@ -29,7 +29,17 @@ import pandas as pd
 from broker import AlpacaBroker
 from db import log_trade, get_position_state, delete_position_state, write_position_state
 from utils.cooldown import set_cooldown
-from utils.clock import now_utc
+from utils.clock import now_utc, now_london
+from config import (
+    OVERNIGHT_LOSS_THRESHOLD,
+    OVERNIGHT_EXIT_WINDOW_START,
+    OVERNIGHT_EXIT_WINDOW_END,
+    TRAIL_ACTIVATE_PCT,
+    TRAIL_DISTANCE_PCT,
+    TRAIL_TIGHTEN_PCT,
+    TRAIL_TIGHTEN_AT_PCT,
+)
+from utils.symbol_performance import update_symbol_performance, check_and_update_blacklist
 
 logger = logging.getLogger("alphabot.trade_management")
 
@@ -213,6 +223,19 @@ def clear_symbol(symbol: str):
     _ratchet_stops.pop(symbol, None)
     _ratchet_stops_dollar.pop(symbol, None)
     _post_earnings_checked.discard(symbol)  # allow re-review if re-entered
+
+
+def _record_close_perf(db_conn, symbol: str, realized_pnl) -> None:
+    """v75 FIX 3 — update symbol_performance + blacklist after every close."""
+    try:
+        pnl = float(realized_pnl or 0.0)
+    except Exception:
+        pnl = 0.0
+    try:
+        update_symbol_performance(db_conn, symbol, pnl)
+        check_and_update_blacklist(db_conn, symbol)
+    except Exception as e:
+        logger.debug(f"[SymPerf] post-close update failed for {symbol}: {e}")
 
 
 # ── v74: dollar-based ratchet ────────────────────────────────────────────────
@@ -538,6 +561,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                         clear_symbol(sym)
                         delete_position_state(db_conn, sym)
                         set_cooldown(sym)
+                        _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                         logger.info(f"[TradeManagement] {sym} cooldown set after sell_take_profit")
                     except Exception as e:
                         logger.error(f"[TP] Failed close for {sym}: {e}")
@@ -605,6 +629,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                             clear_symbol(sym)
                             delete_position_state(db_conn, sym)
                             set_cooldown(sym)
+                            _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                             logger.info(f"[TradeManagement] {sym} cooldown set after sell_dead_money")
                             continue
                         except Exception as e:
@@ -631,6 +656,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 clear_symbol(sym)
                 delete_position_state(db_conn, sym)
                 set_cooldown(sym)
+                _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                 logger.info(f"[TradeManagement] {sym} cooldown set after sell_dust_close")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed dust close for {sym}: {e}")
@@ -662,6 +688,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                     clear_symbol(sym)
                     delete_position_state(db_conn, sym)
                     set_cooldown(sym)
+                    _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                     logger.info(f"[TradeManagement] {sym} cooldown set after sell_trail_take")
                     try:
                         pass  # [ntfy silenced — logged only]
@@ -694,6 +721,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                         clear_symbol(sym)
                         delete_position_state(db_conn, sym)
                         set_cooldown(sym)
+                        _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                         logger.info(f"[TradeManagement] {sym} cooldown set after sell_ofi")
                     except Exception as e:
                         logger.error(f"[TradeManagement] OFI close failed for {sym}: {e}")
@@ -719,10 +747,103 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 clear_symbol(sym)
                 delete_position_state(db_conn, sym)
                 set_cooldown(sym)
+                _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                 logger.info(f"[TradeManagement] {sym} cooldown set after sell_trail_stop")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
+
+        # 2c. v75 FIX 2 — trailing stop for ACTIVE WINNERS.
+        # Activates only once gain ≥ TRAIL_ACTIVATE_PCT (1%). Side-aware:
+        #   long  → peak = highest price; trail = peak * (1 - dist)
+        #   short → peak = lowest  price; trail = peak * (1 + dist)
+        # Tightens to TRAIL_TIGHTEN_PCT once gain ≥ TRAIL_TIGHTEN_AT_PCT (3%).
+        # Stored in _ratchet_stops_dollar; never loosens. This sits ABOVE the
+        # v74 initial-stop logic — initial stop still fires for losers; this
+        # is purely the profit-protection layer.
+        try:
+            ps_trail = get_position_state(db_conn, sym)
+        except Exception:
+            ps_trail = None
+        try:
+            qty_signed_trail = float(pos.get("qty") or 0)
+        except Exception:
+            qty_signed_trail = 0.0
+        side_trail = (
+            ps_trail["side"] if ps_trail else
+            ("long" if qty_signed_trail > 0 else "short")
+        )
+        # pnl_pct in this loop is in PERCENT (e.g. 1.23 for +1.23%); convert to fraction.
+        pnl_frac = (pnl_pct / 100.0) if pnl_pct is not None else 0.0
+        try:
+            entry_trail = (
+                float(ps_trail["entry_price"]) if ps_trail and ps_trail.get("entry_price") else
+                (current_price / (1 + pnl_frac) if (1 + pnl_frac) != 0 else 0.0)
+            )
+        except Exception:
+            entry_trail = 0.0
+
+        if entry_trail > 0 and current_price > 0 and side_trail in ("long", "short"):
+            if side_trail == "long":
+                prev_peak = _peak_prices.get(sym, current_price)
+                new_peak = max(prev_peak, current_price)
+                _peak_prices[sym] = new_peak
+                gain_pct_trail = (current_price - entry_trail) / entry_trail
+            else:  # short — peak is the LOWEST price seen (most favourable)
+                prev_peak = _peak_prices.get(sym, current_price)
+                new_peak = min(prev_peak, current_price)
+                _peak_prices[sym] = new_peak
+                gain_pct_trail = (entry_trail - current_price) / entry_trail
+
+            if gain_pct_trail >= TRAIL_ACTIVATE_PCT:
+                trail_dist = (
+                    TRAIL_TIGHTEN_PCT if gain_pct_trail >= TRAIL_TIGHTEN_AT_PCT
+                    else TRAIL_DISTANCE_PCT
+                )
+                if side_trail == "long":
+                    trail_stop = new_peak * (1 - trail_dist)
+                    existing = _ratchet_stops_dollar.get(sym, 0.0)
+                    new_stop = max(trail_stop, existing)  # never loosen for longs
+                    _ratchet_stops_dollar[sym] = new_stop
+                    fired = current_price <= new_stop
+                else:  # short
+                    trail_stop = new_peak * (1 + trail_dist)
+                    existing = _ratchet_stops_dollar.get(sym, float("inf"))
+                    new_stop = min(trail_stop, existing)  # tighten down for shorts
+                    _ratchet_stops_dollar[sym] = new_stop
+                    fired = current_price >= new_stop
+
+                if fired:
+                    side_label = "" if side_trail == "long" else " (short)"
+                    peak_label = "peak" if side_trail == "long" else "peak_low"
+                    logger.info(
+                        f"[TrailStop] {sym}{side_label}: trail fired. "
+                        f"{peak_label}=${new_peak:.2f} trail=${new_stop:.2f} "
+                        f"price=${current_price:.2f} gain={gain_pct_trail:.2%}"
+                    )
+                    try:
+                        broker.close_position(sym, "trade_management")
+                        log_trade(
+                            db_conn, strategy, sym, "sell_trail_winner",
+                            pos["qty"], current_price, pos.get("unrealized_pnl"),
+                            metadata={
+                                "reason": (
+                                    "trail_winner" if side_trail == "long"
+                                    else "trail_winner_short"
+                                ),
+                                ("peak" if side_trail == "long" else "peak_low"): new_peak,
+                                "trail_stop": new_stop,
+                                "gain_pct": gain_pct_trail,
+                                "side": side_trail,
+                            },
+                        )
+                        clear_symbol(sym)
+                        set_cooldown(sym)
+                        delete_position_state(db_conn, sym)
+                        _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
+                    except Exception as e:
+                        logger.error(f"[TrailStop] close failed for {sym}: {e}")
+                    continue
 
         # 3. v74 — dollar-based ratchet stop driven by positions_state.
         #    The position is checked against a $-price, side-aware. Tightens
@@ -777,6 +898,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 clear_symbol(sym)
                 delete_position_state(db_conn, sym)
                 set_cooldown(sym)
+                _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                 logger.info(f"[TradeManagement] {sym} cooldown set after {action}")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
@@ -833,6 +955,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                 clear_symbol(sym)
                 delete_position_state(db_conn, sym)
                 set_cooldown(sym)
+                _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                 logger.info(f"[TradeManagement] {sym} cooldown set after hard_floor_stop")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
@@ -1161,6 +1284,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                               })
                     clear_symbol(sym)
                     delete_position_state(db_conn, sym)
+                    _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
                     try:
                         pass  # [ntfy silenced — logged only]
                     except Exception:
@@ -1220,6 +1344,89 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                         _post_earnings_checked.add(sym)  # only notify once
         except Exception:
             pass
+
+
+def _in_overnight_exit_window() -> bool:
+    """True if current London (BST/GMT) time is within OVERNIGHT_EXIT_WINDOW_*."""
+    try:
+        now = now_london()
+        start_h, start_m = (int(x) for x in OVERNIGHT_EXIT_WINDOW_START.split(":"))
+        end_h, end_m = (int(x) for x in OVERNIGHT_EXIT_WINDOW_END.split(":"))
+        cur_minutes = now.hour * 60 + now.minute
+        return (start_h * 60 + start_m) <= cur_minutes <= (end_h * 60 + end_m)
+    except Exception:
+        return False
+
+
+def check_overnight_exit(broker: AlpacaBroker, db_conn):
+    """
+    Run between 20:15–20:29 BST (15–29 min before NYSE close at 20:30 BST in summer).
+    Close any position with unrealized P&L pct < OVERNIGHT_LOSS_THRESHOLD.
+
+    Rationale (v75 / alpha_attribution): overnight losers (QCOM −$1,414, MPC −$818,
+    MPWR −$427, NOW −$460) accounted for 33%+ of total gross loss. Any position
+    losing into the close gets flat — winners can ride overnight.
+    """
+    if not _in_overnight_exit_window():
+        return
+    try:
+        positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[OvernightExit] get_positions failed: {e}")
+        return
+
+    logger.info(
+        f"[OvernightExit] Window active — scanning {len(positions)} position(s) "
+        f"for pnl_pct < {OVERNIGHT_LOSS_THRESHOLD:.2%}"
+    )
+
+    for pos in positions:
+        sym = pos.get("symbol")
+        if not sym:
+            continue
+        try:
+            # Alpaca's unrealized_plpc is a fraction (e.g. -0.0123 for -1.23%).
+            # broker.get_positions() multiplies by 100, so we must convert back.
+            pnl_pct_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
+            pnl_pct = pnl_pct_pct / 100.0
+        except Exception:
+            continue
+
+        if pnl_pct >= OVERNIGHT_LOSS_THRESHOLD:
+            continue
+
+        strategy = pos.get("strategy", "unknown")
+        current_price = float(pos.get("current_price") or 0.0)
+        qty = pos.get("qty")
+        unrealized_pnl = pos.get("unrealized_pnl", 0.0)
+        logger.info(
+            f"[OvernightExit] Closing {sym} before overnight: "
+            f"pnl={pnl_pct:.2%} < threshold={OVERNIGHT_LOSS_THRESHOLD:.2%}"
+        )
+        try:
+            broker.close_position(sym, "trade_management")
+            log_trade(
+                db_conn, strategy, sym, "sell_overnight_exit",
+                qty, current_price, unrealized_pnl,
+                metadata={
+                    "reason": "overnight_loss_exit",
+                    "pnl_pct": pnl_pct,
+                    "threshold": OVERNIGHT_LOSS_THRESHOLD,
+                },
+            )
+            set_cooldown(sym)
+            try:
+                delete_position_state(db_conn, sym)
+            except Exception as e:
+                logger.debug(f"[OvernightExit] delete_position_state {sym}: {e}")
+            clear_symbol(sym)
+            try:
+                update_symbol_performance(db_conn, sym, float(unrealized_pnl or 0.0))
+                check_and_update_blacklist(db_conn, sym)
+            except Exception as e:
+                logger.debug(f"[OvernightExit] symbol_performance {sym}: {e}")
+        except Exception as e:
+            logger.error(f"[OvernightExit] close failed for {sym}: {e}")
 
 
 def run_trade_management(broker: AlpacaBroker, db_conn):

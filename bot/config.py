@@ -111,6 +111,30 @@ SR_MAX_ETF_SLOTS = 3          # Cap ETF positions at 3 if individual signals are
                                # ETFs are backup exposure, not the main bet
 
 # ============================================================
+# v75 — No overnight losers (FIX 1)
+# ============================================================
+OVERNIGHT_LOSS_THRESHOLD = -0.005      # -0.5% — exit if losing at pre-close
+OVERNIGHT_EXIT_WINDOW_START = "20:15"  # BST
+OVERNIGHT_EXIT_WINDOW_END   = "20:29"  # BST — must finish before 20:30
+
+# ============================================================
+# v75 — Trailing stop for active winners (FIX 2)
+# ============================================================
+TRAIL_ACTIVATE_PCT    = 0.01   # activate trailing once up 1%
+TRAIL_DISTANCE_PCT    = 0.015  # trail at 1.5% below peak (long) / above peak (short)
+TRAIL_TIGHTEN_PCT     = 0.01   # tighten to 1.0% once up 3% (lock in more)
+TRAIL_TIGHTEN_AT_PCT  = 0.03   # tighten threshold
+
+# ============================================================
+# v75 — Catalyst sizing (FIX 4)
+# ============================================================
+CATALYST_SIZING_BOOST   = 1.5   # multiply base allocation by this for catalyst signals
+CATALYST_MIN_SCORE      = 0.08  # minimum momentum score to qualify for boost
+CATALYST_EARNINGS_DAYS  = 14    # within 14 days of earnings = catalyst window
+# MAX_CATALYST_POSITION_PCT alias — boost never exceeds MAX_SINGLE_POSITION_PCT (0.15)
+MAX_CATALYST_POSITION_PCT = MAX_SINGLE_POSITION_PCT
+
+# ============================================================
 # Scheduling
 # ============================================================
 MARKET_OPEN_BUFFER_MIN = 15    # Wait 15min after open before trading

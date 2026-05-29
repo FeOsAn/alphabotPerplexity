@@ -32,7 +32,10 @@ import yfinance as yf
 import anthropic
 
 from broker import AlpacaBroker, tag_symbol
-from config import DEFAULT_STRATEGY_ALLOCATION_PCT, MIN_CASH_RESERVE_PCT
+from config import (
+    DEFAULT_STRATEGY_ALLOCATION_PCT, MIN_CASH_RESERVE_PCT,
+    CATALYST_SIZING_BOOST, MAX_CATALYST_POSITION_PCT,
+)
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.ai_research")
@@ -1043,7 +1046,27 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[AI Research] Regime weight 0.0 — skipping {sym}")
             continue
 
-        notional = portfolio_value * DEFAULT_STRATEGY_ALLOCATION_PCT * regime_mult
+        # v75 FIX 4 — catalyst sizing: high-conviction analyst target (≥15% upside)
+        # boosts allocation by CATALYST_SIZING_BOOST, capped at MAX_CATALYST_POSITION_PCT.
+        alloc_pct = DEFAULT_STRATEGY_ALLOCATION_PCT
+        try:
+            ctx = trade.get("context", {}) or {}
+            analyst_target_raw = ctx.get("analyst_target")
+            current_px_raw = ctx.get("current_price")
+            if analyst_target_raw and current_px_raw:
+                _at = float(analyst_target_raw)
+                _cp = float(current_px_raw)
+                if _cp > 0 and _at > _cp * 1.15:
+                    boosted = alloc_pct * CATALYST_SIZING_BOOST
+                    alloc_pct = min(boosted, MAX_CATALYST_POSITION_PCT)
+                    logger.info(
+                        f"[AIResearch] {sym}: catalyst sizing boost applied → "
+                        f"{alloc_pct:.1%} (analyst target ${_at:.2f} = "
+                        f"{(_at / _cp - 1):.1%} upside)"
+                    )
+        except Exception as _e:
+            logger.debug(f"[AIResearch] catalyst boost check failed for {sym}: {_e}")
+        notional = portfolio_value * alloc_pct * regime_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
 
         if cash - notional < min_cash:
