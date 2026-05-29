@@ -208,6 +208,14 @@ def _compute_signals(sym: str) -> Optional[dict]:
         price_20d = float(close.iloc[-21]) if len(close) >= 21 else float(close.iloc[0])
         slope_20d = (price_now - price_20d) / price_20d if price_20d > 0 else 0.0
 
+        # v74 — measured move: breakout level + (range height over last 60d)
+        try:
+            range_low_60 = float(close.tail(60).min())
+            pattern_height = max(high_52w - range_low_60, 0.0)
+            measured_move_price = high_52w + pattern_height if pattern_height > 0 else None
+        except Exception:
+            measured_move_price = None
+
         # Evaluate entry conditions (adaptive — driven by regime)
         from utils.adaptive_filters import get_thresholds
         t = get_thresholds()
@@ -234,6 +242,7 @@ def _compute_signals(sym: str) -> Optional[dict]:
             "cond_rsi": cond_rsi,
             "cond_ma50": cond_ma50,
             "cond_slope": cond_slope,
+            "measured_move_price": measured_move_price,
         }
 
     except Exception as e:
@@ -484,7 +493,12 @@ def run(broker: AlpacaBroker, db_conn):
             f"slope_20d={sig['slope_20d']:.2%}, conviction={mult:.2f}x, notional=${notional:.0f}"
         )
 
-        _buy_result = broker.market_buy(sym, notional, STRATEGY_NAME)
+        # v74 — measured-move TP override
+        mm_tp = sig.get("measured_move_price")
+        _buy_result = broker.market_buy(
+            sym, notional, STRATEGY_NAME,
+            tp_target_override=mm_tp if mm_tp and mm_tp > sig["price"] else None,
+        )
         tag_symbol(sym, STRATEGY_NAME)
         _mark_traded_today(db_conn, sym)
         # v73 — if this entry came via rotation, lock the rotation-in symbol

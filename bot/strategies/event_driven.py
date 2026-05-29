@@ -17,7 +17,8 @@ from utils.news_scanner import EVENT_QUEUE
 from utils.clock import now_utc, today_utc
 from utils.market_hours import is_entry_allowed
 from utils.cooldown import is_on_cooldown
-from db import get_state, set_state
+from db import get_state, set_state, log_trade
+from broker import tag_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -201,14 +202,34 @@ def _execute_trade(symbol: str, direction: str, broker, db_conn, portfolio_value
         side = "buy" if direction == "long" else "sell"
         logger.info(f"[event_driven] {side.upper()} {qty} {symbol} @ ~${price:.2f} (event-driven)")
 
-        # Place market order
-        broker.submit_order(
+        # Place market order — pass strategy_tag so broker.record_entry writes
+        # the positions_state row with correct strategy attribution.
+        order_result = broker.submit_order(
             symbol=symbol,
             qty=qty,
             side=side,
             type="market",
             time_in_force="day",
+            strategy_tag="event_driven",
         )
+
+        # v74 — tag + log_trade so legacy seeding / restore has correct strategy.
+        if order_result is not None:
+            try:
+                tag_symbol(symbol, "event_driven")
+            except Exception as e:
+                logger.debug(f"[event_driven] tag_symbol failed for {symbol}: {e}")
+            try:
+                trade_side = "buy" if direction == "long" else "sell_short"
+                log_trade(db_conn, "event_driven", symbol, trade_side,
+                          qty, price, 0.0,
+                          metadata={
+                              "reason": "event_driven_entry",
+                              "direction": direction,
+                          })
+            except Exception as e:
+                logger.debug(f"[event_driven] log_trade failed for {symbol}: {e}")
+
         _event_positions.add(symbol)
         # v71-E2: mark symbol as traded today, persists to DB
         _mark_event_traded_today(db_conn, symbol)

@@ -8,6 +8,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from utils.clock import now_utc
+
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(_BASE_DIR, 'alphabot.db')
 logger = logging.getLogger("alphabot.db")
@@ -83,6 +85,30 @@ def init_db():
             value TEXT,
             updated_at TEXT DEFAULT (datetime('now'))
         )
+    """)
+
+    # v74 — per-symbol entry record for TP/stop system.
+    # Replaces the in-memory _ratchet_stops dict with a durable, side-aware,
+    # dollar-priced record. One row per open position; row is deleted on close.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS positions_state (
+            symbol        TEXT PRIMARY KEY,
+            side          TEXT NOT NULL,
+            qty           REAL NOT NULL,
+            entry_price   REAL NOT NULL,
+            entry_atr     REAL NOT NULL,
+            initial_stop  REAL NOT NULL,
+            tp_target     REAL,
+            strategy      TEXT NOT NULL,
+            entry_time    TEXT NOT NULL,
+            tp_basis      TEXT,
+            initial_risk  REAL NOT NULL,
+            updated_at    TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS positions_state_strategy
+            ON positions_state(strategy)
     """)
 
     # Indexes — multiple callers do `WHERE symbol=? AND side LIKE 'buy%'
@@ -250,3 +276,52 @@ def del_state(conn: sqlite3.Connection, key: str) -> None:
         conn.commit()
     except Exception as e:
         logger.warning(f"[db.del_state] {key}: {e}")
+
+
+# ── v74: positions_state helpers ─────────────────────────────────────────────
+def write_position_state(conn: sqlite3.Connection, *, symbol: str, side: str,
+                         qty: float, entry_price: float, entry_atr: float,
+                         initial_stop: float, tp_target: Optional[float],
+                         strategy: str, tp_basis: Optional[str]) -> None:
+    """Upsert the per-symbol entry record. Called by record_entry() after every buy."""
+    try:
+        initial_risk = abs(entry_price - initial_stop)
+        entry_time = now_utc().isoformat()
+        conn.execute("""
+            INSERT INTO positions_state
+                (symbol, side, qty, entry_price, entry_atr, initial_stop,
+                 tp_target, strategy, entry_time, tp_basis, initial_risk, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(symbol) DO UPDATE SET
+                side=excluded.side, qty=excluded.qty,
+                entry_price=excluded.entry_price, entry_atr=excluded.entry_atr,
+                initial_stop=excluded.initial_stop, tp_target=excluded.tp_target,
+                strategy=excluded.strategy, entry_time=excluded.entry_time,
+                tp_basis=excluded.tp_basis, initial_risk=excluded.initial_risk,
+                updated_at=datetime('now')
+        """, (symbol, side, qty, entry_price, entry_atr, initial_stop,
+              tp_target, strategy, entry_time, tp_basis, initial_risk))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[db.write_position_state] {symbol}: {e}")
+
+
+def get_position_state(conn: sqlite3.Connection, symbol: str) -> Optional[dict]:
+    """Return the positions_state row for a symbol, or None."""
+    try:
+        row = conn.execute(
+            "SELECT * FROM positions_state WHERE symbol=?", (symbol,)
+        ).fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.warning(f"[db.get_position_state] {symbol}: {e}")
+        return None
+
+
+def delete_position_state(conn: sqlite3.Connection, symbol: str) -> None:
+    """Delete the positions_state row for a symbol — paired with every close."""
+    try:
+        conn.execute("DELETE FROM positions_state WHERE symbol=?", (symbol,))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[db.delete_position_state] {symbol}: {e}")

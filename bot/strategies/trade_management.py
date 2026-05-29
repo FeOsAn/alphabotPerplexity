@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 from broker import AlpacaBroker
-from db import log_trade
+from db import log_trade, get_position_state, delete_position_state, write_position_state
 from utils.cooldown import set_cooldown
 from utils.clock import now_utc
 
@@ -94,7 +94,8 @@ def _base_stop_for(strategy: str) -> float:
 # ── In-memory state ────────────────────────────────────────────────────────────
 _peak_prices: dict[str, float] = {}        # symbol -> highest price seen
 _partial_taken: set[str] = set()           # symbols where partial exit already fired
-_ratchet_stops: dict[str, float] = {}      # symbol -> locked stop pct (e.g. 0.05 = +5%)
+_ratchet_stops: dict[str, float] = {}      # legacy: symbol -> locked stop pct (kept for back-compat readers)
+_ratchet_stops_dollar: dict[str, float] = {}  # v74: symbol -> locked stop $-price
 _state_restored: bool = False              # gate so restore runs only once
 
 
@@ -210,7 +211,98 @@ def clear_symbol(symbol: str):
     _peak_prices.pop(symbol, None)
     _partial_taken.discard(symbol)
     _ratchet_stops.pop(symbol, None)
+    _ratchet_stops_dollar.pop(symbol, None)
     _post_earnings_checked.discard(symbol)  # allow re-review if re-entered
+
+
+# ── v74: dollar-based ratchet ────────────────────────────────────────────────
+def _ratchet_stop_price(sym: str, ps: dict, current_price: float) -> float:
+    """Return the current effective $-stop. Monotone tightening; never loosens.
+
+    Multiplier tiers (favourable move expressed in R-multiples):
+      r_mult >= 1.5  →  1.0 × ATR
+      r_mult >= 1.0  →  1.5 × ATR
+      otherwise      →  2.0 × ATR (initial)
+    """
+    entry = float(ps["entry_price"])
+    atr   = float(ps["entry_atr"])
+    init  = float(ps["initial_stop"])
+    R     = float(ps["initial_risk"])
+    side  = ps["side"]
+
+    favourable_move = (current_price - entry) if side == "long" else (entry - current_price)
+    r_mult = (favourable_move / R) if R > 0 else 0.0
+
+    if r_mult >= 1.5:
+        mult = 1.0
+    elif r_mult >= 1.0:
+        mult = 1.5
+    else:
+        mult = 2.0
+
+    if side == "long":
+        candidate = current_price - mult * atr
+        candidate = max(candidate, init)  # never loosen below initial
+        existing = _ratchet_stops_dollar.get(sym, init)
+        new_stop = max(candidate, existing)  # never loosen
+    else:
+        candidate = current_price + mult * atr
+        candidate = min(candidate, init)
+        existing = _ratchet_stops_dollar.get(sym, init)
+        new_stop = min(candidate, existing)
+
+    _ratchet_stops_dollar[sym] = new_stop
+    return new_stop
+
+
+def _seed_legacy_position_state(conn, broker: AlpacaBroker, pos: dict) -> None:
+    """Seed a positions_state row for a pre-v74 orphan position.
+
+    Anchors stop/TP at CURRENT price (not entry) — anchoring at entry would
+    either produce a stop already breached or require an amnesty period.
+    """
+    sym = pos["symbol"]
+    strategy = pos.get("strategy", "unknown")
+    try:
+        qty_sgn = float(pos.get("qty") or 0)
+    except Exception:
+        qty_sgn = 0.0
+    side = "long" if qty_sgn > 0 else "short"
+    qty = abs(qty_sgn)
+    current = float(pos.get("current_price") or 0)
+    avg_entry = float(pos.get("avg_entry") or 0)
+    if current <= 0:
+        return
+    entry_price = avg_entry if avg_entry > 0 else current
+
+    atr = _get_current_atr(sym)
+    if atr <= 0:
+        atr = current * 0.02
+
+    stop_mult = 2.0
+    if side == "long":
+        initial_stop = current - stop_mult * atr
+        tp_target = current + 3.0 * atr
+    else:
+        initial_stop = current + stop_mult * atr
+        tp_target = current - 3.0 * atr
+
+    try:
+        write_position_state(
+            conn,
+            symbol=sym, side=side, qty=qty,
+            entry_price=entry_price, entry_atr=atr,
+            initial_stop=initial_stop, tp_target=tp_target,
+            strategy=strategy, tp_basis="legacy-recovery",
+        )
+        _ratchet_stops_dollar[sym] = initial_stop
+        logger.warning(
+            f"[TM] Seeded legacy state for {sym} ({strategy}/{side}): "
+            f"stop=${initial_stop:.2f} tp=${tp_target:.2f} atr=${atr:.2f} "
+            f"(anchor=current, not entry)"
+        )
+    except Exception as e:
+        logger.error(f"[TM] Legacy seed failed for {sym}: {e}")
 
 
 def restore_trade_management_state(broker: AlpacaBroker, db_conn):
@@ -241,44 +333,55 @@ def restore_trade_management_state(broker: AlpacaBroker, db_conn):
             current_price = float(pos.get("current_price") or 0)
             avg_entry = float(pos.get("avg_entry") or 0)
 
-            # 1. Entry price — prefer the most recent BUY in the DB
-            entry_price = None
-            try:
-                row = db_conn.execute(
-                    "SELECT price, created_at FROM trades "
-                    "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (sym,),
-                ).fetchone()
-                if row and row["price"] and float(row["price"]) > 0:
-                    entry_price = float(row["price"])
-            except Exception as e:
-                logger.debug(f"[TM Restore] DB entry lookup failed {sym}: {e}")
+            # v74 — prefer positions_state row (dollar-priced, side-aware).
+            ps = get_position_state(db_conn, sym)
+            if ps is not None:
+                try:
+                    init_stop = float(ps["initial_stop"])
+                    _ratchet_stops_dollar[sym] = init_stop
+                    entry_price = float(ps["entry_price"]) or avg_entry or current_price
+                    peak = max(current_price, entry_price) if current_price > 0 else entry_price
+                    _peak_prices[sym] = peak
+                except Exception as e:
+                    logger.debug(f"[TM Restore] positions_state hydrate failed {sym}: {e}")
+            else:
+                # Pre-v74 orphan — fall through to legacy percentage seed.
+                # 1. Entry price — prefer the most recent BUY in the DB
+                entry_price = None
+                try:
+                    row = db_conn.execute(
+                        "SELECT price, created_at FROM trades "
+                        "WHERE symbol=? AND side IN ('buy','buy_pyramid') "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (sym,),
+                    ).fetchone()
+                    if row and row["price"] and float(row["price"]) > 0:
+                        entry_price = float(row["price"])
+                except Exception as e:
+                    logger.debug(f"[TM Restore] DB entry lookup failed {sym}: {e}")
 
-            if not entry_price or entry_price <= 0:
-                entry_price = avg_entry if avg_entry > 0 else current_price
-            if entry_price <= 0:
-                continue
+                if not entry_price or entry_price <= 0:
+                    entry_price = avg_entry if avg_entry > 0 else current_price
+                if entry_price <= 0:
+                    continue
 
-            # 2. Peak
-            peak = max(current_price, entry_price) if current_price > 0 else entry_price
-            _peak_prices[sym] = peak
+                # 2. Peak
+                peak = max(current_price, entry_price) if current_price > 0 else entry_price
+                _peak_prices[sym] = peak
 
-            # 3. Ratchet — ATR-based (replaces floor-only _ratchet_for_pnl)
-            try:
-                pnl_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
-                if current_price > 0 and entry_price > 0:
-                    # Use full ATR ratchet — computes stop = max(floor, gain - mult*ATR/entry)
-                    # base_stop_pct=0.07 matches TRAILING_STOP_PCT default
-                    _atr_ratchet_stop_pct(sym, pnl_pct, entry_price, current_price, base_stop_pct=0.07)
-                    # _atr_ratchet_stop_pct already writes into _ratchet_stops[sym]
-                else:
-                    # Fallback: floor-only
-                    ratchet = _ratchet_for_pnl(pnl_pct)
-                    if ratchet is not None:
-                        _ratchet_stops[sym] = ratchet
-            except Exception:
-                pass
+                # 3. Legacy percentage ratchet — only seed the old dict so the
+                # legacy fallback ratchet path (run only for positions without
+                # a positions_state row) has a starting tier.
+                try:
+                    pnl_pct = float(pos.get("unrealized_pnl_pct") or 0.0)
+                    if current_price > 0 and entry_price > 0:
+                        _atr_ratchet_stop_pct(sym, pnl_pct, entry_price, current_price, base_stop_pct=0.07)
+                    else:
+                        ratchet = _ratchet_for_pnl(pnl_pct)
+                        if ratchet is not None:
+                            _ratchet_stops[sym] = ratchet
+                except Exception:
+                    pass
 
             # 4. Partial-taken — if any SELL trade exists since entry
             try:
@@ -298,8 +401,9 @@ def restore_trade_management_state(broker: AlpacaBroker, db_conn):
 
     logger.info(
         f"[TM Restore] Hydrated {restored_count} position(s) | "
-        f"peaks={len(_peak_prices)} ratchets={len(_ratchet_stops)} partial={len(_partial_taken)} | "
-        f"ATR stops wired on startup"
+        f"peaks={len(_peak_prices)} ratchets$={len(_ratchet_stops_dollar)} "
+        f"legacy_ratchets={len(_ratchet_stops)} partial={len(_partial_taken)} | "
+        f"v74 dollar-stops wired on startup"
     )
 
 
@@ -403,6 +507,44 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             f"price=${current_price:.2f} | value=${market_value:.0f} | peak=${peak:.2f}"
         )
 
+        # ── v74: TP check FIRST — fastest possible exit on TP hit ────────
+        try:
+            ps_tp = get_position_state(db_conn, sym)
+        except Exception:
+            ps_tp = None
+        if ps_tp and ps_tp.get("tp_target") is not None:
+            try:
+                tp = float(ps_tp["tp_target"])
+                side_tp = ps_tp["side"]
+                tp_hit = (current_price >= tp) if side_tp == "long" else (current_price <= tp)
+                if tp_hit:
+                    logger.info(
+                        f"[TP] {sym} ({strategy}): hit TP target ${tp:.2f} "
+                        f"(side={side_tp}, price=${current_price:.2f}, basis={ps_tp.get('tp_basis')})"
+                    )
+                    try:
+                        broker.close_position(sym, strategy)
+                        log_trade(
+                            db_conn, strategy, sym, "sell_take_profit",
+                            pos["qty"], current_price, pos["unrealized_pnl"],
+                            metadata={
+                                "reason": "take_profit",
+                                "tp_target": tp,
+                                "tp_basis": ps_tp.get("tp_basis"),
+                                "entry_price": ps_tp.get("entry_price"),
+                                "side": side_tp,
+                            },
+                        )
+                        clear_symbol(sym)
+                        delete_position_state(db_conn, sym)
+                        set_cooldown(sym)
+                        logger.info(f"[TradeManagement] {sym} cooldown set after sell_take_profit")
+                    except Exception as e:
+                        logger.error(f"[TP] Failed close for {sym}: {e}")
+                    continue
+            except Exception as e:
+                logger.debug(f"[TP] {sym} TP check error: {e}")
+
         # 0a. Dead money timeout — momentum/breakout/drift positions flat ±2.5% for >=14 days
         # NEVER fires on structural strategies (sector_rotation, pairs_trading, short_hedge,
         # spy_dip, vix_reversal) — those are intentionally held flat as diversification.
@@ -461,6 +603,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                           "pnl_pct": pnl_pct,
                                       })
                             clear_symbol(sym)
+                            delete_position_state(db_conn, sym)
                             set_cooldown(sym)
                             logger.info(f"[TradeManagement] {sym} cooldown set after sell_dead_money")
                             continue
@@ -486,6 +629,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                               "pnl_pct": pnl_pct,
                           })
                 clear_symbol(sym)
+                delete_position_state(db_conn, sym)
                 set_cooldown(sym)
                 logger.info(f"[TradeManagement] {sym} cooldown set after sell_dust_close")
             except Exception as e:
@@ -493,7 +637,10 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             continue
 
         # 1. Trailing take profit — ride winners until momentum exhausts.
-        if pnl_pct >= TRAIL_TAKE_ACTIVATE_PCT * 100:
+        #    Long-only: the peak-from-max logic is structurally wrong for shorts;
+        #    shorts use the dollar-based ratchet (which tightens as price falls).
+        qty_signed_tt = float(pos.get("qty") or 0)
+        if qty_signed_tt > 0 and pnl_pct >= TRAIL_TAKE_ACTIVATE_PCT * 100:
             peak_price = _peak_prices.get(sym, current_price)
             drawdown_from_peak = (peak_price - current_price) / peak_price if peak_price > 0 else 0
             if drawdown_from_peak >= TRAIL_TAKE_DRAWDOWN_PCT:
@@ -513,6 +660,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                   "drawdown_from_peak_pct": round(drawdown_from_peak * 100, 2),
                               })
                     clear_symbol(sym)
+                    delete_position_state(db_conn, sym)
                     set_cooldown(sym)
                     logger.info(f"[TradeManagement] {sym} cooldown set after sell_trail_take")
                     try:
@@ -544,6 +692,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                                   pos["qty"], current_price, pos["unrealized_pnl"],
                                   metadata={"reason": "ofi_sell_pressure", "pnl_pct": pnl_pct})
                         clear_symbol(sym)
+                        delete_position_state(db_conn, sym)
                         set_cooldown(sym)
                         logger.info(f"[TradeManagement] {sym} cooldown set after sell_ofi")
                     except Exception as e:
@@ -556,8 +705,11 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
         if check_partial_take(pos, broker, db_conn, strategy):
             continue
 
-        # 2b. Check trailing stop
-        if check_trailing_stop(pos):
+        # 2b. Check trailing stop — long-only (trail logic uses max-peak which is
+        # structurally wrong for shorts; shorts are protected by the dollar-based
+        # ratchet path below).
+        qty_signed_tr = float(pos.get("qty") or 0)
+        if qty_signed_tr > 0 and check_trailing_stop(pos):
             logger.info(f"[TRADE MGT] TRAILING STOP — closing {sym} ({strategy})")
             try:
                 broker.close_position(sym, strategy)
@@ -565,41 +717,65 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={"reason": "trailing_stop", "peak_price": peak})
                 clear_symbol(sym)
+                delete_position_state(db_conn, sym)
                 set_cooldown(sym)
                 logger.info(f"[TradeManagement] {sym} cooldown set after sell_trail_stop")
             except Exception as e:
                 logger.error(f"[TRADE MGT] Failed to close {sym}: {e}")
             continue
 
-        # 3. Ratchet stop — locks in profit as position gains, never moves down
-        base_stop_pct = _base_stop_for(strategy)
-        effective_stop = _get_ratchet_stop(sym, pnl_pct, base_stop_pct)
-        if pnl_pct / 100 < effective_stop:
-            if effective_stop >= 0:
-                logger.info(
-                    f"[TM] {sym} RATCHET STOP at {effective_stop:+.0%} "
-                    f"(P&L={pnl_pct:+.1f}%)"
-                )
-                reason = "ratchet_stop"
-                action = "sell_ratchet_stop"
-            else:
-                logger.info(
-                    f"[TM] {sym} STOP LOSS at {pnl_pct:+.1f}% "
-                    f"(stop={effective_stop:.0%})"
-                )
-                reason = "base_stop"
-                action = "sell_stop"
+        # 3. v74 — dollar-based ratchet stop driven by positions_state.
+        #    The position is checked against a $-price, side-aware. Tightens
+        #    monotonically with favourable move. For pre-v74 orphans without
+        #    a positions_state row, we seed one and skip this cycle (next
+        #    cycle uses the fresh state).
+        ps = None
+        try:
+            ps = get_position_state(db_conn, sym)
+        except Exception as e:
+            logger.debug(f"[TM] get_position_state failed for {sym}: {e}")
+
+        if ps is None:
+            try:
+                _seed_legacy_position_state(db_conn, broker, pos)
+            except Exception as e:
+                logger.error(f"[TM] Legacy seed error for {sym}: {e}")
+            # Skip stop logic this cycle to avoid acting on freshly-seeded state.
+            continue
+
+        try:
+            effective_stop = _ratchet_stop_price(sym, ps, current_price)
+            side_ps = ps["side"]
+            stop_hit = (current_price <= effective_stop) if side_ps == "long" else (current_price >= effective_stop)
+        except Exception as e:
+            logger.error(f"[TM] ratchet-stop calc failed for {sym}: {e}")
+            stop_hit = False
+            effective_stop = 0.0
+            side_ps = "long"
+
+        if stop_hit:
+            initial_stop_v = float(ps["initial_stop"])
+            is_ratchet = (effective_stop != initial_stop_v)
+            reason = "ratchet_stop" if is_ratchet else "initial_stop"
+            action = "sell_ratchet_stop" if is_ratchet else "sell_stop"
+            logger.info(
+                f"[TM] {sym} {'RATCHET STOP' if is_ratchet else 'INITIAL STOP'} "
+                f"at ${effective_stop:.2f} (side={side_ps}, price=${current_price:.2f}, "
+                f"P&L={pnl_pct:+.1f}%)"
+            )
             try:
                 broker.close_position(sym, strategy)
                 log_trade(db_conn, strategy, sym, action,
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={
                               "reason": reason,
-                              "effective_stop_pct": effective_stop,
-                              "base_stop_pct": base_stop_pct,
+                              "effective_stop": effective_stop,
+                              "initial_stop": initial_stop_v,
+                              "side": side_ps,
                               "pnl_pct_at_stop": pnl_pct,
                           })
                 clear_symbol(sym)
+                delete_position_state(db_conn, sym)
                 set_cooldown(sym)
                 logger.info(f"[TradeManagement] {sym} cooldown set after {action}")
             except Exception as e:
@@ -655,6 +831,7 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                           pos["qty"], pos["current_price"], pos["unrealized_pnl"],
                           metadata={"reason": "hard_floor_stop"})
                 clear_symbol(sym)
+                delete_position_state(db_conn, sym)
                 set_cooldown(sym)
                 logger.info(f"[TradeManagement] {sym} cooldown set after hard_floor_stop")
             except Exception as e:
@@ -983,6 +1160,7 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
                                   "move_pct": move_pct,
                               })
                     clear_symbol(sym)
+                    delete_position_state(db_conn, sym)
                     try:
                         pass  # [ntfy silenced — logged only]
                     except Exception:

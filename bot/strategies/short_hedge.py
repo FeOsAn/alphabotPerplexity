@@ -144,6 +144,7 @@ def run(broker: AlpacaBroker, db_conn) -> None:
     """Main entry point — called every cycle from main.py."""
     from utils.adaptive_filters import get_regime, get_thresholds
     from strategies.trade_management import clear_symbol
+    from db import delete_position_state as _delete_position_state
     regime = get_regime()
 
     # Force-close all short positions if we somehow still hold them in a bull regime
@@ -163,6 +164,7 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                               qty, price, pnl,
                               metadata={"reason": "regime_flip", "new_regime": regime})
                     clear_symbol(sym)
+                    _delete_position_state(db_conn, sym)
                     _entry_times.pop(sym, None)
                 except Exception as e:
                     logger.error(f"[SHORT] Force-close failed for {sym}: {e}")

@@ -1055,7 +1055,19 @@ def run(broker: AlpacaBroker, db_conn):
                 f"[AI Research] BUYING {sym} | ${notional:.0f} | "
                 f"{thesis['thesis_summary'][:80]}"
             )
-            broker.market_buy(sym, notional, STRATEGY_NAME)
+            # v74 — analyst_target overrides the default R-based TP if present
+            analyst_target = None
+            try:
+                at = trade.get("context", {}).get("analyst_target")
+                cur_px = float(trade.get("context", {}).get("current_price") or 0)
+                if at and float(at) > 0 and cur_px > 0 and float(at) > cur_px:
+                    analyst_target = float(at)
+            except Exception:
+                analyst_target = None
+            broker.market_buy(
+                sym, notional, STRATEGY_NAME,
+                tp_target_override=analyst_target,
+            )
             tag_symbol(sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, sym, "buy", 0,
                       trade["context"]["current_price"], 0,

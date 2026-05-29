@@ -224,8 +224,15 @@ class AlpacaBroker:
         return False
 
     # ------------------------------------------------------------------ orders
-    def market_buy(self, symbol: str, notional: float, strategy: str = "manual") -> Optional[dict]:
-        """Buy $notional worth of symbol. Returns None if blocked by safety gates."""
+    def market_buy(self, symbol: str, notional: float, strategy: str = "manual",
+                   tp_target_override: Optional[float] = None,
+                   stop_override: Optional[float] = None) -> Optional[dict]:
+        """Buy $notional worth of symbol. Returns None if blocked by safety gates.
+
+        v74: After a successful submit, calls `record_entry` to persist a
+        positions_state row so trade_management can drive dollar-based stops
+        and TPs off durable state.
+        """
         if self._entry_blocked(symbol, "buy", strategy, notional):
             return None
         req = MarketOrderRequest(
@@ -238,6 +245,21 @@ class AlpacaBroker:
         # Invalidate dedup cache so subsequent calls see this new open order
         self._open_orders_cache_ts = 0.0
         logger.info(f"[{strategy}] BUY ${notional:.0f} {symbol} — order {order.id}")
+
+        # v74 — record positions_state row for this entry.
+        try:
+            est_price = _estimate_fill_price(order, symbol)
+            if est_price > 0:
+                qty = float(notional) / est_price
+                _record_entry_safe(
+                    symbol=symbol, side="long", qty=qty,
+                    entry_price=est_price, strategy=strategy,
+                    tp_target_override=tp_target_override,
+                    stop_override=stop_override,
+                )
+        except Exception as e:
+            logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
+
         return {"id": str(order.id), "symbol": symbol, "side": "buy", "notional": notional, "strategy": strategy}
 
     def market_sell(self, symbol: str, qty: float, strategy: str = "manual") -> Optional[dict]:
@@ -256,7 +278,10 @@ class AlpacaBroker:
         logger.info(f"[{strategy}] SELL {qty} {symbol} — order {order.id}")
         return {"id": str(order.id), "symbol": symbol, "side": "sell", "qty": qty, "strategy": strategy}
 
-    def submit_order(self, symbol: str, qty, side: str, type: str = "market", time_in_force: str = "day"):
+    def submit_order(self, symbol: str, qty, side: str, type: str = "market",
+                     time_in_force: str = "day", strategy_tag: Optional[str] = None,
+                     tp_target_override: Optional[float] = None,
+                     stop_override: Optional[float] = None):
         """
         Unified order submission wrapper used by event_driven, earnings_nlp, ts_momentum, vwap_reclaim.
         Translates keyword-arg call to the correct alpaca-py request objects.
@@ -310,6 +335,21 @@ class AlpacaBroker:
             result = self.trading.submit_order(req)
             self._open_orders_cache_ts = 0.0
             logger.info(f"[Broker] submit_order: {side} {qty} {symbol} → {result.id if result else 'no result'}")
+
+            # v74 — record positions_state row for this entry (BUY long, SELL short opens).
+            try:
+                est_price = _estimate_fill_price(result, symbol)
+                if est_price > 0:
+                    entry_side = "long" if order_side == OrderSide.BUY else "short"
+                    _record_entry_safe(
+                        symbol=symbol, side=entry_side, qty=float(qty),
+                        entry_price=est_price, strategy=strategy_tag or "unknown",
+                        tp_target_override=tp_target_override,
+                        stop_override=stop_override,
+                    )
+            except Exception as e:
+                logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
+
             return result
         except Exception as e:
             logger.error(f"[Broker] submit_order failed for {symbol}: {e}")
@@ -319,6 +359,17 @@ class AlpacaBroker:
         try:
             order = self.trading.close_position(symbol)
             logger.info(f"[{strategy}] CLOSE position {symbol}")
+            # v74 — drop the positions_state row alongside the close so trade_management
+            # callers don't all need to remember to clean up.
+            try:
+                from db import get_connection, delete_position_state
+                conn = get_connection()
+                try:
+                    delete_position_state(conn, symbol)
+                finally:
+                    conn.close()
+            except Exception as e:
+                logger.debug(f"[Broker] close_position state-cleanup skipped for {symbol}: {e}")
             return {"id": str(order.id), "symbol": symbol, "side": "sell", "strategy": strategy}
         except Exception as e:
             logger.warning(f"Could not close {symbol}: {e}")
@@ -375,6 +426,48 @@ class AlpacaBroker:
 
 
 # ------------------------------------------------------------------ helpers
+def _estimate_fill_price(order, symbol: str) -> float:
+    """Best-effort fill-price estimate for newly-submitted market orders.
+
+    Market orders typically return 'accepted' before fills land — read
+    filled_avg_price if Alpaca already populated it; otherwise fall back to
+    a yfinance fast_info lookup. Returns 0.0 if no price can be obtained.
+    """
+    try:
+        price = float(getattr(order, "filled_avg_price", 0) or 0)
+        if price > 0:
+            return price
+    except Exception:
+        pass
+    try:
+        import yfinance as _yf
+        fi = _yf.Ticker(symbol).fast_info
+        for attr in ("last_price", "regular_market_price"):
+            v = getattr(fi, attr, None)
+            if v and float(v) > 0:
+                return float(v)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _record_entry_safe(**kwargs) -> None:
+    """Lazy-import record_entry to avoid circular imports at module load."""
+    try:
+        from db import get_connection
+        from utils.entry_state import record_entry
+        conn = get_connection()
+        try:
+            record_entry(conn, None, **kwargs)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"[Broker] _record_entry_safe failed: {e}")
+
+
 _STRATEGY_TAGS: dict[str, str] = {}  # populated by strategies at runtime
 
 
