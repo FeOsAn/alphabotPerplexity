@@ -44,8 +44,18 @@ from utils.symbol_performance import update_symbol_performance, check_and_update
 logger = logging.getLogger("alphabot.trade_management")
 
 
+# ETFs and commodity funds don't have earnings calendars — skip to avoid 404 spam
+_ETF_PREFIXES = {"XL", "XL"}
+_NO_EARNINGS_SYMBOLS: set = {
+    "DBC", "EEM", "GLD", "SLV", "XLE", "XLK", "XLV", "XLF", "XLI", "XLB",
+    "XLU", "XLP", "XLY", "XLC", "XLRE", "SPY", "QQQ", "IWM", "DIA", "VXX",
+    "VIXY", "USO", "UNG", "IAU", "SIVR", "AGG", "TLT", "HYG", "LQD",
+}
+
 def _is_post_earnings_window(symbol: str, days: int = 2) -> bool:
     """Returns True if earnings occurred within the last `days` trading days."""
+    if symbol in _NO_EARNINGS_SYMBOLS:  # v77-fix: ETFs have no earnings calendar
+        return False
     try:
         import yfinance as yf, gc
         ticker = yf.Ticker(symbol)
@@ -1210,33 +1220,34 @@ def check_post_earnings_action(positions, broker: AlpacaBroker, db_conn):
 
             # Find most-recent earnings date in the past 0-2 days for this symbol.
             earn_date = None
-            try:
-                import yfinance as yf, gc as _gc
-                ticker = yf.Ticker(sym)
-                cal = ticker.calendar
-                raw_dates = []
-                if cal is None:
-                    pass
-                elif isinstance(cal, dict):
-                    ed = cal.get("Earnings Date", [])
-                    if ed:
-                        raw_dates = ed if isinstance(ed, list) else [ed]
-                elif hasattr(cal, "empty") and not cal.empty:
-                    if hasattr(cal, "columns") and "Earnings Date" in getattr(cal, "columns", []):
-                        raw_dates = cal["Earnings Date"].dropna().tolist()
-                    elif hasattr(cal, "index") and "Earnings Date" in getattr(cal, "index", []):
-                        val = cal.loc["Earnings Date"]
-                        raw_dates = val.tolist() if hasattr(val, "tolist") else [val]
-                for d in raw_dates:
-                    try:
-                        dd = d.date() if hasattr(d, "date") else d
-                        if (today - timedelta(days=2)) <= dd <= today:
-                            earn_date = dd
-                            break
-                    except Exception:
-                        continue
-            except Exception as e:
-                logger.debug(f"[PostEarnings] {sym} calendar fetch failed: {e}")
+            if sym not in _NO_EARNINGS_SYMBOLS:  # v77-fix: skip ETF calendar fetch
+                try:
+                    import yfinance as yf, gc as _gc
+                    ticker = yf.Ticker(sym)
+                    cal = ticker.calendar
+                    raw_dates = []
+                    if cal is None:
+                        pass
+                    elif isinstance(cal, dict):
+                        ed = cal.get("Earnings Date", [])
+                        if ed:
+                            raw_dates = ed if isinstance(ed, list) else [ed]
+                    elif hasattr(cal, "empty") and not cal.empty:
+                        if hasattr(cal, "columns") and "Earnings Date" in getattr(cal, "columns", []):
+                            raw_dates = cal["Earnings Date"].dropna().tolist()
+                        elif hasattr(cal, "index") and "Earnings Date" in getattr(cal, "index", []):
+                            val = cal.loc["Earnings Date"]
+                            raw_dates = val.tolist() if hasattr(val, "tolist") else [val]
+                    for d in raw_dates:
+                        try:
+                            dd = d.date() if hasattr(d, "date") else d
+                            if (today - timedelta(days=2)) <= dd <= today:
+                                earn_date = dd
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"[PostEarnings] {sym} calendar fetch failed: {e}")
 
             if earn_date is None:
                 continue

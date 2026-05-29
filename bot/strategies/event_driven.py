@@ -251,6 +251,7 @@ def run(broker, db_conn):
     Consume EVENT_QUEUE and process events.
     Called every strategy cycle from run_all_strategies().
     """
+    global _event_positions  # v77-fix: -= assignment makes Python treat as local without this
     # Circuit breaker gate
     try:
         from main import _circuit_breaker_active
