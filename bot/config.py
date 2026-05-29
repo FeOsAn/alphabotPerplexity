@@ -29,7 +29,16 @@ UNIVERSE = [
 # ============================================================
 MAX_TOTAL_POSITIONS = 15         # hard cap on total positions (across all strategies)
 STOP_LOSS_PCT = 0.05             # 5% stop loss per position
+ATR_STOP_MULT = 1.0          # v80: stop = max(STOP_LOSS_PCT, ATR_STOP_MULT × ATR/price)
+ATR_STOP_MAX_PCT = 0.12      # v80: cap ATR stop at 12% — never risk more than this
 TAKE_PROFIT_PCT = 0.20           # 20% take profit target
+
+# v80: dynamic vol_ratio threshold by VIX regime
+# VIX < 20 → 1.0 (calm trending market), VIX 20-30 → 1.5 (normal), VIX > 30 → 2.0 (high vol)
+MIN_VOL_RATIO = 1.5              # default / fallback
+VOL_RATIO_LOW_VIX  = 1.0        # VIX < 20
+VOL_RATIO_MID_VIX  = 1.5        # VIX 20–30
+VOL_RATIO_HIGH_VIX = 2.0        # VIX > 30
 
 # --- Conviction-based sizing (no hard slot caps) ---
 # Allocation tiers: score determines base % of portfolio

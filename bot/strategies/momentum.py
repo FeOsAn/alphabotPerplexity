@@ -250,8 +250,13 @@ def _passes_entry_filters(sig: dict) -> bool:
     if sig.get("rsi", 100) >= t["momentum_rsi_max"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= {t['momentum_rsi_max']} (overbought)")
         return False
-    if sig.get("vol_ratio", 0) < MIN_VOL_RATIO:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < {MIN_VOL_RATIO}x (volume surge required)")
+    try:
+        from utils.vix_threshold import get_vol_ratio_threshold
+        _vol_threshold = get_vol_ratio_threshold()
+    except Exception:
+        _vol_threshold = MIN_VOL_RATIO
+    if sig.get("vol_ratio", 0) < _vol_threshold:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < {_vol_threshold:.1f}x (VIX-adjusted threshold)")
         return False
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")

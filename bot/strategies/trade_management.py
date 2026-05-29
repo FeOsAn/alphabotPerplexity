@@ -302,7 +302,25 @@ def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, str
         from alpaca.trading.enums import OrderSide, TimeInForce
 
         base_stop_pct = _base_stop_for(strategy)
-        stop_price = round(entry_price * (1 - base_stop_pct), 2)
+
+        # v80: ATR-based stop — give each stock breathing room proportional to its volatility
+        try:
+            from config import ATR_STOP_MULT, ATR_STOP_MAX_PCT
+            atr_val = _get_current_atr(symbol)
+            if atr_val and entry_price > 0:
+                atr_pct = (atr_val * ATR_STOP_MULT) / entry_price
+                effective_stop_pct = min(max(base_stop_pct, atr_pct), ATR_STOP_MAX_PCT)
+                if effective_stop_pct != base_stop_pct:
+                    logger.info(
+                        f"[TM] {symbol}: ATR stop override — ATR={atr_val:.2f} "
+                        f"({atr_pct:.1%} of price) → stop widened from {base_stop_pct:.1%} to {effective_stop_pct:.1%}"
+                    )
+            else:
+                effective_stop_pct = base_stop_pct
+        except Exception:
+            effective_stop_pct = base_stop_pct
+
+        stop_price = round(entry_price * (1 - effective_stop_pct), 2) if qty >= 0 else round(entry_price * (1 + effective_stop_pct), 2)
 
         # For short positions qty will be negative — flip direction
         is_short = qty < 0
@@ -336,7 +354,7 @@ def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, str
 
         logger.info(
             f"[TM] Exchange stop placed: {symbol} stop=${stop_price:.2f} "
-            f"({base_stop_pct:.0%} below entry ${entry_price:.2f}) | order={order_id}"
+            f"({effective_stop_pct:.0%} below entry ${entry_price:.2f}) | order={order_id}"
         )
         return order_id
 
