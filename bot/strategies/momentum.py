@@ -33,6 +33,7 @@ STRATEGY_NAME = "momentum"
 
 MOMENTUM_REBALANCE_DAYS = 5    # rebalance weekly (every 5 trading days)
 STOP_LOSS_PCT = 0.06           # 6% trailing — looser for momentum
+MIN_VOL_RATIO = 1.5   # v76: volume surge required — 1.5-2.0x bucket best by backtest
 
 MOMENTUM_UNIVERSE = [
     # Mega-cap
@@ -241,8 +242,8 @@ def _passes_entry_filters(sig: dict) -> bool:
     if sig.get("rsi", 100) >= t["momentum_rsi_max"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — RSI={sig['rsi']:.1f} >= {t['momentum_rsi_max']} (overbought)")
         return False
-    if sig.get("vol_ratio", 0) < 0.8:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 0.8x")
+    if sig.get("vol_ratio", 0) < 1.5:
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < 1.5x (volume surge required)")
         return False
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")

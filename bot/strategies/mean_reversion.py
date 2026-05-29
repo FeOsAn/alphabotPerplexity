@@ -1,7 +1,7 @@
 """
 Strategy 2: Mean Reversion — RSI + Bollinger Bands + Volume Confirmation
 ------------------------------------------------------------------------
-Buy oversold stocks near lower Bollinger Band when RSI < 32 and volume is elevated.
+Buy oversold stocks near lower Bollinger Band when RSI < 25 and volume is elevated.
 Exit when price reverts to 20-day moving average or RSI > 65.
 Short-term hold: typically 5-15 days.
 
@@ -38,7 +38,7 @@ def _conviction_multiplier(rsi: float, vol_elevated: bool, vol_ratio: float) -> 
     elif rsi <= 28:
         return 1.0   # solidly oversold
     else:
-        return 0.75  # barely at threshold (RSI 28-32)
+        return 0.75  # barely at threshold (RSI 25-32)
 
 
 from db import log_trade, log_signal
@@ -234,6 +234,8 @@ def run(broker: AlpacaBroker, db_conn):
         if cash - notional < min_cash:
             continue
 
+        if sig["rsi"] < MR_RSI_OVERSOLD:
+            logger.info(f"[MR] {sym}: RSI={sig['rsi']:.1f} — EXTREME OVERSOLD signal (institutional-grade reversal, >{MR_RSI_OVERSOLD} threshold)")
         logger.info(f"[MR] ENTER {sym} — RSI: {sig['rsi']:.1f}, BB lower: {sig['bb_lower']:.2f}, vol_ratio: {sig.get('vol_ratio',1):.1f}x, conviction: {mult:.2f}x, notional: ${notional:.0f}")
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", sig["rsi"],
                    {"rsi": sig["rsi"], "bb_lower": sig["bb_lower"], "vol_elevated": int(sig["vol_elevated"]), "conviction": mult})

@@ -77,7 +77,7 @@ MOMENTUM_REBALANCE_DAYS = 21   # Rebalance every ~month (academic standard for 3
 
 # Mean Reversion strategy
 MR_RSI_PERIOD = 14
-MR_RSI_OVERSOLD = 32           # Buy signal threshold
+MR_RSI_OVERSOLD = 25           # v76: tightened — RSI<25 produces 2.495% avg 5d at 70.8% win rate vs 0.758% for RSI 25-32
 MR_RSI_OVERBOUGHT = 68         # Sell signal threshold
 MR_BB_PERIOD = 20
 MR_BB_STD = 2.0
