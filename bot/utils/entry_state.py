@@ -15,6 +15,32 @@ import pandas as pd
 logger = logging.getLogger("alphabot.entry_state")
 
 
+_STRATEGY_ATR_TIMEFRAME: dict[str, str] = {
+    "vwap_reclaim":        "15Min",
+    "breakout":            "15Min",
+    "event_driven":        "15Min",
+    "mean_reversion":      "15Min",
+    "options_flow":        "1Hour",
+    "ts_momentum":         "1Hour",
+    "squeeze_screener":    "1Hour",
+    "spy_dip":             "1Hour",
+    "short_hedge":         "1Hour",
+    "momentum":            "1Day",
+    "sector_rotation":     "1Day",
+    "trend_following":     "1Day",
+    "ai_research":         "1Day",
+    "insider_buying":      "1Day",
+    "earnings_prediction": "1Day",
+    "pairs_trading":       "1Day",
+    "default":             "1Day",
+}
+
+
+# (symbol, timeframe) -> (atr_value, fetched_at_timestamp)
+_atr_tf_cache: dict[tuple[str, str], tuple[float, float]] = {}
+_ATR_CACHE_TTL = 300  # seconds
+
+
 # (stop_atr_mult, tp_basis) per strategy. Stop is expressed as a multiple of
 # ATR(14); the side determines whether it sits below (long) or above (short) entry.
 _STRATEGY_RISK: dict[str, tuple[float, str]] = {
@@ -91,6 +117,51 @@ def _get_atr(symbol: str) -> float:
     return _local_atr(symbol)
 
 
+def _get_atr_for_timeframe(symbol: str, timeframe: str, entry_price: float) -> float:
+    """Fetch ATR(14) using the appropriate bar timeframe. Cached for 5 min."""
+    import requests
+    import pandas_ta as pta
+
+    cache_key = (symbol, timeframe)
+    cached = _atr_tf_cache.get(cache_key)
+    if cached and (time.time() - cached[1]) < _ATR_CACHE_TTL:
+        return cached[0]
+
+    fallback_pct = {"15Min": 0.005, "1Hour": 0.008, "1Day": 0.02}
+    fallback = entry_price * fallback_pct.get(timeframe, 0.02)
+
+    try:
+        url = f"https://data.alpaca.markets/v2/stocks/{symbol}/bars"
+        params = {
+            "timeframe": timeframe,
+            "limit": 20,
+            "feed": "iex",
+            "adjustment": "raw",
+        }
+        headers = {
+            "APCA-API-KEY-ID": "PKADXUOZZJ4XBCAQRB4KORUDEG",
+            "APCA-API-SECRET-KEY": "J91d12qXkkceyp51y7f4YyzVfKN1LbWupuPjP99WKJdR",
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        bars = resp.json().get("bars", [])
+        if len(bars) < 5:
+            return fallback
+        df = pd.DataFrame(bars)
+        df = df.rename(columns={"h": "high", "l": "low", "c": "close"})
+        atr_series = pta.atr(df["high"], df["low"], df["close"], length=min(14, len(df) - 1))
+        if atr_series is None or atr_series.dropna().empty:
+            return fallback
+        atr_val = float(atr_series.dropna().iloc[-1])
+        if atr_val <= 0:
+            return fallback
+        _atr_tf_cache[cache_key] = (atr_val, time.time())
+        return atr_val
+    except Exception as e:
+        logger.debug(f"[EntryState] ATR fetch failed for {symbol}/{timeframe}: {e}")
+        return fallback
+
+
 def _compute_tp_target(symbol: str, side: str, entry: float, initial_stop: float,
                        strategy: str, atr: float) -> Optional[float]:
     """Return the TP $-price, or None for strategies that don't use a fixed TP."""
@@ -161,7 +232,9 @@ def record_entry(conn, broker, *, symbol: str, side: str, qty: float,
         return
 
     try:
-        atr = _get_atr(symbol)
+        timeframe = _STRATEGY_ATR_TIMEFRAME.get(strategy, "1Day")
+        atr = _get_atr_for_timeframe(symbol, timeframe, entry_price)
+        logger.debug(f"[EntryState] {symbol} ({strategy}): ATR={atr:.4f} timeframe={timeframe}")
         if atr <= 0:
             atr = entry_price * 0.02  # 2% proxy
         stop_mult, tp_basis = _strategy_risk_profile(strategy)
