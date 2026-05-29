@@ -114,6 +114,37 @@ def init_db():
         conn.commit()
     except Exception:
         pass  # Column already exists
+
+    # v79 — per-symbol lifecycle state: TP order IDs, re-eval counter, entry date.
+    # Separate from positions_state so lifecycle state survives partial closes.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS position_state (
+            symbol          TEXT PRIMARY KEY,
+            tp1_price       REAL,
+            tp2_price       REAL,
+            tp1_order_id    TEXT,
+            tp2_order_id    TEXT,
+            tp1_hit         INTEGER DEFAULT 0,
+            reeval_count    INTEGER DEFAULT 0,
+            entry_date      TEXT
+        )
+    """)
+
+    # v79 — ALTER TABLE migrations for position_state (silent if already present)
+    for col_def in [
+        "tp1_price REAL", "tp2_price REAL",
+        "tp1_order_id TEXT", "tp2_order_id TEXT",
+        "tp1_hit INTEGER DEFAULT 0",
+        "reeval_count INTEGER DEFAULT 0",
+        "entry_date TEXT",
+    ]:
+        col_name = col_def.split()[0]
+        try:
+            conn.execute(f"ALTER TABLE position_state ADD COLUMN {col_def}")
+            conn.commit()
+        except Exception:
+            pass
+
     c.execute("""
         CREATE INDEX IF NOT EXISTS positions_state_strategy
             ON positions_state(strategy)

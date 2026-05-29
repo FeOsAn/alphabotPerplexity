@@ -25,7 +25,7 @@ DUST CLEANUP:
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 import pandas as pd
 from broker import AlpacaBroker
 from db import log_trade, get_position_state, delete_position_state, write_position_state
@@ -417,6 +417,83 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
     except Exception as e:
         logger.warning(f"[TM] update_exchange_stop failed for {symbol}: {e}")
         return None
+
+
+def place_exchange_tp(broker, symbol: str, tp1_price: float, tp2_price: float,
+                      qty: float, strategy: str = "unknown") -> Tuple[Optional[str], Optional[str]]:
+    """
+    Place TP1 (50% qty) and TP2 (remaining 50%) as GTC limit orders on Alpaca.
+    TP1 triggers partial take; after fill, bot places TP2 and moves stop to breakeven.
+
+    v79: called immediately after entry, alongside place_exchange_stop.
+    """
+    try:
+        from alpaca.trading.requests import LimitOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        is_short = qty < 0
+        abs_qty = abs(qty)
+        tp1_qty = round(abs_qty * 0.5, 6)
+        tp2_qty = round(abs_qty - tp1_qty, 6)
+        side = OrderSide.BUY if is_short else OrderSide.SELL
+
+        tp1_order_id = None
+        tp2_order_id = None
+
+        # Place TP1
+        if tp1_qty > 0:
+            req1 = LimitOrderRequest(
+                symbol=symbol, qty=tp1_qty, side=side,
+                limit_price=round(tp1_price, 2),
+                time_in_force=TimeInForce.GTC,
+            )
+            r1 = broker.trading.submit_order(req1)
+            tp1_order_id = str(r1.id) if r1 else None
+            logger.info(f"[TM] TP1 placed: {symbol} limit=${tp1_price:.2f} qty={tp1_qty} | order={tp1_order_id}")
+
+        # Place TP2
+        if tp2_qty > 0:
+            req2 = LimitOrderRequest(
+                symbol=symbol, qty=tp2_qty, side=side,
+                limit_price=round(tp2_price, 2),
+                time_in_force=TimeInForce.GTC,
+            )
+            r2 = broker.trading.submit_order(req2)
+            tp2_order_id = str(r2.id) if r2 else None
+            logger.info(f"[TM] TP2 placed: {symbol} limit=${tp2_price:.2f} qty={tp2_qty} | order={tp2_order_id}")
+
+        # Persist TP order IDs and entry date to position_state
+        try:
+            from db import get_connection as _gc
+            _conn = _gc()
+            try:
+                from datetime import datetime, timezone as _tz
+                entry_ts = datetime.now(_tz.utc).isoformat()
+                # Upsert position_state row
+                _conn.execute(
+                    """
+                    INSERT INTO position_state (symbol, tp1_price, tp2_price, tp1_order_id, tp2_order_id, entry_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        tp1_price=excluded.tp1_price,
+                        tp2_price=excluded.tp2_price,
+                        tp1_order_id=excluded.tp1_order_id,
+                        tp2_order_id=excluded.tp2_order_id,
+                        entry_date=COALESCE(entry_date, excluded.entry_date)
+                    """,
+                    (symbol, tp1_price, tp2_price, tp1_order_id, tp2_order_id, entry_ts)
+                )
+                _conn.commit()
+            finally:
+                _conn.close()
+        except Exception as _e:
+            logger.debug(f"[TM] Could not persist TP order IDs for {symbol}: {_e}")
+
+        return tp1_order_id, tp2_order_id
+
+    except Exception as e:
+        logger.warning(f"[TM] place_exchange_tp failed for {symbol}: {e}")
+        return None, None
 
 
 def _seed_legacy_position_state(conn, broker: AlpacaBroker, pos: dict) -> None:

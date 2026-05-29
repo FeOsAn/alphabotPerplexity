@@ -247,13 +247,38 @@ class AlpacaBroker:
     # ------------------------------------------------------------------ orders
     def market_buy(self, symbol: str, notional: float, strategy: str = "manual",
                    tp_target_override: Optional[float] = None,
-                   stop_override: Optional[float] = None) -> Optional[dict]:
+                   stop_override: Optional[float] = None,
+                   signal_score: float = 0.5,
+                   expected_rr: float = 2.0,
+                   db_conn_ref=None) -> Optional[dict]:
         """Buy $notional worth of symbol. Returns None if blocked by safety gates.
 
         v74: After a successful submit, calls `record_entry` to persist a
         positions_state row so trade_management can drive dollar-based stops
         and TPs off durable state.
+        v79: capital floor guard — 25% NAV cash floor with displacement engine.
         """
+        # v79: capital floor guard
+        try:
+            account = self.trading.get_account()
+            cash = float(account.cash)
+            pv = float(account.portfolio_value)
+            if pv > 0 and cash / pv < 0.25:
+                if float(signal_score) < 0.85:
+                    logger.info(f"[Broker] {symbol}: cash={cash/pv:.0%} < 25% floor, score={signal_score:.2f} < 0.85 — skipping")
+                    return None
+                # High conviction — try displacement
+                from strategies.position_lifecycle import check_capital_and_displace
+                signal_info = {"symbol": symbol, "strategy": strategy or "unknown",
+                               "score": signal_score, "expected_rr": expected_rr}
+                freed = check_capital_and_displace(self, db_conn_ref, signal_info)
+                if not freed:
+                    logger.info(f"[Broker] {symbol}: displacement failed — skipping entry")
+                    return None
+                import time as _t; _t.sleep(2)  # brief pause for fill
+        except Exception as _e:
+            logger.debug(f"[Broker] capital guard error: {_e}")
+
         if self._entry_blocked(symbol, "buy", strategy, notional):
             return None
         req = MarketOrderRequest(
@@ -289,6 +314,17 @@ class AlpacaBroker:
             place_exchange_stop(self, symbol, filled_price, filled_qty, strategy=strategy)
         except Exception as _e:
             logger.warning(f"[Broker] Could not place exchange stop for {symbol}: {_e}")
+
+        # v79: place exchange-side TP1 and TP2 limit orders
+        try:
+            from strategies.tp_engine import calculate_tp_levels
+            from strategies.trade_management import place_exchange_tp
+            tp1, tp2 = calculate_tp_levels(symbol, filled_price, strategy or "momentum",
+                                            is_short=False, signal_score=signal_score)
+            if tp1 and tp2:
+                place_exchange_tp(self, symbol, tp1, tp2, filled_qty, strategy or "unknown")
+        except Exception as _e:
+            logger.warning(f"[Broker] Could not place exchange TP for {symbol}: {_e}")
 
         return {"id": str(order.id), "symbol": symbol, "side": "buy", "notional": notional, "strategy": strategy}
 
@@ -407,6 +443,19 @@ class AlpacaBroker:
                     place_exchange_stop(self, symbol, so_filled_price, so_filled_qty, strategy=strategy_tag or "unknown")
                 except Exception as _e:
                     logger.warning(f"[Broker] Could not place exchange stop for {symbol}: {_e}")
+
+                # v79: place exchange-side TP1 and TP2 limit orders
+                try:
+                    from strategies.tp_engine import calculate_tp_levels
+                    from strategies.trade_management import place_exchange_tp
+                    tp1, tp2 = calculate_tp_levels(
+                        symbol, so_filled_price, strategy_tag or "momentum",
+                        is_short=False, signal_score=0.5
+                    )
+                    if tp1 and tp2:
+                        place_exchange_tp(self, symbol, tp1, tp2, so_filled_qty, strategy_tag or "unknown")
+                except Exception as _e:
+                    logger.warning(f"[Broker] Could not place exchange TP for {symbol}: {_e}")
 
             return result
         except Exception as e:

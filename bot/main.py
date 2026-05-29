@@ -385,6 +385,20 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception:
             pass
 
+        # v79: sync exchange-filled orders (stops/TPs that filled without bot knowing)
+        try:
+            from strategies.position_lifecycle import sync_exchange_fills
+            sync_exchange_fills(broker, db_conn)
+        except Exception as _e:
+            logger.debug(f"[Main] GTC fill sync error: {_e}")
+
+        # v79: stale position re-evaluator
+        try:
+            from strategies.position_lifecycle import check_stale_positions
+            check_stale_positions(broker, db_conn)
+        except Exception as _e:
+            logger.debug(f"[Main] Stale position check error: {_e}")
+
         now_utc = datetime.now(timezone.utc)
         today_utc = now_utc.strftime("%Y-%m-%d")
         weekday = now_utc.weekday()
