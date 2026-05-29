@@ -39,6 +39,8 @@ MIN_VOL_RATIO = 1.5              # default / fallback
 VOL_RATIO_LOW_VIX  = 1.0        # VIX < 20
 VOL_RATIO_MID_VIX  = 1.5        # VIX 20–30
 VOL_RATIO_HIGH_VIX = 2.0        # VIX > 30
+VOL_RATIO_SCORE_OVERRIDE = 0.75  # v80.1: floor for high-conviction score override (score > 3.5 + above MA50)
+SCORE_OVERRIDE_THRESHOLD = 3.5   # v80.1: momentum score threshold to trigger vol floor override
 
 # --- Conviction-based sizing (no hard slot caps) ---
 # Allocation tiers: score determines base % of portfolio

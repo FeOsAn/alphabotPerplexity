@@ -255,8 +255,19 @@ def _passes_entry_filters(sig: dict) -> bool:
         _vol_threshold = get_vol_ratio_threshold()
     except Exception:
         _vol_threshold = MIN_VOL_RATIO
+
+    # v80.1: score override — exceptional momentum signals bypass the vol floor
+    # If score > 3.5 AND price > MA50, lower the floor to 0.75x
+    # Captures strong trending names that move without volume surges (DELL, AMD pattern)
+    _score = sig.get("score", 0) or sig.get("momentum_score", 0)
+    _above_ma50 = sig.get("price", 0) > sig.get("ma50", 0)
+    from config import VOL_RATIO_SCORE_OVERRIDE, SCORE_OVERRIDE_THRESHOLD
+    if _score > SCORE_OVERRIDE_THRESHOLD and _above_ma50:
+        _vol_threshold = min(_vol_threshold, VOL_RATIO_SCORE_OVERRIDE)
+        logger.debug(f"[MOM] {sig['symbol']}: score override — score={_score:.2f} > 3.5 + above MA50, vol floor lowered to 0.75x")
+
     if sig.get("vol_ratio", 0) < _vol_threshold:
-        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < {_vol_threshold:.1f}x (VIX-adjusted threshold)")
+        logger.debug(f"[MOM] {sig['symbol']}: filtered — vol_ratio={sig['vol_ratio']:.2f} < {_vol_threshold:.2f}x (VIX-adjusted threshold)")
         return False
     if sig.get("score", 0) < t["momentum_score_min"]:
         logger.debug(f"[MOM] {sig['symbol']}: filtered — score={sig['score']:.4f} < {t['momentum_score_min']}")
