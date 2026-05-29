@@ -103,9 +103,17 @@ def init_db():
             entry_time    TEXT NOT NULL,
             tp_basis      TEXT,
             initial_risk  REAL NOT NULL,
+            stop_order_id TEXT,
             updated_at    TEXT DEFAULT (datetime('now'))
         )
     """)
+
+    # v78: add stop_order_id column if not present (existing deployments)
+    try:
+        conn.execute("ALTER TABLE positions_state ADD COLUMN stop_order_id TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
     c.execute("""
         CREATE INDEX IF NOT EXISTS positions_state_strategy
             ON positions_state(strategy)

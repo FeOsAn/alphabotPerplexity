@@ -25,6 +25,7 @@ DUST CLEANUP:
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 import pandas as pd
 from broker import AlpacaBroker
 from db import log_trade, get_position_state, delete_position_state, write_position_state
@@ -286,6 +287,136 @@ def _ratchet_stop_price(sym: str, ps: dict, current_price: float) -> float:
 
     _ratchet_stops_dollar[sym] = new_stop
     return new_stop
+
+
+# ── Exchange-side stop order management ──────────────────────────────────────
+
+def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, strategy: str = "unknown") -> Optional[str]:
+    """
+    Place a hard stop-loss order on Alpaca immediately after entry.
+    Returns the Alpaca order ID of the stop, or None on failure.
+    Stored in positions_state so it can be cancelled/replaced when ratchet moves up.
+    """
+    try:
+        from alpaca.trading.requests import StopOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        base_stop_pct = _base_stop_for(strategy)
+        stop_price = round(entry_price * (1 - base_stop_pct), 2)
+
+        # For short positions qty will be negative — flip direction
+        is_short = qty < 0
+        side = OrderSide.BUY if is_short else OrderSide.SELL
+        abs_qty = abs(qty)
+
+        req = StopOrderRequest(
+            symbol=symbol,
+            qty=abs_qty,
+            side=side,
+            stop_price=stop_price,
+            time_in_force=TimeInForce.GTC,  # GTC so it survives overnight
+        )
+        result = broker.trading.submit_order(req)
+        order_id = str(result.id) if result else None
+
+        # Persist the stop order ID so we can replace it when the ratchet moves
+        try:
+            from db import get_connection as _gc
+            _conn = _gc()
+            try:
+                _conn.execute(
+                    "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
+                    (order_id, symbol)
+                )
+                _conn.commit()
+            finally:
+                _conn.close()
+        except Exception as _e:
+            logger.debug(f"[TM] Could not persist stop_order_id for {symbol}: {_e}")
+
+        logger.info(
+            f"[TM] Exchange stop placed: {symbol} stop=${stop_price:.2f} "
+            f"({base_stop_pct:.0%} below entry ${entry_price:.2f}) | order={order_id}"
+        )
+        return order_id
+
+    except Exception as e:
+        logger.warning(f"[TM] place_exchange_stop failed for {symbol}: {e}")
+        return None
+
+
+def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional[str]:
+    """
+    Replace the existing exchange stop order with a new (higher) stop price.
+    Called by the ratchet logic when the stop moves up.
+    Returns the new order ID or None on failure.
+    """
+    try:
+        from alpaca.trading.requests import StopOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        # Get the current stop order ID and position details from DB
+        from db import get_connection as _gc
+        _conn = _gc()
+        try:
+            row = _conn.execute(
+                "SELECT stop_order_id, qty, side FROM positions_state WHERE symbol=?",
+                (symbol,)
+            ).fetchone()
+        finally:
+            _conn.close()
+
+        if not row:
+            logger.debug(f"[TM] update_exchange_stop: no positions_state row for {symbol}")
+            return None
+
+        old_order_id, qty, side = row["stop_order_id"], row["qty"], row["side"]
+
+        # Cancel old stop if exists
+        if old_order_id:
+            try:
+                broker.trading.cancel_order_by_id(old_order_id)
+                logger.debug(f"[TM] Cancelled old stop {old_order_id} for {symbol}")
+            except Exception as _ce:
+                logger.debug(f"[TM] Could not cancel old stop for {symbol}: {_ce}")
+
+        # Place new stop
+        is_short = (side == "short") if side else (qty and float(qty) < 0)
+        order_side = OrderSide.BUY if is_short else OrderSide.SELL
+        abs_qty = abs(float(qty)) if qty else 0
+        if abs_qty <= 0:
+            return None
+
+        req = StopOrderRequest(
+            symbol=symbol,
+            qty=abs_qty,
+            side=order_side,
+            stop_price=round(new_stop_price, 2),
+            time_in_force=TimeInForce.GTC,
+        )
+        result = broker.trading.submit_order(req)
+        new_order_id = str(result.id) if result else None
+
+        # Update DB
+        from db import get_connection as _gc2
+        _conn2 = _gc2()
+        try:
+            _conn2.execute(
+                "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
+                (new_order_id, symbol)
+            )
+            _conn2.commit()
+        finally:
+            _conn2.close()
+
+        logger.info(
+            f"[TM] Exchange stop ratcheted: {symbol} → new stop=${new_stop_price:.2f} | order={new_order_id}"
+        )
+        return new_order_id
+
+    except Exception as e:
+        logger.warning(f"[TM] update_exchange_stop failed for {symbol}: {e}")
+        return None
 
 
 def _seed_legacy_position_state(conn, broker: AlpacaBroker, pos: dict) -> None:
@@ -815,12 +946,24 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
                     existing = _ratchet_stops_dollar.get(sym, 0.0)
                     new_stop = max(trail_stop, existing)  # never loosen for longs
                     _ratchet_stops_dollar[sym] = new_stop
+                    # v78: sync ratchet to exchange-side stop order
+                    if new_stop > existing:
+                        try:
+                            update_exchange_stop(broker, sym, new_stop)
+                        except Exception as _e:
+                            logger.debug(f"[TM] exchange stop update failed for {sym}: {_e}")
                     fired = current_price <= new_stop
                 else:  # short
                     trail_stop = new_peak * (1 + trail_dist)
                     existing = _ratchet_stops_dollar.get(sym, float("inf"))
                     new_stop = min(trail_stop, existing)  # tighten down for shorts
                     _ratchet_stops_dollar[sym] = new_stop
+                    # v78: sync ratchet to exchange-side stop order
+                    if new_stop < existing:
+                        try:
+                            update_exchange_stop(broker, sym, new_stop)
+                        except Exception as _e:
+                            logger.debug(f"[TM] exchange stop update failed for {sym}: {_e}")
                     fired = current_price >= new_stop
 
                 if fired:
@@ -875,9 +1018,21 @@ def run_global_trade_management(broker: AlpacaBroker, db_conn):
             continue
 
         try:
+            _prev_stop = _ratchet_stops_dollar.get(sym)
             effective_stop = _ratchet_stop_price(sym, ps, current_price)
             side_ps = ps["side"]
             stop_hit = (current_price <= effective_stop) if side_ps == "long" else (current_price >= effective_stop)
+            # v78: sync ratchet to exchange-side stop order when stop moves
+            _moved = (
+                _prev_stop is None or
+                (side_ps == "long" and effective_stop > _prev_stop) or
+                (side_ps == "short" and effective_stop < _prev_stop)
+            )
+            if _moved and not stop_hit:
+                try:
+                    update_exchange_stop(broker, sym, effective_stop)
+                except Exception as _e:
+                    logger.debug(f"[TM] exchange stop update failed for {sym}: {_e}")
         except Exception as e:
             logger.error(f"[TM] ratchet-stop calc failed for {sym}: {e}")
             stop_hit = False

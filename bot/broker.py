@@ -268,18 +268,27 @@ class AlpacaBroker:
         logger.info(f"[{strategy}] BUY ${notional:.0f} {symbol} — order {order.id}")
 
         # v74 — record positions_state row for this entry.
+        filled_price = 0.0
+        filled_qty = 0.0
         try:
-            est_price = _estimate_fill_price(order, symbol)
-            if est_price > 0:
-                qty = float(notional) / est_price
+            filled_price = _estimate_fill_price(order, symbol)
+            if filled_price > 0:
+                filled_qty = float(notional) / filled_price
                 _record_entry_safe(
-                    symbol=symbol, side="long", qty=qty,
-                    entry_price=est_price, strategy=strategy,
+                    symbol=symbol, side="long", qty=filled_qty,
+                    entry_price=filled_price, strategy=strategy,
                     tp_target_override=tp_target_override,
                     stop_override=stop_override,
                 )
         except Exception as e:
             logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
+
+        # v78: place exchange-side stop order immediately after fill
+        try:
+            from strategies.trade_management import place_exchange_stop
+            place_exchange_stop(self, symbol, filled_price, filled_qty, strategy=strategy)
+        except Exception as _e:
+            logger.warning(f"[Broker] Could not place exchange stop for {symbol}: {_e}")
 
         return {"id": str(order.id), "symbol": symbol, "side": "buy", "notional": notional, "strategy": strategy}
 
@@ -376,18 +385,28 @@ class AlpacaBroker:
             logger.info(f"[Broker] submit_order: {side} {qty} {symbol} → {result.id if result else 'no result'}")
 
             # v74 — record positions_state row for this entry (BUY long, SELL short opens).
+            so_filled_price = 0.0
+            so_filled_qty = float(qty)
+            so_entry_side = "long" if order_side == OrderSide.BUY else "short"
             try:
-                est_price = _estimate_fill_price(result, symbol)
-                if est_price > 0:
-                    entry_side = "long" if order_side == OrderSide.BUY else "short"
+                so_filled_price = _estimate_fill_price(result, symbol)
+                if so_filled_price > 0:
                     _record_entry_safe(
-                        symbol=symbol, side=entry_side, qty=float(qty),
-                        entry_price=est_price, strategy=strategy_tag or "unknown",
+                        symbol=symbol, side=so_entry_side, qty=so_filled_qty,
+                        entry_price=so_filled_price, strategy=strategy_tag or "unknown",
                         tp_target_override=tp_target_override,
                         stop_override=stop_override,
                     )
             except Exception as e:
                 logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
+
+            # v78: place exchange-side stop order immediately after fill (BUY-side only)
+            if normalized_side == "buy":
+                try:
+                    from strategies.trade_management import place_exchange_stop
+                    place_exchange_stop(self, symbol, so_filled_price, so_filled_qty, strategy=strategy_tag or "unknown")
+                except Exception as _e:
+                    logger.warning(f"[Broker] Could not place exchange stop for {symbol}: {_e}")
 
             return result
         except Exception as e:
