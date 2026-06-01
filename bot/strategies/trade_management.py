@@ -325,7 +325,11 @@ def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, str
         # For short positions qty will be negative — flip direction
         is_short = qty < 0
         side = OrderSide.BUY if is_short else OrderSide.SELL
-        abs_qty = abs(qty)
+        # v80-fix: Alpaca stop orders require whole-share qty (no fractional stops)
+        abs_qty = int(abs(qty))
+        if abs_qty <= 0:
+            logger.debug(f"[TM] {symbol}: qty rounds to 0, skipping stop placement")
+            return None
 
         req = StopOrderRequest(
             symbol=symbol,
@@ -390,18 +394,36 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
 
         old_order_id, qty, side = row["stop_order_id"], row["qty"], row["side"]
 
-        # Cancel old stop if exists
+        # Cancel old stop — try stored order ID first, then scan open orders as fallback
         if old_order_id:
             try:
                 broker.trading.cancel_order_by_id(old_order_id)
                 logger.debug(f"[TM] Cancelled old stop {old_order_id} for {symbol}")
             except Exception as _ce:
-                logger.debug(f"[TM] Could not cancel old stop for {symbol}: {_ce}")
+                logger.debug(f"[TM] Could not cancel stored stop for {symbol}: {_ce}")
+        else:
+            # v80-fix: no stop_order_id in DB (pre-v78 position or upsert race)
+            # Scan all open orders for this symbol and cancel any stops
+            try:
+                open_orders = broker.trading.get_orders(filter={"symbols": [symbol], "status": "open"})
+                for o in (open_orders or []):
+                    if getattr(o, "order_type", "") == "stop":
+                        try:
+                            broker.trading.cancel_order_by_id(str(o.id))
+                            logger.debug(f"[TM] Cancelled orphan stop {o.id} for {symbol}")
+                        except Exception:
+                            pass
+            except Exception as _fe:
+                logger.debug(f"[TM] Could not scan open orders for {symbol}: {_fe}")
 
         # Place new stop
         is_short = (side == "short") if side else (qty and float(qty) < 0)
         order_side = OrderSide.BUY if is_short else OrderSide.SELL
         abs_qty = abs(float(qty)) if qty else 0
+        if abs_qty <= 0:
+            return None
+        # v80-fix: Alpaca stop orders require whole-share qty (no fractional stops)
+        abs_qty = int(abs_qty)
         if abs_qty <= 0:
             return None
 
