@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v81"
+VERSION = "v82"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -76,6 +76,7 @@ from strategies.trade_management import (
     run_trade_management,
     apply_earnings_stop_tightening,
     check_overnight_exit,
+    migrate_missing_brackets,
 )
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
@@ -774,6 +775,15 @@ def main():
         restore_trade_management_state(broker, db_conn)
     except Exception as e:
         logger.warning(f"[Startup] trade_management restore failed: {e}")
+
+    # v82: scan all open positions and place any missing OCO brackets
+    # Runs every restart — idempotent if brackets are already live.
+    try:
+        n = migrate_missing_brackets(broker)
+        if n:
+            logger.info(f"[Startup] migrate_missing_brackets: placed {n} OCO bracket(s)")
+    except Exception as e:
+        logger.warning(f"[Startup] migrate_missing_brackets failed: {e}")
 
     logger.info("[Startup] NOW flagged for manual post-earnings review")
 

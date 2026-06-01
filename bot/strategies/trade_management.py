@@ -446,6 +446,7 @@ def place_bracket_orders(
                 limit_price=round(tp2, 2),
                 time_in_force=TimeInForce.GTC,
                 order_class=OrderClass.OCO,
+                take_profit=TakeProfitRequest(limit_price=round(tp2, 2)),
                 stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
             )
             oco_result = broker.trading.submit_order(oco_req)
@@ -608,6 +609,7 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
                     limit_price=round(tp2_price, 2),
                     time_in_force=TimeInForce.GTC,
                     order_class=OrderClass.OCO,
+                    take_profit=TakeProfitRequest(limit_price=round(tp2_price, 2)),
                     stop_loss=StopLossRequest(stop_price=round(new_stop_price, 2)),
                 )
                 new_result = broker.trading.submit_order(new_req)
@@ -1944,3 +1946,173 @@ def run_trade_management(broker: AlpacaBroker, db_conn):
         logger.error(f"[TradeMgt] post-earnings review failed: {e}", exc_info=True)
     # Then normal global trade management (trailing stops + partial takes).
     run_global_trade_management(broker, db_conn)
+
+
+def migrate_missing_brackets(broker) -> int:
+    """
+    v82 startup migration: scan all open positions and place any missing OCO brackets.
+
+    For every position that has a TP2 in position_state but NO live OCO order:
+      - Place OCO bracket (TP2 limit + stop) for bracket_qty shares
+      - Update position_state with the new order ID
+
+    Safe to call multiple times — idempotent if brackets are already in place.
+    Returns the number of OCO brackets placed.
+    """
+    from alpaca.trading.requests import (
+        LimitOrderRequest, TakeProfitRequest, StopLossRequest, OrderClass as AlpacaOrderClass
+    )
+    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+    from db import get_connection as _gc
+
+    logger.info("[Migrate] migrate_missing_brackets: scanning positions...")
+    placed = 0
+    errors = 0
+
+    try:
+        positions = broker.trading.get_all_positions()
+    except Exception as e:
+        logger.error(f"[Migrate] Could not fetch positions: {e}")
+        return 0
+
+    # Build set of symbols with a live OCO order
+    try:
+        open_orders = broker.trading.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        )
+    except Exception as e:
+        logger.error(f"[Migrate] Could not fetch open orders: {e}")
+        return 0
+
+    oco_symbols = set()
+    for o in (open_orders or []):
+        oclass = str(getattr(o, "order_class", ""))
+        if "oco" in oclass.lower():
+            oco_symbols.add(o.symbol)
+    logger.info(f"[Migrate] Symbols with live OCO: {sorted(oco_symbols)}")
+
+    for pos in positions:
+        sym = pos.symbol
+        if sym in oco_symbols:
+            logger.debug(f"[Migrate] {sym}: OCO already live, skipping")
+            continue
+
+        try:
+            abs_qty = int(abs(float(pos.qty)))
+            side = pos.side  # "long" or "short"
+            avg_entry = float(pos.avg_entry_price)
+            is_short = (str(side) == "short")
+            order_side = OrderSide.BUY if is_short else OrderSide.SELL
+
+            # Load TP2 and stop from position_state / positions_state DB tables
+            _conn = _gc()
+            try:
+                ps_row = _conn.execute(
+                    "SELECT tp2_price, tp2_order_id FROM position_state WHERE symbol=?",
+                    (sym,)
+                ).fetchone()
+                stop_row = _conn.execute(
+                    "SELECT stop_order_id FROM positions_state WHERE symbol=?",
+                    (sym,)
+                ).fetchone()
+                stop_init_row = _conn.execute(
+                    "SELECT initial_stop FROM positions_state WHERE symbol=?",
+                    (sym,)
+                ).fetchone()
+            finally:
+                _conn.close()
+
+            tp2 = float(ps_row["tp2_price"]) if ps_row and ps_row["tp2_price"] else None
+
+            if not tp2:
+                # No TP2 on record — strategy may not use fixed TPs (sector_rotation etc)
+                # Check if there's even a plain stop live; if not, place one
+                has_stop = any(
+                    str(getattr(o, "order_type", "")) in ("stop", "stop_limit")
+                    for o in open_orders if o.symbol == sym
+                )
+                if not has_stop:
+                    # Place a plain stop using ATR-based calc
+                    stop_price = _calc_stop_price(sym, avg_entry, float(pos.qty), "unknown")
+                    try:
+                        from alpaca.trading.requests import StopOrderRequest
+                        stop_req = StopOrderRequest(
+                            symbol=sym,
+                            qty=abs_qty,
+                            side=order_side,
+                            stop_price=round(stop_price, 2),
+                            time_in_force=TimeInForce.GTC,
+                        )
+                        result = broker.trading.submit_order(stop_req)
+                        logger.warning(
+                            f"[Migrate] {sym}: no TP2, placed emergency plain stop "
+                            f"@ ${stop_price:.2f} (id={result.id})"
+                        )
+                        placed += 1
+                    except Exception as _e:
+                        logger.error(f"[Migrate] {sym}: plain stop placement failed: {_e}")
+                        errors += 1
+                continue
+
+            # Derive bracket_qty (same split logic as place_bracket_orders)
+            if abs_qty == 1:
+                bracket_qty = 1
+            else:
+                tp1_qty = abs_qty // 2
+                bracket_qty = abs_qty - tp1_qty
+
+            # Derive stop price: prefer DB, then recalculate
+            stop_price = None
+            if stop_init_row and stop_init_row["initial_stop"]:
+                stop_price = float(stop_init_row["initial_stop"])
+            if not stop_price or stop_price <= 0:
+                stop_price = _calc_stop_price(sym, avg_entry, float(pos.qty), "unknown")
+
+            logger.info(
+                f"[Migrate] {sym}: placing OCO bracket — "
+                f"{bracket_qty}sh TP2=${tp2:.2f} stop=${stop_price:.2f}"
+            )
+
+            oco_req = LimitOrderRequest(
+                symbol=sym,
+                qty=bracket_qty,
+                side=order_side,
+                limit_price=round(tp2, 2),
+                time_in_force=TimeInForce.GTC,
+                order_class=AlpacaOrderClass.OCO,
+                take_profit=TakeProfitRequest(limit_price=round(tp2, 2)),
+                stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+            )
+            result = broker.trading.submit_order(oco_req)
+            new_id = str(result.id)
+            logger.info(f"[Migrate] {sym}: OCO placed ✓ id={new_id}")
+            placed += 1
+
+            # Persist new OCO order ID
+            try:
+                _conn2 = _gc()
+                try:
+                    _conn2.execute(
+                        "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
+                        (new_id, sym)
+                    )
+                    _conn2.execute(
+                        "UPDATE position_state SET tp2_order_id=? WHERE symbol=?",
+                        (new_id, sym)
+                    )
+                    _conn2.commit()
+                finally:
+                    _conn2.close()
+            except Exception as _dbe:
+                logger.debug(f"[Migrate] {sym}: DB update failed: {_dbe}")
+
+        except Exception as e:
+            logger.error(f"[Migrate] {sym}: unexpected error: {e}", exc_info=True)
+            errors += 1
+
+    logger.info(
+        f"[Migrate] migrate_missing_brackets complete — "
+        f"{placed} OCO bracket(s) placed, {errors} error(s)"
+    )
+    return placed
