@@ -308,23 +308,17 @@ class AlpacaBroker:
         except Exception as e:
             logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
 
-        # v78: place exchange-side stop order immediately after fill
+        # v81: place OCO bracket (TP1 limit + OCO stop/TP2) immediately after fill
         try:
-            from strategies.trade_management import place_exchange_stop
-            place_exchange_stop(self, symbol, filled_price, filled_qty, strategy=strategy)
+            from strategies.trade_management import place_bracket_orders
+            place_bracket_orders(
+                self, symbol, filled_price, filled_qty,
+                strategy=strategy or "momentum",
+                signal_score=signal_score,
+                is_short=False,
+            )
         except Exception as _e:
-            logger.warning(f"[Broker] Could not place exchange stop for {symbol}: {_e}")
-
-        # v79: place exchange-side TP1 and TP2 limit orders
-        try:
-            from strategies.tp_engine import calculate_tp_levels
-            from strategies.trade_management import place_exchange_tp
-            tp1, tp2 = calculate_tp_levels(symbol, filled_price, strategy or "momentum",
-                                            is_short=False, signal_score=signal_score)
-            if tp1 and tp2:
-                place_exchange_tp(self, symbol, tp1, tp2, filled_qty, strategy or "unknown")
-        except Exception as _e:
-            logger.warning(f"[Broker] Could not place exchange TP for {symbol}: {_e}")
+            logger.warning(f"[Broker] Could not place bracket orders for {symbol}: {_e}")
 
         return {"id": str(order.id), "symbol": symbol, "side": "buy", "notional": notional, "strategy": strategy}
 
@@ -436,26 +430,19 @@ class AlpacaBroker:
             except Exception as e:
                 logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
 
-            # v78: place exchange-side stop order immediately after fill (BUY-side only)
+            # v81: place OCO bracket (TP1 limit + OCO stop/TP2) immediately after fill (BUY-side only)
             if normalized_side == "buy":
                 try:
-                    from strategies.trade_management import place_exchange_stop
-                    place_exchange_stop(self, symbol, so_filled_price, so_filled_qty, strategy=strategy_tag or "unknown")
-                except Exception as _e:
-                    logger.warning(f"[Broker] Could not place exchange stop for {symbol}: {_e}")
-
-                # v79: place exchange-side TP1 and TP2 limit orders
-                try:
-                    from strategies.tp_engine import calculate_tp_levels
-                    from strategies.trade_management import place_exchange_tp
-                    tp1, tp2 = calculate_tp_levels(
-                        symbol, so_filled_price, strategy_tag or "momentum",
-                        is_short=False, signal_score=0.5
+                    from strategies.trade_management import place_bracket_orders
+                    is_so_short = so_entry_side == "short"
+                    place_bracket_orders(
+                        self, symbol, so_filled_price, so_filled_qty,
+                        strategy=strategy_tag or "momentum",
+                        signal_score=0.5,
+                        is_short=is_so_short,
                     )
-                    if tp1 and tp2:
-                        place_exchange_tp(self, symbol, tp1, tp2, so_filled_qty, strategy_tag or "unknown")
                 except Exception as _e:
-                    logger.warning(f"[Broker] Could not place exchange TP for {symbol}: {_e}")
+                    logger.warning(f"[Broker] Could not place bracket orders for {symbol}: {_e}")
 
             return result
         except Exception as e:

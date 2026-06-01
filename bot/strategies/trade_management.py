@@ -291,57 +291,53 @@ def _ratchet_stop_price(sym: str, ps: dict, current_price: float) -> float:
 
 # ── Exchange-side stop order management ──────────────────────────────────────
 
+def _calc_stop_price(symbol: str, entry_price: float, qty: float, strategy: str) -> float:
+    """Calculate the initial stop price for a position (used by both stop and bracket placement)."""
+    base_stop_pct = _base_stop_for(strategy)
+    try:
+        from config import ATR_STOP_MULT, ATR_STOP_MAX_PCT
+        atr_val = _get_current_atr(symbol)
+        if atr_val and entry_price > 0:
+            atr_pct = (atr_val * ATR_STOP_MULT) / entry_price
+            effective_stop_pct = min(max(base_stop_pct, atr_pct), ATR_STOP_MAX_PCT)
+            if effective_stop_pct != base_stop_pct:
+                logger.info(
+                    f"[TM] {symbol}: ATR stop override — ATR={atr_val:.2f} "
+                    f"({atr_pct:.1%} of price) → stop widened from {base_stop_pct:.1%} to {effective_stop_pct:.1%}"
+                )
+        else:
+            effective_stop_pct = base_stop_pct
+    except Exception:
+        effective_stop_pct = base_stop_pct
+    is_short = qty < 0
+    return round(entry_price * (1 + effective_stop_pct if is_short else 1 - effective_stop_pct), 2)
+
+
 def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, strategy: str = "unknown") -> Optional[str]:
     """
-    Place a hard stop-loss order on Alpaca immediately after entry.
-    Returns the Alpaca order ID of the stop, or None on failure.
-    Stored in positions_state so it can be cancelled/replaced when ratchet moves up.
+    v81: DEPRECATED for new entries — use place_bracket_orders() instead.
+    Kept for backwards compatibility (called by some legacy paths).
+    Places a plain GTC stop covering the full integer qty.
     """
     try:
         from alpaca.trading.requests import StopOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
-        base_stop_pct = _base_stop_for(strategy)
-
-        # v80: ATR-based stop — give each stock breathing room proportional to its volatility
-        try:
-            from config import ATR_STOP_MULT, ATR_STOP_MAX_PCT
-            atr_val = _get_current_atr(symbol)
-            if atr_val and entry_price > 0:
-                atr_pct = (atr_val * ATR_STOP_MULT) / entry_price
-                effective_stop_pct = min(max(base_stop_pct, atr_pct), ATR_STOP_MAX_PCT)
-                if effective_stop_pct != base_stop_pct:
-                    logger.info(
-                        f"[TM] {symbol}: ATR stop override — ATR={atr_val:.2f} "
-                        f"({atr_pct:.1%} of price) → stop widened from {base_stop_pct:.1%} to {effective_stop_pct:.1%}"
-                    )
-            else:
-                effective_stop_pct = base_stop_pct
-        except Exception:
-            effective_stop_pct = base_stop_pct
-
-        stop_price = round(entry_price * (1 - effective_stop_pct), 2) if qty >= 0 else round(entry_price * (1 + effective_stop_pct), 2)
-
-        # For short positions qty will be negative — flip direction
+        stop_price = _calc_stop_price(symbol, entry_price, qty, strategy)
         is_short = qty < 0
         side = OrderSide.BUY if is_short else OrderSide.SELL
-        # v80-fix: Alpaca stop orders require whole-share qty (no fractional stops)
         abs_qty = int(abs(qty))
         if abs_qty <= 0:
             logger.debug(f"[TM] {symbol}: qty rounds to 0, skipping stop placement")
             return None
 
         req = StopOrderRequest(
-            symbol=symbol,
-            qty=abs_qty,
-            side=side,
-            stop_price=stop_price,
-            time_in_force=TimeInForce.GTC,  # GTC so it survives overnight
+            symbol=symbol, qty=abs_qty, side=side,
+            stop_price=stop_price, time_in_force=TimeInForce.GTC,
         )
         result = broker.trading.submit_order(req)
         order_id = str(result.id) if result else None
 
-        # Persist the stop order ID so we can replace it when the ratchet moves
         try:
             from db import get_connection as _gc
             _conn = _gc()
@@ -357,8 +353,7 @@ def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, str
             logger.debug(f"[TM] Could not persist stop_order_id for {symbol}: {_e}")
 
         logger.info(
-            f"[TM] Exchange stop placed: {symbol} stop=${stop_price:.2f} "
-            f"({effective_stop_pct:.0%} below entry ${entry_price:.2f}) | order={order_id}"
+            f"[TM] Exchange stop placed: {symbol} stop=${stop_price:.2f} | order={order_id}"
         )
         return order_id
 
@@ -367,90 +362,304 @@ def place_exchange_stop(broker, symbol: str, entry_price: float, qty: float, str
         return None
 
 
-def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional[str]:
+def place_bracket_orders(
+    broker,
+    symbol: str,
+    entry_price: float,
+    qty: float,
+    strategy: str = "unknown",
+    signal_score: float = 0.5,
+    is_short: bool = False,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Replace the existing exchange stop order with a new (higher) stop price.
-    Called by the ratchet logic when the stop moves up.
-    Returns the new order ID or None on failure.
+    v81: Primary exit-order placement. Called immediately after every entry fill.
+
+    Places TWO orders that together cover 100% of the integer position:
+
+      Order A — TP1 (plain GTC limit, tp1_qty shares):
+        Partial profit take at TP1 price. No stop attached.
+
+      Order B — OCO bracket (bracket_qty = total - tp1_qty shares):
+        Limit leg  = TP2 price  (take remaining profit)
+        Stop  leg  = stop price (protect downside)
+        When one fills, Alpaca cancels the other automatically.
+
+    Returns (tp1_order_id, oco_order_id, stop_price) — all three stored in DB.
     """
     try:
-        from alpaca.trading.requests import StopOrderRequest
+        from alpaca.trading.requests import (
+            LimitOrderRequest, TakeProfitRequest, StopLossRequest, OrderClass
+        )
         from alpaca.trading.enums import OrderSide, TimeInForce
+        from strategies.tp_engine import calculate_tp_levels
 
-        # Get the current stop order ID and position details from DB
+        abs_qty = int(abs(qty))
+        if abs_qty < 1:
+            logger.debug(f"[TM] {symbol}: qty rounds to 0, skipping bracket placement")
+            return None, None, None
+
+        # Calculate stop + TP levels
+        stop_price = _calc_stop_price(symbol, entry_price, qty, strategy)
+        tp1, tp2 = calculate_tp_levels(
+            symbol, entry_price, strategy,
+            is_short=is_short, signal_score=signal_score
+        )
+        if not tp1 or not tp2:
+            # Strategy has no fixed TP (sector_rotation etc) — just place a plain stop
+            logger.info(f"[TM] {symbol}: no fixed TP for strategy={strategy}, placing plain stop only")
+            stop_id = place_exchange_stop(broker, symbol, entry_price, qty, strategy)
+            return None, stop_id, stop_price
+
+        # Split qty: TP1 gets floor-half, OCO bracket gets the rest
+        if abs_qty == 1:
+            # Only 1 share — put it all in the OCO bracket, skip TP1
+            tp1_qty = 0
+            bracket_qty = 1
+        else:
+            tp1_qty = abs_qty // 2
+            bracket_qty = abs_qty - tp1_qty
+
+        sell_side = OrderSide.BUY if is_short else OrderSide.SELL
+
+        tp1_order_id = None
+        # --- Order A: plain GTC limit for TP1 (tp1_qty shares) ---
+        if tp1_qty > 0:
+            try:
+                tp1_req = LimitOrderRequest(
+                    symbol=symbol, qty=tp1_qty, side=sell_side,
+                    limit_price=round(tp1, 2),
+                    time_in_force=TimeInForce.GTC,
+                )
+                tp1_result = broker.trading.submit_order(tp1_req)
+                tp1_order_id = str(tp1_result.id) if tp1_result else None
+                logger.info(
+                    f"[TM] TP1 limit placed: {symbol} {tp1_qty}sh @ ${tp1:.2f} | id={tp1_order_id}"
+                )
+            except Exception as _e:
+                logger.warning(f"[TM] TP1 order failed for {symbol}: {_e}")
+
+        # --- Order B: OCO (TP2 limit + stop loss) for bracket_qty shares ---
+        oco_order_id = None
+        try:
+            oco_req = LimitOrderRequest(
+                symbol=symbol, qty=bracket_qty, side=sell_side,
+                limit_price=round(tp2, 2),
+                time_in_force=TimeInForce.GTC,
+                order_class=OrderClass.OCO,
+                stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
+            )
+            oco_result = broker.trading.submit_order(oco_req)
+            oco_order_id = str(oco_result.id) if oco_result else None
+            logger.info(
+                f"[TM] OCO bracket placed: {symbol} {bracket_qty}sh "
+                f"TP2=${tp2:.2f} | stop=${stop_price:.2f} | id={oco_order_id}"
+            )
+        except Exception as _e:
+            logger.warning(f"[TM] OCO bracket order failed for {symbol}: {_e}")
+            # Fallback: place a plain stop so downside is always protected
+            try:
+                stop_id = place_exchange_stop(broker, symbol, entry_price, qty, strategy)
+                logger.info(f"[TM] Fallback plain stop placed for {symbol}: {stop_id}")
+                oco_order_id = stop_id
+            except Exception:
+                pass
+
+        # Persist order IDs and prices to DB
+        try:
+            from db import get_connection as _gc
+            from datetime import datetime, timezone as _tz
+            _conn = _gc()
+            try:
+                entry_ts = datetime.now(_tz.utc).isoformat()
+                # positions_state: stop_order_id = oco_order_id (the order containing the stop leg)
+                _conn.execute(
+                    "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
+                    (oco_order_id, symbol)
+                )
+                # position_state: tp1/tp2 prices and order IDs
+                _conn.execute(
+                    """
+                    INSERT INTO position_state (symbol, tp1_price, tp2_price, tp1_order_id, tp2_order_id, entry_date)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        tp1_price=excluded.tp1_price,
+                        tp2_price=excluded.tp2_price,
+                        tp1_order_id=excluded.tp1_order_id,
+                        tp2_order_id=excluded.tp2_order_id,
+                        entry_date=COALESCE(entry_date, excluded.entry_date)
+                    """,
+                    (symbol, tp1, tp2, tp1_order_id, oco_order_id, entry_ts)
+                )
+                _conn.commit()
+            finally:
+                _conn.close()
+        except Exception as _e:
+            logger.debug(f"[TM] Could not persist bracket order IDs for {symbol}: {_e}")
+
+        return tp1_order_id, oco_order_id, stop_price
+
+    except Exception as e:
+        logger.warning(f"[TM] place_bracket_orders failed for {symbol}: {e}")
+        return None, None, None
+
+
+def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional[str]:
+    """
+    v81: Replace the OCO bracket order with a new one at the ratcheted stop price,
+    preserving the same TP2 limit. Also handles legacy plain-stop orders.
+    Returns the new OCO order ID or None on failure.
+    """
+    try:
+        from alpaca.trading.requests import (
+            LimitOrderRequest, StopOrderRequest, StopLossRequest, OrderClass
+        )
+        from alpaca.trading.enums import OrderSide, TimeInForce
         from db import get_connection as _gc
+
+        # Load positions_state (stop order id + qty/side)
         _conn = _gc()
         try:
-            row = _conn.execute(
+            ps_row = _conn.execute(
                 "SELECT stop_order_id, qty, side FROM positions_state WHERE symbol=?",
+                (symbol,)
+            ).fetchone()
+            # Also load the TP2 price from position_state (the OCO's limit leg)
+            ps2_row = _conn.execute(
+                "SELECT tp2_price, tp2_order_id FROM position_state WHERE symbol=?",
                 (symbol,)
             ).fetchone()
         finally:
             _conn.close()
 
-        if not row:
+        if not ps_row:
             logger.debug(f"[TM] update_exchange_stop: no positions_state row for {symbol}")
             return None
 
-        old_order_id, qty, side = row["stop_order_id"], row["qty"], row["side"]
+        old_order_id = ps_row["stop_order_id"]
+        qty = ps_row["qty"]
+        side = ps_row["side"]
+        tp2_price = float(ps2_row["tp2_price"]) if ps2_row and ps2_row["tp2_price"] else None
 
-        # Cancel old stop — try stored order ID first, then scan open orders as fallback
+        is_short = (side == "short") if side else False
+        order_side = OrderSide.BUY if is_short else OrderSide.SELL
+        abs_qty = int(abs(float(qty))) if qty else 0
+        if abs_qty <= 0:
+            return None
+
+        # --- Cancel old order (OCO or plain stop) ---
         if old_order_id:
             try:
                 broker.trading.cancel_order_by_id(old_order_id)
-                logger.debug(f"[TM] Cancelled old stop {old_order_id} for {symbol}")
+                logger.debug(f"[TM] Cancelled old bracket/stop {old_order_id} for {symbol}")
             except Exception as _ce:
-                logger.debug(f"[TM] Could not cancel stored stop for {symbol}: {_ce}")
+                logger.debug(f"[TM] Could not cancel {old_order_id} for {symbol}: {_ce}")
         else:
-            # v80-fix: no stop_order_id in DB (pre-v78 position or upsert race)
-            # Scan all open orders for this symbol and cancel any stops
+            # Fallback: scan and cancel any open stops/OCO for this symbol
             try:
-                open_orders = broker.trading.get_orders(filter={"symbols": [symbol], "status": "open"})
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums import QueryOrderStatus
+                open_orders = broker.trading.get_orders(
+                    GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+                )
                 for o in (open_orders or []):
-                    if getattr(o, "order_type", "") == "stop":
+                    otype = getattr(o, "order_type", getattr(o, "type", ""))
+                    oclass = getattr(o, "order_class", "")
+                    if str(otype) in ("stop", "limit") or str(oclass) == "oco":
                         try:
                             broker.trading.cancel_order_by_id(str(o.id))
-                            logger.debug(f"[TM] Cancelled orphan stop {o.id} for {symbol}")
+                            logger.debug(f"[TM] Cancelled orphan order {o.id} ({otype}/{oclass}) for {symbol}")
                         except Exception:
                             pass
             except Exception as _fe:
                 logger.debug(f"[TM] Could not scan open orders for {symbol}: {_fe}")
 
-        # Place new stop
-        is_short = (side == "short") if side else (qty and float(qty) < 0)
-        order_side = OrderSide.BUY if is_short else OrderSide.SELL
-        abs_qty = abs(float(qty)) if qty else 0
-        if abs_qty <= 0:
-            return None
-        # v80-fix: Alpaca stop orders require whole-share qty (no fractional stops)
-        abs_qty = int(abs_qty)
-        if abs_qty <= 0:
-            return None
-
-        req = StopOrderRequest(
-            symbol=symbol,
-            qty=abs_qty,
-            side=order_side,
-            stop_price=round(new_stop_price, 2),
-            time_in_force=TimeInForce.GTC,
-        )
-        result = broker.trading.submit_order(req)
-        new_order_id = str(result.id) if result else None
-
-        # Update DB
-        from db import get_connection as _gc2
-        _conn2 = _gc2()
+        # --- Place new OCO bracket with updated stop (preserve TP2 if we have it) ---
+        # The bracket covers bracket_qty = abs_qty - tp1_qty
+        # Since TP1 is a separate plain limit, we need to track how many shares it covers.
+        # Simplest: the OCO always covers the same bracket_qty as initially placed.
+        # We read this from position_state; if missing, use half of abs_qty (safe fallback).
         try:
-            _conn2.execute(
-                "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
-                (new_order_id, symbol)
-            )
-            _conn2.commit()
-        finally:
-            _conn2.close()
+            _conn2 = _gc()
+            try:
+                ps2_full = _conn2.execute(
+                    "SELECT tp1_order_id FROM position_state WHERE symbol=?",
+                    (symbol,)
+                ).fetchone()
+            finally:
+                _conn2.close()
+            # If TP1 order exists, it holds abs_qty//2 shares; OCO holds the rest
+            # If TP1 already filled, the position is smaller; OCO should now hold fewer shares
+            # For safety, we re-derive from current position qty
+        except Exception:
+            pass
+
+        if abs_qty == 1:
+            bracket_qty = 1
+        else:
+            tp1_qty = abs_qty // 2
+            bracket_qty = abs_qty - tp1_qty
+
+        new_order_id = None
+        if tp2_price:
+            # Re-place as OCO with same TP2 limit, new stop
+            try:
+                new_req = LimitOrderRequest(
+                    symbol=symbol, qty=bracket_qty, side=order_side,
+                    limit_price=round(tp2_price, 2),
+                    time_in_force=TimeInForce.GTC,
+                    order_class=OrderClass.OCO,
+                    stop_loss=StopLossRequest(stop_price=round(new_stop_price, 2)),
+                )
+                new_result = broker.trading.submit_order(new_req)
+                new_order_id = str(new_result.id) if new_result else None
+                logger.info(
+                    f"[TM] OCO ratcheted: {symbol} {bracket_qty}sh "
+                    f"TP2=${tp2_price:.2f} | new stop=${new_stop_price:.2f} | id={new_order_id}"
+                )
+            except Exception as _e:
+                logger.warning(f"[TM] OCO ratchet failed for {symbol}: {_e} — falling back to plain stop")
+                tp2_price = None  # trigger fallback below
+
+        if not tp2_price or not new_order_id:
+            # Fallback: plain stop covering full remaining qty
+            try:
+                from alpaca.trading.requests import StopOrderRequest
+                stop_req = StopOrderRequest(
+                    symbol=symbol, qty=abs_qty, side=order_side,
+                    stop_price=round(new_stop_price, 2),
+                    time_in_force=TimeInForce.GTC,
+                )
+                new_result = broker.trading.submit_order(stop_req)
+                new_order_id = str(new_result.id) if new_result else None
+                logger.info(
+                    f"[TM] Plain stop ratcheted: {symbol} → ${new_stop_price:.2f} | id={new_order_id}"
+                )
+            except Exception as _e2:
+                logger.warning(f"[TM] Plain stop fallback also failed for {symbol}: {_e2}")
+
+        # Update DB with new order ID
+        if new_order_id:
+            try:
+                _conn3 = _gc()
+                try:
+                    _conn3.execute(
+                        "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
+                        (new_order_id, symbol)
+                    )
+                    # Also update tp2_order_id in position_state to the new OCO order
+                    if tp2_price:
+                        _conn3.execute(
+                            "UPDATE position_state SET tp2_order_id=? WHERE symbol=?",
+                            (new_order_id, symbol)
+                        )
+                    _conn3.commit()
+                finally:
+                    _conn3.close()
+            except Exception as _de:
+                logger.debug(f"[TM] DB update for ratcheted stop failed {symbol}: {_de}")
 
         logger.info(
-            f"[TM] Exchange stop ratcheted: {symbol} → new stop=${new_stop_price:.2f} | order={new_order_id}"
+            f"[TM] Stop ratcheted: {symbol} → ${new_stop_price:.2f} | order={new_order_id}"
         )
         return new_order_id
 
