@@ -472,9 +472,15 @@ def place_exchange_tp(broker, symbol: str, tp1_price: float, tp2_price: float,
         from alpaca.trading.enums import OrderSide, TimeInForce
 
         is_short = qty < 0
-        abs_qty = abs(qty)
-        tp1_qty = round(abs_qty * 0.5, 6)
-        tp2_qty = round(abs_qty - tp1_qty, 6)
+        # v80-fix: Alpaca GTC limit orders require whole-share qty (no fractional)
+        abs_qty = int(abs(qty))
+        if abs_qty < 2:
+            # Not enough shares to split — put full qty on TP1, skip TP2
+            tp1_qty = abs_qty
+            tp2_qty = 0
+        else:
+            tp1_qty = abs_qty // 2
+            tp2_qty = abs_qty - tp1_qty
         side = OrderSide.BUY if is_short else OrderSide.SELL
 
         tp1_order_id = None
