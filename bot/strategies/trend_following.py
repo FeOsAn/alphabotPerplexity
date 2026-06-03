@@ -176,10 +176,17 @@ def run(broker: AlpacaBroker, db_conn):
     """Run trend following strategy."""
     logger.info("=== Trend Following Strategy: Scanning signals ===")
 
-    from utils.regime import is_bull_market
-    if not is_bull_market():
-        logger.info("[trend_following] Bear regime detected — skipping new entries")
-        return
+    # v83: block in chop AND bear
+    try:
+        from utils.regime_weights import get_multiplier as _rm
+        if _rm("trend_following") == 0.0:
+            logger.info("[trend_following] Regime weight 0.0 (chop or bear) — skipping new entries")
+            return
+    except Exception:
+        from utils.regime import is_bull_market
+        if not is_bull_market():
+            logger.info("[trend_following] Bear regime detected — skipping new entries")
+            return
 
     from utils.market_hours import is_entry_allowed
     if not is_entry_allowed():

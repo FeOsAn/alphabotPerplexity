@@ -314,10 +314,17 @@ def run(broker: AlpacaBroker, db_conn):
         _check_stops(broker, db_conn)
         return
 
-    from utils.regime import is_bull_market
-    if not is_bull_market():
-        logger.info("[momentum] Bear regime detected — skipping new entries")
-        return
+    # v83: respect 3-tier regime — block in chop AND bear
+    try:
+        from utils.regime_weights import get_multiplier as _rm
+        if _rm("momentum") == 0.0:
+            logger.info("[momentum] Regime weight 0.0 (chop or bear) — skipping new entries")
+            return
+    except Exception:
+        from utils.regime import is_bull_market
+        if not is_bull_market():
+            logger.info("[momentum] Bear regime detected — skipping new entries")
+            return
 
     from utils.market_hours import is_entry_allowed
     if not is_entry_allowed():

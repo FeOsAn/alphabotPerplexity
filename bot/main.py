@@ -67,6 +67,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from strategies import mean_reversion, trend_following, ai_research
 from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
+from strategies import trend_pullback, multi_tf_rsi  # v83
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
@@ -142,37 +143,80 @@ def get_spy_price() -> float:
     return 0.0
 
 
+# v83: cache regime once per market day — re-evaluated at open and if VIX spikes >15%
+_regime_cache_date: str = ""
+_regime_cache_value: str = "bull"
+_regime_cache_vix: float = 0.0
+
+
 def get_market_regime() -> str:
     """
-    Market regime filter — delegates to regime_detector (HMM) when confident,
-    falls back to SPY-MA50 check otherwise.
+    v83: 3-tier market regime — 'bull', 'chop', or 'bear'.
+    Evaluated once per trading day (cached). Re-evaluated mid-session only if
+    VIX moves >15% from the morning reading (regime shock detection).
+    Delegates to HMM regime_detector when confident (>=0.5), falls back to
+    SPY-MA50 + VIX heuristic otherwise.
     """
+    global _regime_cache_date, _regime_cache_value, _regime_cache_vix
+
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Check for intraday VIX shock (regime can change mid-day on crisis events)
+    try:
+        _vix_now = float(yf.Ticker("^VIX").fast_info.last_price)
+        vix_shock = (_regime_cache_vix > 0 and
+                     abs(_vix_now - _regime_cache_vix) / _regime_cache_vix > 0.15)
+    except Exception:
+        _vix_now = _regime_cache_vix
+        vix_shock = False
+
+    # Return cache if same day and no VIX shock
+    if _regime_cache_date == today and not vix_shock:
+        return _regime_cache_value
+
+    regime = "bull"  # safe default
     try:
         from utils.regime_detector import get_regime as _rd_get_regime
-        regime, confidence = _rd_get_regime()
-        if confidence >= 0.5 and regime:
-            # Map HMM regimes onto bull/bear used by main.py
-            if regime in ("BEAR_STRONG", "BEAR_MILD"):
-                logger.info(f"Market regime (HMM): {regime} → bear (conf {confidence:.2f})")
-                return "bear"
-            if regime in ("BULL_STRONG", "BULL_NORMAL", "CHOPPY"):
-                logger.info(f"Market regime (HMM): {regime} → bull (conf {confidence:.2f})")
-                return "bull"
+        hmm_regime, confidence = _rd_get_regime()
+        if confidence >= 0.5 and hmm_regime:
+            if hmm_regime in ("BEAR_STRONG", "BEAR_MILD"):
+                regime = "bear"
+            elif hmm_regime == "CHOPPY":
+                regime = "chop"
+            else:  # BULL_STRONG, BULL_NORMAL
+                regime = "bull"
+            logger.info(f"[Regime] HMM={hmm_regime} conf={confidence:.2f} → {regime.upper()}")
+        else:
+            raise ValueError(f"HMM confidence too low: {confidence:.2f}")
     except Exception:
-        pass
-    # Fallback: SPY-MA50 check
-    try:
-        spy = yf.Ticker("SPY")
-        hist = spy.history(period="3mo")
-        if len(hist) >= 50:
-            price = hist["Close"].iloc[-1]
-            ma50 = hist["Close"].tail(50).mean()
-            regime = "bull" if price > ma50 else "bear"
-            logger.info(f"Market regime: {regime.upper()} (SPY ${price:.2f} vs MA50 ${ma50:.2f})")
-            return regime
-    except Exception as e:
-        logger.warning(f"Could not determine market regime: {e}")
-    return "bull"
+        # Fallback: SPY-MA50 + VIX heuristic
+        try:
+            spy = yf.Ticker("SPY")
+            hist = spy.history(period="3mo")
+            if len(hist) >= 50:
+                price = float(hist["Close"].iloc[-1])
+                ma50  = float(hist["Close"].tail(50).mean())
+                ma20  = float(hist["Close"].tail(20).mean())
+                vix   = _vix_now if _vix_now > 0 else 20.0
+                if price < ma50 and vix > 25:
+                    regime = "bear"
+                elif abs(price - ma50) / ma50 < 0.03 or (vix > 20 and price < ma20):
+                    regime = "chop"
+                else:
+                    regime = "bull"
+                logger.info(
+                    f"[Regime] Fallback SPY=${price:.2f} MA50=${ma50:.2f} "
+                    f"VIX={vix:.1f} → {regime.upper()}"
+                )
+        except Exception as e:
+            logger.warning(f"[Regime] Could not determine regime: {e} — defaulting to bull")
+            regime = "bull"
+
+    _regime_cache_date  = today
+    _regime_cache_value = regime
+    _regime_cache_vix   = _vix_now if _vix_now > 0 else _regime_cache_vix
+    return regime
 
 
 
@@ -564,46 +608,64 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.error(f"Pyramid add check error: {e}", exc_info=True)
 
-        # ── Market regime check ───────────────────────────────────────────────────
+        # ── Market regime check (v83: 3-tier) ────────────────────────────────────
         regime = get_market_regime()
+        logger.info(f"[Regime] Current regime: {regime.upper()}")
 
         if regime == "bear":
-            logger.info("BEAR MARKET regime — managing exits only, no new entries")
-            for fn, name in [
-                (mean_reversion.run,  "Mean reversion"),
-                (trend_following.run, "Trend following"),
-                (spy_dip.run,         "SPY dip"),
-                (vix_reversal.run,    "VIX reversal"),   # VIX reversal still runs in bear — it's designed for it
-                (gap_scanner.run,     "Gap scanner"),     # exits only
-                (short_hedge.run,     "Short hedge"),     # inverse ETFs — gated by adaptive regime
-                (pairs_trading.run,   "Pairs trading"),   # market-neutral — runs in any regime
-            ]:
-                try:
-                    fn(broker, db_conn)
-                except Exception as e:
-                    logger.error(f"{name} error: {e}", exc_info=True)
-            logger.info("Strategy run complete (bear market — exits only)")
-            return
+            logger.info("BEAR regime — running bear-safe strategies")
+            _strategy_list = [
+                (mean_reversion.run,    "Mean reversion"),   # 1.2×
+                (trend_following.run,   "Trend following"),  # short-side only, internally gated
+                (vix_reversal.run,      "VIX reversal"),     # designed for bear
+                (gap_scanner.run,       "Gap scanner"),      # exits only
+                (short_hedge.run,       "Short hedge"),      # inverse ETFs
+                (pairs_trading.run,     "Pairs trading"),    # market-neutral
+                (earnings_drift.run,    "Earnings drift"),   # catalyst-driven, 0.5×
+                (trend_pullback.run,    "Trend pullback"),   # short-side entries, 0.8×
+                (multi_tf_rsi.run,      "Multi-TF RSI"),     # strongest in bear, 1.3×
+            ]
 
-        # ── Bull market — run all strategies ─────────────────────────────────────
-        strategies = [
-            (mean_reversion.run,  "Mean reversion"),
-            (trend_following.run, "Trend following"),
-            (spy_dip.run,         "SPY dip"),
-            (vix_reversal.run,    "VIX reversal"),
-            (gap_scanner.run,     "Gap scanner"),
-            (earnings_drift.run,  "Earnings drift"),
-            (sector_rotation.run, "Sector rotation"),
-            (momentum.run,        "Momentum"),       # internally checks _should_rebalance() for weekly cadence
-            (breakout.run,        "Breakout"),
-            (short_hedge.run,     "Short hedge"),    # inverse ETFs — internally gated by adaptive regime
-            (pairs_trading.run,   "Pairs trading"),  # market-neutral — long/short pairs via cointegration
-            (insider_buying.run,  "Insider buying"), # SEC Form 4 daily scan
-            (options_flow.run,    "Options flow"),   # unusual call volume daily scan
-            (squeeze_screener.run, "Squeeze screener"), # short interest squeeze daily scan
-        ]
+        elif regime == "chop":
+            logger.info("CHOP regime — running regime-agnostic strategies only")
+            _strategy_list = [
+                (mean_reversion.run,    "Mean reversion"),   # 1.5× in chop — primary
+                (pairs_trading.run,     "Pairs trading"),    # market-neutral
+                (vix_reversal.run,      "VIX reversal"),     # VIX spikes common in chop
+                (earnings_drift.run,    "Earnings drift"),   # catalyst-driven, 0.8×
+                (short_hedge.run,       "Short hedge"),      # 0.5×
+                (gap_scanner.run,       "Gap scanner"),      # exits only
+                (multi_tf_rsi.run,      "Multi-TF RSI"),     # proven positive in chop, 0.8×
+                # Below handle exits only — self-skip new entries via regime_weight=0.0
+                (momentum.run,          "Momentum"),
+                (breakout.run,          "Breakout"),
+                (trend_following.run,   "Trend following"),
+                (sector_rotation.run,   "Sector rotation"),
+                (spy_dip.run,           "SPY dip"),
+            ]
 
-        for fn, name in strategies:
+        else:  # bull
+            logger.info("BULL regime — running all strategies")
+            _strategy_list = [
+                (mean_reversion.run,    "Mean reversion"),
+                (trend_following.run,   "Trend following"),
+                (spy_dip.run,           "SPY dip"),
+                (vix_reversal.run,      "VIX reversal"),
+                (gap_scanner.run,       "Gap scanner"),
+                (earnings_drift.run,    "Earnings drift"),
+                (sector_rotation.run,   "Sector rotation"),
+                (momentum.run,          "Momentum"),
+                (breakout.run,          "Breakout"),
+                (short_hedge.run,       "Short hedge"),
+                (pairs_trading.run,     "Pairs trading"),
+                (insider_buying.run,    "Insider buying"),
+                (options_flow.run,      "Options flow"),
+                (squeeze_screener.run,  "Squeeze screener"),
+                (trend_pullback.run,    "Trend pullback"),   # v83: 1.5×
+                (multi_tf_rsi.run,      "Multi-TF RSI"),     # v83: 1.2×
+            ]
+
+        for fn, name in _strategy_list:
             try:
                 fn(broker, db_conn)
             except Exception as e:

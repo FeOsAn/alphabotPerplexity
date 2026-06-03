@@ -130,10 +130,15 @@ def run(broker: AlpacaBroker, db_conn):
     """Run mean reversion scan and execute trades."""
     logger.info("=== Mean Reversion Strategy: Scanning for signals ===")
 
-    from utils.regime import is_bull_market
-    if not is_bull_market():
-        logger.info("[mean_reversion] Bear regime detected — skipping new entries")
-        return
+    # v83: mean reversion runs in ALL regimes (1.5× in chop, 1.2× in bear)
+    # Only hard-skip if regime_weight is explicitly 0.0
+    try:
+        from utils.regime_weights import get_multiplier as _rm
+        if _rm("mean_reversion") == 0.0:
+            logger.info("[mean_reversion] Regime weight 0.0 — skipping")
+            return
+    except Exception:
+        pass  # always run mean reversion unless explicitly blocked
 
     from utils.market_hours import is_entry_allowed
     if not is_entry_allowed():

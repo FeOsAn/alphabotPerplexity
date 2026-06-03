@@ -6,59 +6,88 @@ from utils.regime_detector import get_regime
 
 REGIME_WEIGHTS = {
     "BULL_STRONG": {
-        "momentum":     1.5,
-        "breakout":     1.5,
-        "earnings_nlp": 1.2,
-        "ts_momentum":  1.0,
-        "ai_research":  1.2,
-        "event_driven": 1.2,
-        "vwap_reclaim": 1.2,
+        # ── Existing strategies ──────────────────────────────────────────────
+        "momentum":       1.5,
+        "breakout":       1.5,
+        "earnings_nlp":   1.2,
+        "ts_momentum":    1.0,
+        "ai_research":    1.2,
+        "event_driven":   1.2,
+        "vwap_reclaim":   1.2,
         "mean_reversion": 0.7,
-        "short_hedge":  0.0,
+        "short_hedge":    0.0,
+        "sector_rotation":1.2,
+        "spy_dip":        1.2,
+        "trend_following":1.2,
+        # ── v83 new strategies ───────────────────────────────────────────────
+        "trend_pullback": 1.5,   # B+G: bull = full authority, long only
+        "multi_tf_rsi":   1.2,   # I:   bull = long only, solid edge
     },
     "BULL_NORMAL": {
-        "momentum":     1.0,
-        "breakout":     1.0,
-        "earnings_nlp": 1.0,
-        "ts_momentum":  1.0,
-        "ai_research":  1.0,
-        "event_driven": 1.0,
-        "vwap_reclaim": 1.0,
+        "momentum":       1.0,
+        "breakout":       1.0,
+        "earnings_nlp":   1.0,
+        "ts_momentum":    1.0,
+        "ai_research":    1.0,
+        "event_driven":   1.0,
+        "vwap_reclaim":   1.0,
         "mean_reversion": 1.0,
-        "short_hedge":  0.0,
+        "short_hedge":    0.0,
+        "sector_rotation":1.0,
+        "spy_dip":        1.0,
+        "trend_following":1.0,
+        "trend_pullback": 1.2,
+        "multi_tf_rsi":   1.0,
     },
     "CHOPPY": {
-        "momentum":     0.5,
-        "breakout":     0.5,
-        "earnings_nlp": 0.8,
-        "ts_momentum":  1.0,
-        "ai_research":  0.8,
-        "event_driven": 0.8,
-        "vwap_reclaim": 0.8,
+        # Trend-following strategies: OFF in chop (proven to bleed)
+        "momentum":       0.0,   # was 0.5 — now fully blocked
+        "breakout":       0.0,   # was 0.5 — now fully blocked
+        "trend_following":0.0,   # new block
+        "sector_rotation":0.0,   # new block
+        "spy_dip":        0.0,   # new block
+        "trend_pullback": 0.0,   # B bleeds -0.42%/trade in chop — blocked
+        # Regime-agnostic / counter-trend: keep running
+        "earnings_nlp":   0.8,
+        "ts_momentum":    1.0,
+        "ai_research":    0.8,
+        "event_driven":   0.8,
+        "vwap_reclaim":   0.8,
         "mean_reversion": 1.5,
-        "short_hedge":  0.5,
+        "short_hedge":    0.5,
+        "multi_tf_rsi":   0.8,   # I: positive in chop (+0.49%), run at 0.8×
     },
     "BEAR_MILD": {
-        "momentum":     0.3,
-        "breakout":     0.3,
-        "earnings_nlp": 0.7,
-        "ts_momentum":  1.2,
-        "ai_research":  0.5,
-        "event_driven": 0.7,
-        "vwap_reclaim": 0.5,
+        "momentum":       0.0,   # was 0.3 — no longs in bear
+        "breakout":       0.0,   # was 0.3 — no longs in bear
+        "trend_following":0.5,   # short-side only, internally gated
+        "sector_rotation":0.0,
+        "spy_dip":        0.0,
+        "earnings_nlp":   0.7,
+        "ts_momentum":    1.2,
+        "ai_research":    0.5,
+        "event_driven":   0.7,
+        "vwap_reclaim":   0.0,   # intraday long gap fills — off in bear
         "mean_reversion": 1.2,
-        "short_hedge":  1.0,
+        "short_hedge":    1.0,
+        "trend_pullback": 0.8,   # short-side entries only, internally gated
+        "multi_tf_rsi":   1.3,   # best regime: +0.91% avg/trade, short-heavy
     },
     "BEAR_STRONG": {
-        "momentum":     0.0,
-        "breakout":     0.0,
-        "earnings_nlp": 0.5,
-        "ts_momentum":  1.5,
-        "ai_research":  0.0,
-        "event_driven": 0.5,
-        "vwap_reclaim": 0.0,
+        "momentum":       0.0,
+        "breakout":       0.0,
+        "trend_following":0.0,
+        "sector_rotation":0.0,
+        "spy_dip":        0.0,
+        "earnings_nlp":   0.5,
+        "ts_momentum":    1.5,
+        "ai_research":    0.0,
+        "event_driven":   0.5,
+        "vwap_reclaim":   0.0,
         "mean_reversion": 1.0,
-        "short_hedge":  1.5,
+        "short_hedge":    1.5,
+        "trend_pullback": 0.6,   # short-side only, conservative
+        "multi_tf_rsi":   1.5,   # maximum authority in strong bear
     },
 }
 

@@ -313,10 +313,17 @@ def run(broker: AlpacaBroker, db_conn):
     """
     logger.info("=== Breakout Strategy: Scanning for 52-week high breakouts ===")
 
-    from utils.regime import is_bull_market
-    if not is_bull_market():
-        logger.info("[breakout] Bear regime detected — skipping new entries")
-        return
+    # v83: block in chop AND bear
+    try:
+        from utils.regime_weights import get_multiplier as _rm
+        if _rm("breakout") == 0.0:
+            logger.info("[breakout] Regime weight 0.0 (chop or bear) — skipping new entries")
+            return
+    except Exception:
+        from utils.regime import is_bull_market
+        if not is_bull_market():
+            logger.info("[breakout] Bear regime detected — skipping new entries")
+            return
 
     from utils.market_hours import is_entry_allowed
     if not is_entry_allowed():

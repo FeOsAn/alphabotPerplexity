@@ -235,6 +235,15 @@ def run(broker: AlpacaBroker, db_conn):
         _check_stops(broker, db_conn)
         return
 
+    # v83: block in chop and bear — sector rotation only works in trending markets
+    try:
+        from utils.regime_weights import get_multiplier as _rm
+        if _rm("sector_rotation") == 0.0:
+            logger.info("[SR] Regime weight 0.0 (chop or bear) — skipping rebalance")
+            return
+    except Exception:
+        pass
+
     global _last_rebalance
     logger.info("=== Sector Rotation Strategy: Monthly Rebalance ===")
 
