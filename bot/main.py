@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v84"
+VERSION = "v84.1"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -801,6 +801,26 @@ def _scheduled_recap(broker: AlpacaBroker, db_conn):
         logger.error(f"[Recap] Scheduled fire error: {e}")
 
 
+def _bracket_heartbeat(broker: AlpacaBroker):
+    """
+    Periodic safety net: re-run migrate_missing_brackets() during market hours
+    so a silently-failed bracket or a stuck GTC order can't leave a position
+    unprotected for days. Polls every 30 min; self-gates to Mon–Fri 9:30–16:00 ET.
+    """
+    now = datetime.now(EASTERN)
+    if now.weekday() >= 5:
+        return
+    if not (dtime(9, 30) <= now.time() <= dtime(16, 0)):
+        return
+    logger.info("[BRACKET HEARTBEAT] Running migrate_missing_brackets() periodic check")
+    try:
+        n = migrate_missing_brackets(broker)
+        if n:
+            logger.info(f"[BRACKET HEARTBEAT] placed {n} OCO bracket(s)")
+    except Exception as e:
+        logger.error(f"[BRACKET HEARTBEAT] migrate_missing_brackets failed: {e}", exc_info=True)
+
+
 def main():
     from utils.clock import log_timestamp, now_et, market_open_et, minutes_to_close
     logger.info(f"=== AlphaBot Starting ({VERSION}) ===")
@@ -918,6 +938,9 @@ def main():
     # v75 FIX 1 — overnight loser sweep. Polls every minute; the function
     # itself enforces the 20:15–20:29 BST window via now_london().
     schedule.every(1).minutes.do(check_overnight_exit, broker, db_conn)
+    # v84.1 — bracket-order heartbeat. Re-run migrate_missing_brackets() every
+    # 30 min; _bracket_heartbeat() self-gates to Mon–Fri 9:30–16:00 ET.
+    schedule.every(30).minutes.do(_bracket_heartbeat, broker)
 
     take_snapshot(broker, db_conn)
 

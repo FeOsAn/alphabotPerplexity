@@ -1948,6 +1948,56 @@ def run_trade_management(broker: AlpacaBroker, db_conn):
     run_global_trade_management(broker, db_conn)
 
 
+def check_zombie_orders(broker, positions=None) -> int:
+    """
+    Detect orders stuck in pending_cancel for >5 minutes.
+
+    Alpaca will sometimes leave an order wedged in `pending_cancel`: the shares
+    stay locked so a fresh bracket can't be placed, but the order never actually
+    cancels. The API offers no reliable way to force-cancel these, so we only
+    surface them as a CRITICAL log line for visibility in Railway logs.
+
+    Returns the number of zombie orders detected.
+    """
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+
+    STUCK_AFTER_SEC = 5 * 60
+
+    if positions is None:
+        try:
+            positions = broker.trading.get_all_positions()
+        except Exception as e:
+            logger.error(f"[ZombieCheck] Could not fetch positions: {e}")
+            return 0
+
+    found = 0
+    now = datetime.now(timezone.utc)
+    for pos in positions:
+        sym = pos.symbol
+        try:
+            orders = broker.trading.get_orders(
+                GetOrdersRequest(status=QueryOrderStatus.ALL, symbols=[sym])
+            )
+        except Exception as e:
+            logger.warning(f"[ZombieCheck] {sym}: could not fetch orders: {e}")
+            continue
+
+        for o in (orders or []):
+            if str(getattr(o, "status", "")).lower().endswith("pending_cancel"):
+                # Age the order off its most recent update (fall back to submit).
+                ts = getattr(o, "updated_at", None) or getattr(o, "submitted_at", None)
+                age_sec = (now - ts).total_seconds() if ts else None
+                if age_sec is None or age_sec > STUCK_AFTER_SEC:
+                    logger.critical(
+                        f"[ZOMBIE ORDER] {sym} order {o.id} stuck in pending_cancel "
+                        f"— shares locked, bracket may not be placeable"
+                    )
+                    found += 1
+
+    return found
+
+
 def migrate_missing_brackets(broker) -> int:
     """
     v82 startup migration: scan all open positions and place any missing OCO brackets.
@@ -2164,4 +2214,13 @@ def migrate_missing_brackets(broker) -> int:
         f"[Migrate] migrate_missing_brackets complete — "
         f"{placed} OCO bracket(s) placed, {errors} error(s)"
     )
+
+    # Zombie-order sweep: flag any orders wedged in pending_cancel (shares locked)
+    try:
+        zombies = check_zombie_orders(broker, positions)
+        if zombies:
+            logger.critical(f"[ZombieCheck] {zombies} zombie order(s) detected — see [ZOMBIE ORDER] lines above")
+    except Exception as e:
+        logger.warning(f"[ZombieCheck] sweep failed: {e}")
+
     return placed
