@@ -2026,15 +2026,39 @@ def migrate_missing_brackets(broker) -> int:
             tp2 = float(ps_row["tp2_price"]) if ps_row and ps_row["tp2_price"] else None
 
             if not tp2:
-                # No TP2 on record — strategy may not use fixed TPs (sector_rotation etc)
-                # Check if there's even a plain stop live; if not, place one
+                # No TP2 on record. This happens for positions opened after the
+                # v83 deploy that never got a position_state row (e.g. DDOG, MPC,
+                # PANW). Previously these were silently skipped — leaving the
+                # position with NO protective stop. Build ATR-based stop/TP levels
+                # from scratch and place at minimum a protective stop.
+                if ps_row is None:
+                    logger.warning(
+                        f"[Migrate] No DB row for {sym}, placing ATR-based fallback stop"
+                    )
+
+                # ATR-based stop; falls back to ±5% inside _calc_stop_price logic.
+                stop_price = _calc_stop_price(sym, avg_entry, float(pos.qty), "unknown")
+                if not stop_price or stop_price <= 0:
+                    stop_price = round(
+                        avg_entry * (1.05 if is_short else 0.95), 2
+                    )
+
+                # Derive fallback TP levels so future runs can place a real OCO.
+                fb_tp1 = fb_tp2 = None
+                try:
+                    from strategies.tp_engine import calculate_tp_levels
+                    fb_tp1, fb_tp2 = calculate_tp_levels(
+                        sym, avg_entry, "momentum", is_short=is_short, signal_score=0.5
+                    )
+                except Exception as _tpe:
+                    logger.debug(f"[Migrate] {sym}: TP level calc failed: {_tpe}")
+
+                # Place at minimum a protective GTC stop if none is live.
                 has_stop = any(
                     str(getattr(o, "order_type", "")) in ("stop", "stop_limit")
                     for o in open_orders if o.symbol == sym
                 )
                 if not has_stop:
-                    # Place a plain stop using ATR-based calc
-                    stop_price = _calc_stop_price(sym, avg_entry, float(pos.qty), "unknown")
                     try:
                         from alpaca.trading.requests import StopOrderRequest
                         stop_req = StopOrderRequest(
@@ -2046,12 +2070,37 @@ def migrate_missing_brackets(broker) -> int:
                         )
                         result = broker.trading.submit_order(stop_req)
                         logger.warning(
-                            f"[Migrate] {sym}: no TP2, placed emergency plain stop "
+                            f"[Migrate] {sym}: no TP2, placed ATR-based fallback stop "
                             f"@ ${stop_price:.2f} (id={result.id})"
                         )
                         placed += 1
+
+                        # Persist a position_state row so future runs work normally.
+                        try:
+                            _conn3 = _gc()
+                            try:
+                                _conn3.execute(
+                                    """
+                                    INSERT INTO position_state
+                                        (symbol, tp1_price, tp2_price, entry_date)
+                                    VALUES (?, ?, ?, datetime('now'))
+                                    ON CONFLICT(symbol) DO UPDATE SET
+                                        tp1_price=excluded.tp1_price,
+                                        tp2_price=excluded.tp2_price
+                                    """,
+                                    (sym, fb_tp1, fb_tp2)
+                                )
+                                _conn3.execute(
+                                    "UPDATE positions_state SET stop_order_id=? WHERE symbol=?",
+                                    (str(result.id), sym)
+                                )
+                                _conn3.commit()
+                            finally:
+                                _conn3.close()
+                        except Exception as _dbe:
+                            logger.debug(f"[Migrate] {sym}: fallback DB insert failed: {_dbe}")
                     except Exception as _e:
-                        logger.error(f"[Migrate] {sym}: plain stop placement failed: {_e}")
+                        logger.error(f"[Migrate] {sym}: fallback stop placement failed: {_e}")
                         errors += 1
                 continue
 

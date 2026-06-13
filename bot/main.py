@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v82"
+VERSION = "v84"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -201,7 +201,7 @@ def get_market_regime() -> str:
                 vix   = _vix_now if _vix_now > 0 else 20.0
                 if price < ma50 and vix > 25:
                     regime = "bear"
-                elif abs(price - ma50) / ma50 < 0.03 or (vix > 20 and price < ma20):
+                elif price < ma20 and vix > 22:
                     regime = "chop"
                 else:
                     regime = "bull"

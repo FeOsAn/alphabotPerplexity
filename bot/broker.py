@@ -200,6 +200,36 @@ class AlpacaBroker:
         except Exception:
             equity = 0.0
 
+        # --- Double-entry prevention --------------------------------------
+        # BAC doubled (123→291sh) after OCO-cancellation chaos: the bot lost the
+        # position from the DB, didn't see it as open, and re-entered. Guard by
+        # checking BOTH the live Alpaca positions AND the DB — if the symbol is
+        # already held in EITHER source, skip the new entry entirely.
+        live_held = {p["symbol"] for p in positions}
+        if symbol in live_held:
+            logger.info(
+                f"[Broker] {symbol} already open (live Alpaca position), "
+                f"skipping duplicate {side} entry"
+            )
+            return True
+        try:
+            from db import get_connection as _de_get_conn
+            _de_conn = _de_get_conn()
+            try:
+                row = _de_conn.execute(
+                    "SELECT 1 FROM positions_state WHERE symbol=?", (symbol,)
+                ).fetchone()
+                if row:
+                    logger.info(
+                        f"[Broker] {symbol} already open (DB positions_state row), "
+                        f"skipping duplicate {side} entry"
+                    )
+                    return True
+            finally:
+                _de_conn.close()
+        except Exception as e:
+            logger.debug(f"[Broker] double-entry DB check failed for {symbol}: {e}")
+
         # --- MAX_TOTAL_POSITIONS (only enforce for new-symbol buys) -------
         if side.lower() == "buy":
             held_syms = {p["symbol"] for p in positions}
@@ -337,6 +367,80 @@ class AlpacaBroker:
         self._open_orders_cache_ts = 0.0
         logger.info(f"[{strategy}] SELL {qty} {symbol} — order {order.id}")
         return {"id": str(order.id), "symbol": symbol, "side": "sell", "qty": qty, "strategy": strategy}
+
+    def market_sell_short(self, symbol: str, notional: float, strategy: str = "manual",
+                          signal_score: float = 0.5) -> Optional[dict]:
+        """Open a short position worth ~$notional of symbol (margin required).
+
+        Alpaca does NOT support `notional` on short-sell orders, so we convert the
+        dollar amount to a whole-share qty using the latest trade price and submit
+        a plain SELL market order (negative net position == short with margin on).
+        """
+        if self._entry_blocked(symbol, "sell", strategy, notional):
+            return None
+
+        current_price = self._latest_price(symbol)
+        if not current_price or current_price <= 0:
+            logger.warning(f"[Broker] {symbol}: no price for short sizing, skipping")
+            return None
+
+        qty = max(1, int(float(notional) / current_price))
+        req = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+        )
+        order = self.trading.submit_order(req)
+        self._open_orders_cache_ts = 0.0
+        logger.info(f"[{strategy}] SELL SHORT {qty} {symbol} @ ~${current_price:.2f} "
+                    f"(~${notional:,.0f}) — order {order.id}")
+
+        # record positions_state row for this short entry
+        try:
+            _record_entry_safe(
+                symbol=symbol, side="short", qty=float(qty),
+                entry_price=current_price, strategy=strategy,
+            )
+        except Exception as e:
+            logger.debug(f"[Broker] record_entry skipped for short {symbol}: {e}")
+
+        # place protective bracket (stop above entry / TP below) for the short
+        try:
+            from strategies.trade_management import place_bracket_orders
+            place_bracket_orders(
+                self, symbol, current_price, float(qty),
+                strategy=strategy or "momentum",
+                signal_score=signal_score,
+                is_short=True,
+            )
+        except Exception as _e:
+            logger.warning(f"[Broker] Could not place bracket orders for short {symbol}: {_e}")
+
+        return {"id": str(order.id), "symbol": symbol, "side": "sell_short",
+                "qty": qty, "notional": notional, "strategy": strategy}
+
+    def _latest_price(self, symbol: str) -> float:
+        """Latest trade price via Alpaca, falling back to yfinance. 0.0 on failure."""
+        try:
+            from alpaca.data.requests import StockLatestTradeRequest
+            req = StockLatestTradeRequest(symbol_or_symbols=symbol, feed="iex")
+            trade = self.data.get_stock_latest_trade(req)
+            price = float(trade[symbol].price)
+            if price > 0:
+                return price
+        except Exception as e:
+            logger.debug(f"[Broker] latest trade fetch failed for {symbol}: {e}")
+        try:
+            import yfinance as _yf
+            fi = _yf.Ticker(symbol).fast_info
+            for attr in ("last_price", "regular_market_price"):
+                v = getattr(fi, attr, None)
+                if v and float(v) > 0:
+                    return float(v)
+        except Exception:
+            pass
+        return 0.0
 
     def submit_order(self, symbol: str, qty, side: str, type: str = "market",
                      time_in_force: str = "day", strategy_tag: Optional[str] = None,

@@ -17,6 +17,8 @@ logger = logging.getLogger("alphabot.tp_engine")
 _TP_MULTIPLES = {
     # strategy: (tp1_atr_mult, tp2_atr_mult)
     "momentum":        (1.5, 3.0),   # trending — let it run
+    "trend_pullback":  (1.5, 3.0),   # pullback continuation — same as momentum
+    "multi_tf_rsi":    (1.5, 3.0),   # multi-timeframe RSI — same as momentum
     "breakout":        (2.0, 4.0),   # breakouts can run hard
     "trend_following": (2.0, 5.0),   # longest duration trades
     "mean_reversion":  (1.0, 2.0),   # snap-back, tighter target
