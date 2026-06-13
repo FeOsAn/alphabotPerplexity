@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v84.1"
+VERSION = "v85"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -223,6 +223,9 @@ def get_market_regime() -> str:
 # Track last risk-metrics fire date (logged once daily after 10 AM ET)
 _last_metrics_date: str = ""
 
+# v85 — track last regime-exit sweep date (runs once daily after the open)
+_last_regime_exit_date: str = ""
+
 # ── Daily P&L recap / gap-protection / circuit-breaker state ─────────────────
 _recap_sent_date: str = ""
 _gap_protection_run_date: str = ""
@@ -247,6 +250,7 @@ def _persist_daily_state(db_conn):
         set_state(db_conn, "gap_protection_run_date",  _gap_protection_run_date or "")
         set_state(db_conn, "last_report_date",         _last_report_date or "")
         set_state(db_conn, "last_metrics_date",        _last_metrics_date or "")
+        set_state(db_conn, "last_regime_exit_date",     _last_regime_exit_date or "")
     except Exception as e:
         logger.warning(f"[State] Persist daily dates failed: {e}")
 
@@ -255,7 +259,7 @@ def _restore_state(db_conn):
     """Restore persisted state from bot_state on startup."""
     global _circuit_breaker_active, _circuit_breaker_reset_date
     global _recap_sent_date, _gap_protection_run_date
-    global _last_report_date, _last_metrics_date
+    global _last_report_date, _last_metrics_date, _last_regime_exit_date
     try:
         cb = get_state(db_conn, "circuit_breaker_active")
         if cb is not None:
@@ -276,6 +280,9 @@ def _restore_state(db_conn):
         met = get_state(db_conn, "last_metrics_date")
         if met:
             _last_metrics_date = met
+        rex = get_state(db_conn, "last_regime_exit_date")
+        if rex:
+            _last_regime_exit_date = rex
 
         logger.info(
             f"[State] Restored: CB={_circuit_breaker_active} (reset={_circuit_breaker_reset_date}) | "
@@ -611,6 +618,29 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         # ── Market regime check (v83: 3-tier) ────────────────────────────────────
         regime = get_market_regime()
         logger.info(f"[Regime] Current regime: {regime.upper()}")
+
+        # v85 — persist the active 3-tier regime so record_entry() can tag each
+        # new position with the regime it was opened under.
+        try:
+            from db import set_state as _set_state
+            _set_state(db_conn, "current_regime", regime)
+        except Exception as e:
+            logger.debug(f"[Regime] could not persist current_regime: {e}")
+
+        # v85 — regime-change exits: close positions whose opening_strategy is no
+        # longer compatible with the current regime. Runs once per day on the
+        # first strategy pass after the regime is (re)evaluated at the open.
+        global _last_regime_exit_date
+        _today_str = now_et.strftime("%Y-%m-%d")
+        if _last_regime_exit_date != _today_str:
+            try:
+                from strategies.regime_exit import check_regime_exits
+                exited = check_regime_exits(broker, regime)
+                logger.info(f"[REGIME EXIT] {len(exited)} position(s) closed: {exited}")
+                _last_regime_exit_date = _today_str
+                _persist_daily_state(db_conn)
+            except Exception as e:
+                logger.error(f"[REGIME EXIT] check_regime_exits failed: {e}", exc_info=True)
 
         if regime == "bear":
             logger.info("BEAR regime — running bear-safe strategies")

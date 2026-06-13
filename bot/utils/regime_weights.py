@@ -91,6 +91,27 @@ REGIME_WEIGHTS = {
     },
 }
 
+# v85 — regime compatibility per strategy. Drives check_regime_exits(): when the
+# market regime flips, any open position whose opening_strategy is NOT compatible
+# with the new regime is closed at market. Uses the 3-tier regime vocabulary
+# ("bull"/"chop"/"bear") emitted by main.get_market_regime().
+STRATEGY_REGIME_COMPAT = {
+    "momentum":         ["bull", "chop"],
+    "breakout":         ["bull", "chop"],
+    "trend_pullback":   ["bull", "chop"],
+    "squeeze_screener": ["bull", "chop"],
+    "short_hedge":      ["bear", "chop"],
+    "mean_reversion":   ["bull", "chop", "bear"],
+    "multi_tf_rsi":     ["bull", "chop", "bear"],
+    "vwap_reclaim":     ["bull", "chop", "bear"],
+    "vix_reversal":     ["bear", "chop"],
+    "spy_dip_buy":      ["bull", "chop"],
+    "earnings_drift":   ["bull", "chop", "bear"],
+    "sector_rotation":  ["bull", "chop"],
+    "pairs_trading":    ["bull", "chop", "bear"],
+    "trend_following":  ["bull", "chop"],
+}
+
 DEFAULT_MULTIPLIER = 1.0
 
 

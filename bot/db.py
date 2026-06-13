@@ -115,6 +115,16 @@ def init_db():
     except Exception:
         pass  # Column already exists
 
+    # v85 — tag each entry with the regime + strategy it was opened under so
+    # check_regime_exits() can close positions when the regime flips away from
+    # the strategy's compatible set.
+    for col_def in ["opening_regime TEXT", "opening_strategy TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE positions_state ADD COLUMN {col_def}")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
     # v79 — per-symbol lifecycle state: TP order IDs, re-eval counter, entry date.
     # Separate from positions_state so lifecycle state survives partial closes.
     c.execute("""
@@ -347,25 +357,33 @@ def del_state(conn: sqlite3.Connection, key: str) -> None:
 def write_position_state(conn: sqlite3.Connection, *, symbol: str, side: str,
                          qty: float, entry_price: float, entry_atr: float,
                          initial_stop: float, tp_target: Optional[float],
-                         strategy: str, tp_basis: Optional[str]) -> None:
+                         strategy: str, tp_basis: Optional[str],
+                         opening_regime: Optional[str] = None,
+                         opening_strategy: Optional[str] = None) -> None:
     """Upsert the per-symbol entry record. Called by record_entry() after every buy."""
     try:
         initial_risk = abs(entry_price - initial_stop)
         entry_time = now_utc().isoformat()
+        if opening_strategy is None:
+            opening_strategy = strategy
         conn.execute("""
             INSERT INTO positions_state
                 (symbol, side, qty, entry_price, entry_atr, initial_stop,
-                 tp_target, strategy, entry_time, tp_basis, initial_risk, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                 tp_target, strategy, entry_time, tp_basis, initial_risk,
+                 opening_regime, opening_strategy, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(symbol) DO UPDATE SET
                 side=excluded.side, qty=excluded.qty,
                 entry_price=excluded.entry_price, entry_atr=excluded.entry_atr,
                 initial_stop=excluded.initial_stop, tp_target=excluded.tp_target,
                 strategy=excluded.strategy, entry_time=excluded.entry_time,
                 tp_basis=excluded.tp_basis, initial_risk=excluded.initial_risk,
+                opening_regime=excluded.opening_regime,
+                opening_strategy=excluded.opening_strategy,
                 updated_at=datetime('now')
         """, (symbol, side, qty, entry_price, entry_atr, initial_stop,
-              tp_target, strategy, entry_time, tp_basis, initial_risk))
+              tp_target, strategy, entry_time, tp_basis, initial_risk,
+              opening_regime, opening_strategy))
         conn.commit()
     except Exception as e:
         logger.warning(f"[db.write_position_state] {symbol}: {e}")

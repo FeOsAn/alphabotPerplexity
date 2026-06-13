@@ -254,6 +254,16 @@ def record_entry(conn, broker, *, symbol: str, side: str, qty: float,
                 symbol, side, entry_price, initial_stop, strategy, atr
             )
 
+        # v85 — record the regime this position was opened under. main.py
+        # persists the active 3-tier regime ("bull"/"chop"/"bear") into bot_state
+        # under "current_regime" after every regime evaluation.
+        opening_regime = None
+        try:
+            from db import get_state
+            opening_regime = get_state(conn, "current_regime")
+        except Exception:
+            opening_regime = None
+
         from db import write_position_state
         write_position_state(
             conn,
@@ -261,6 +271,7 @@ def record_entry(conn, broker, *, symbol: str, side: str, qty: float,
             entry_price=entry_price, entry_atr=atr,
             initial_stop=initial_stop, tp_target=tp_target,
             strategy=strategy, tp_basis=tp_basis,
+            opening_regime=opening_regime, opening_strategy=strategy,
         )
         tp_txt = f"${tp_target:.2f}" if tp_target is not None else "n/a"
         logger.info(
