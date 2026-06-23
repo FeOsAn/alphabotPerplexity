@@ -221,7 +221,7 @@ def _compute_signals(sym: str) -> Optional[dict]:
         t = get_thresholds()
         cond_near_high = pct_from_high >= t["breakout_proximity"]
         cond_volume = vol_ratio >= t["breakout_vol_min"]
-        cond_rsi = 55 <= rsi <= t["breakout_rsi_max"]
+        cond_rsi = 60 <= rsi <= t["breakout_rsi_max"]  # v90: entry floor 55->60 (cut weak mid-range entries)
         cond_ma50 = above_ma50
         cond_slope = slope_20d >= 0.02
 

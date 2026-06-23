@@ -207,6 +207,8 @@ def run(broker: AlpacaBroker, db_conn):
                     f"FLOW_SCORE_LOW={FLOW_SCORE_LOW}, skipping"
                 )
 
+    logger.info(f"[{STRATEGY_NAME}] Scanned {len(UNIVERSE)} symbols — {len(signals)} qualified for entry")
+
     if not signals:
         logger.info("[OptionsFlow] No unusual call flow detected today")
         _ran_today = today

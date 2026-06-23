@@ -225,6 +225,8 @@ def run(broker: AlpacaBroker, db_conn):
         if sig:
             signals.append(sig)
 
+    logger.info(f"[{STRATEGY_NAME}] Scanned {len(UNIVERSE)} symbols — {len(signals)} qualified for entry")
+
     if not signals:
         logger.info("[Squeeze] No qualifying squeeze candidates today")
         _ran_today = today

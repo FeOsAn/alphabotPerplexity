@@ -4,12 +4,14 @@ Strategies call get_multiplier(strategy_name) to scale their position sizes.
 """
 from utils.regime_detector import get_regime
 
+# Note: earnings_nlp was deprecated in v90 (dead/orphaned strategy, never
+# dispatched, superseded by earnings_prediction) — its weights and TP config
+# were removed.
 REGIME_WEIGHTS = {
     "BULL_STRONG": {
         # ── Existing strategies ──────────────────────────────────────────────
         "momentum":       1.5,
         "breakout":       1.5,
-        "earnings_nlp":   1.2,
         "ts_momentum":    1.0,
         "ai_research":    1.2,
         "event_driven":   1.2,
@@ -27,7 +29,6 @@ REGIME_WEIGHTS = {
     "BULL_NORMAL": {
         "momentum":       1.0,
         "breakout":       1.0,
-        "earnings_nlp":   1.0,
         "ts_momentum":    1.0,
         "ai_research":    1.0,
         "event_driven":   1.0,
@@ -50,7 +51,6 @@ REGIME_WEIGHTS = {
         "spy_dip":        0.0,   # new block
         "trend_pullback": 0.0,   # B bleeds -0.42%/trade in chop — blocked
         # Regime-agnostic / counter-trend: keep running
-        "earnings_nlp":   0.8,
         "ts_momentum":    1.0,
         "ai_research":    0.8,
         "event_driven":   0.8,
@@ -66,7 +66,6 @@ REGIME_WEIGHTS = {
         "trend_following":0.5,   # short-side only, internally gated
         "sector_rotation":0.0,
         "spy_dip":        0.0,
-        "earnings_nlp":   0.7,
         "ts_momentum":    1.2,
         "ai_research":    0.5,
         "event_driven":   0.7,
@@ -83,7 +82,6 @@ REGIME_WEIGHTS = {
         "trend_following":0.0,
         "sector_rotation":0.0,
         "spy_dip":        0.0,
-        "earnings_nlp":   0.5,
         "ts_momentum":    1.5,
         "ai_research":    0.0,
         "event_driven":   0.5,
@@ -117,6 +115,11 @@ STRATEGY_REGIME_COMPAT = {
     "trend_following":  ["bull", "chop"],
     "52wh_vol":         ["bull", "chop"],
     "conviction_long":  ["bull", "chop"],
+    # v90: previously missing — these open longs but were never swept on a
+    # regime flip. earnings_prediction has no regime gate (dispatched in all
+    # regimes); ai_research carries nonzero weight through bear_mild.
+    "earnings_prediction": ["bull", "chop", "bear"],
+    "ai_research":         ["bull", "chop", "bear"],
 }
 
 DEFAULT_MULTIPLIER = 1.0

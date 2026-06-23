@@ -113,18 +113,6 @@ def run(broker: AlpacaBroker, db_conn):
     """Run SPY/QQQ dip-in-uptrend strategy."""
     logger.info("=== SPY Dip Strategy: Checking signals ===")
 
-    # v83: only runs in bull — dip-in-uptrend needs an uptrend
-    try:
-        from utils.regime_weights import get_multiplier as _rm
-        if _rm("spy_dip") == 0.0:
-            logger.info("[SPY Dip] Regime weight 0.0 (chop or bear) — skipping")
-            return
-    except Exception:
-        from utils.regime import is_bull_market
-        if not is_bull_market():
-            logger.info("[SPY Dip] Bear regime — skipping")
-            return
-
     signals = _get_signals()
     if not signals:
         logger.warning("[SPY Dip] No signals computed — skipping")
@@ -140,6 +128,9 @@ def run(broker: AlpacaBroker, db_conn):
     spy_dip_positions = [p for p in all_positions if p["strategy"] == STRATEGY_NAME]
 
     # ── 1. Exit checks ────────────────────────────────────────────────────────
+    # Run unconditionally (independent of regime) so positions opened in bull
+    # still get stop/TP/regime-flip exits managed when the regime turns chop/bear.
+    # Mirrors fifty_two_wh.py's structure: exits first, entries regime-gated.
     for pos in spy_dip_positions:
         sym = pos["symbol"]
         pnl_pct = pos["unrealized_pnl_pct"]
@@ -171,7 +162,22 @@ def run(broker: AlpacaBroker, db_conn):
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
             current_symbols.discard(sym)
 
-    # ── 2. Entry ──────────────────────────────────────────────────────────────
+    # ── 2. Entry (regime-gated) ───────────────────────────────────────────────
+    # v83: only enters in bull — dip-in-uptrend needs an uptrend. v90: this gate
+    # now lives AFTER exits so chop/bear positions still get managed above.
+    try:
+        from utils.regime_weights import get_multiplier as _rm
+        if _rm("spy_dip") == 0.0:
+            logger.info("[SPY Dip] Regime weight 0.0 (chop or bear) — exits only, no new entries")
+            logger.info("[SPY Dip] Scan complete")
+            return
+    except Exception:
+        from utils.regime import is_bull_market
+        if not is_bull_market():
+            logger.info("[SPY Dip] Bear regime — exits only, no new entries")
+            logger.info("[SPY Dip] Scan complete")
+            return
+
     for sym, sig in signals.items():
         if sym in current_symbols:
             continue

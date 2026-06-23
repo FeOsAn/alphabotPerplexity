@@ -35,7 +35,8 @@ _TP_MULTIPLES = {
     "insider_buying":  (1.5, 3.0),   # insider-cluster drift, momentum profile
     "options_flow":    (1.5, 3.0),   # unusual options flow follow-through
     "earnings_prediction": (1.5, 2.5),  # earnings catalyst drift (like earnings_drift)
-    "earnings_nlp":    (1.5, 2.5),   # earnings NLP sentiment drift
+    # earnings_nlp deprecated in v90 — dead/orphaned strategy (never dispatched,
+    # superseded by earnings_prediction); config removed.
     "conviction_long": (2.0, 4.0),   # wider targets for multi-week conviction holds
     "sector_rotation": (0.0, 0.0),   # no fixed TP — rotation managed separately
     "pairs_trading":   (0.0, 0.0),   # TP = z-score target, managed separately

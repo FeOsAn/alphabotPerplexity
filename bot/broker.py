@@ -300,7 +300,12 @@ class AlpacaBroker:
             avail_ratio = (cash - short_mv) / equity if equity > 0 else 1.0
             if equity > 0 and avail_ratio < 0.25:
                 if float(signal_score) < 0.85:
-                    logger.info(f"[Broker] {symbol}: avail_cash={avail_ratio:.0%} < 25% floor, score={signal_score:.2f} < 0.85 — skipping")
+                    # v90: explicit [CASH FLOOR] line so logs distinguish "no signal"
+                    # from "entry blocked by the 25% cash floor".
+                    logger.info(
+                        f"[CASH FLOOR] Entry blocked for {symbol} ({strategy or 'unknown'}) — "
+                        f"cash_ratio={avail_ratio:.1%}, signal_score={float(signal_score):.2f}"
+                    )
                     return None
                 # High conviction — try displacement
                 from strategies.position_lifecycle import check_capital_and_displace

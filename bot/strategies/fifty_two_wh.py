@@ -9,13 +9,12 @@ Distinct from `breakout` (which trades proximity to the 52w high + RSI + slope):
 52WH-Vol requires an ACTUAL new-closing-high breach (today's close exceeds the
 prior 252-day closing high) plus a strict volume + trend + volatility gate.
 
-Entry requires ALL five conditions:
+Entry requires ALL conditions (v90: dropped the ATR volatility gate):
   1. Today's close > prior 252-day closing high (shift(1) — yesterday's high,
      so today's close is the breakout itself)
-  2. Volume >= 1.2x the 20-day average volume (institutional confirmation)
+  2. Volume >= 1.1x the 20-day average volume (institutional confirmation)
   3. Close >= 3% above the 50-day SMA (trend structure)
-  4. ATR(14) >= 0.4% of price (minimum volatility filter — skip dead names)
-  5. Regime: BULL or CHOP only (never BEAR)
+  4. Regime: BULL or CHOP only (never BEAR)
 
 Exits:
   - Hard stop: 5% below entry (placed as bracket stop)
@@ -53,9 +52,9 @@ STRATEGY_NAME = "52wh_vol"
 FIFTY_TWO_WH_MAX_POSITIONS = 4
 STOP_LOSS_PCT = 0.05            # 5% hard stop below entry
 TAKE_PROFIT_PCT = 0.10         # 10% take profit above entry
-VOL_MULT_MIN = 1.2            # volume >= 1.2x 20-day average
+VOL_MULT_MIN = 1.1            # v90: volume >= 1.1x 20-day average (was 1.2x — too restrictive)
 MA50_BUFFER = 0.03            # close >= 3% above 50-day SMA
-ATR_MIN_PCT = 0.004          # ATR(14) >= 0.4% of price
+# ATR_MIN_PCT removed in v90 — ATR entry gate had zero discriminating power.
 TRAIL_BE_GAIN = 0.07         # +7% -> ratchet stop to breakeven
 TRAIL_LOCK_GAIN = 0.15       # +15% -> ratchet stop to entry + 7%
 TRAIL_LOCK_LEVEL = 0.07      # locked stop sits 7% above entry
@@ -203,16 +202,17 @@ def _compute_signals(sym: str) -> Optional[dict]:
         ma50 = float(close.tail(50).mean()) if len(close) >= 50 else None
         cond_ma50 = bool(ma50 is not None and ma50 > 0 and price_now >= ma50 * (1.0 + MA50_BUFFER))
 
-        # 4. ATR(14) >= 0.4% of price (minimum volatility filter).
+        # 4. ATR(14) — still computed (reported in signals/logs), but v90 REMOVED
+        #    it from the entry filter: the atr >= 0.4% gate had zero discriminating
+        #    power (identical results across all ATR tiers per volume bucket).
         try:
             atr_series = _pta.atr(hist["High"], hist["Low"], hist["Close"], length=14)
             atr = float(atr_series.dropna().iloc[-1]) if atr_series is not None and not atr_series.dropna().empty else 0.0
         except Exception:
             atr = 0.0
         atr_pct = atr / price_now if price_now > 0 else 0.0
-        cond_atr = atr_pct >= ATR_MIN_PCT
 
-        buy_signal = cond_breakout and cond_volume and cond_ma50 and cond_atr
+        buy_signal = cond_breakout and cond_volume and cond_ma50
 
         return {
             "symbol": sym,
@@ -226,7 +226,6 @@ def _compute_signals(sym: str) -> Optional[dict]:
             "cond_breakout": cond_breakout,
             "cond_volume": cond_volume,
             "cond_ma50": cond_ma50,
-            "cond_atr": cond_atr,
         }
 
     except Exception as e:

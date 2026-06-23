@@ -272,6 +272,7 @@ def _scan_universe(db_conn) -> list[dict]:
         pass
 
     signals.sort(key=lambda x: (x["is_cluster"], x["notional"]), reverse=True)
+    logger.info(f"[{STRATEGY_NAME}] Scanned {len(UNIVERSE)} symbols — {len(signals)} qualified for entry")
     return signals
 
 
