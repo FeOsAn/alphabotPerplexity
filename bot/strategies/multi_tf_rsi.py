@@ -251,7 +251,10 @@ def run(broker: AlpacaBroker, db_conn):
         except Exception:
             pass
 
-        size_pct = DEFAULT_STRATEGY_ALLOCATION_PCT * regime_mult * size_mult
+        # v86 (M5) — size_mult already encodes the regime (per-direction, keyed on the
+        # detected regime); regime_mult is the same regime signal applied again, so it
+        # double-scaled position size. regime_mult still gates the strategy at L178.
+        size_pct = DEFAULT_STRATEGY_ALLOCATION_PCT * size_mult
         notional = portfolio_value * min(size_pct, MAX_SINGLE_POSITION_PCT)
 
         cash, portfolio_value = broker.get_live_cash()

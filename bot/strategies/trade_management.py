@@ -46,7 +46,7 @@ logger = logging.getLogger("alphabot.trade_management")
 
 
 # ETFs and commodity funds don't have earnings calendars — skip to avoid 404 spam
-_ETF_PREFIXES = {"XL", "XL"}
+_ETF_PREFIXES = {"XL"}
 _NO_EARNINGS_SYMBOLS: set = {
     "DBC", "EEM", "GLD", "SLV", "XLE", "XLK", "XLV", "XLF", "XLI", "XLB",
     "XLU", "XLP", "XLY", "XLC", "XLRE", "SPY", "QQQ", "IWM", "DIA", "VXX",
@@ -388,7 +388,8 @@ def place_bracket_orders(
     """
     try:
         from alpaca.trading.requests import (
-            LimitOrderRequest, TakeProfitRequest, StopLossRequest, OrderClass
+            LimitOrderRequest, TakeProfitRequest, StopLossRequest, OrderClass,
+            StopOrderRequest,
         )
         from alpaca.trading.enums import OrderSide, TimeInForce
         from strategies.tp_engine import calculate_tp_levels
@@ -398,8 +399,13 @@ def place_bracket_orders(
             logger.debug(f"[TM] {symbol}: qty rounds to 0, skipping bracket placement")
             return None, None, None
 
+        # v86 — preserve direction so short stops land ABOVE entry (buy-to-cover).
+        # _calc_stop_price keys off the sign of qty, and the bracket was always
+        # called with a positive qty, putting short stops on the wrong side.
+        signed_qty = -abs_qty if is_short else abs_qty
+
         # Calculate stop + TP levels
-        stop_price = _calc_stop_price(symbol, entry_price, qty, strategy)
+        stop_price = _calc_stop_price(symbol, entry_price, signed_qty, strategy)
         tp1, tp2 = calculate_tp_levels(
             symbol, entry_price, strategy,
             is_short=is_short, signal_score=signal_score
@@ -407,7 +413,7 @@ def place_bracket_orders(
         if not tp1 or not tp2:
             # Strategy has no fixed TP (sector_rotation etc) — just place a plain stop
             logger.info(f"[TM] {symbol}: no fixed TP for strategy={strategy}, placing plain stop only")
-            stop_id = place_exchange_stop(broker, symbol, entry_price, qty, strategy)
+            stop_id = place_exchange_stop(broker, symbol, entry_price, signed_qty, strategy)
             return None, stop_id, stop_price
 
         # Split qty: TP1 gets floor-half, OCO bracket gets the rest
@@ -438,6 +444,22 @@ def place_bracket_orders(
             except Exception as _e:
                 logger.warning(f"[TM] TP1 order failed for {symbol}: {_e}")
 
+            # v86 (C7) — the TP1 half previously had NO stop, leaving up to half the
+            # position unprotected on the downside. Place a plain GTC stop for the
+            # TP1 shares so the WHOLE position is covered (TP1 stop + OCO stop).
+            try:
+                tp1_stop_req = StopOrderRequest(
+                    symbol=symbol, qty=tp1_qty, side=sell_side,
+                    stop_price=round(stop_price, 2), time_in_force=TimeInForce.GTC,
+                )
+                tp1_stop_result = broker.trading.submit_order(tp1_stop_req)
+                logger.info(
+                    f"[TM] TP1 stop placed: {symbol} {tp1_qty}sh @ ${stop_price:.2f} "
+                    f"| id={tp1_stop_result.id if tp1_stop_result else None}"
+                )
+            except Exception as _e:
+                logger.warning(f"[TM] TP1 stop failed for {symbol}: {_e}")
+
         # --- Order B: OCO (TP2 limit + stop loss) for bracket_qty shares ---
         oco_order_id = None
         try:
@@ -457,10 +479,16 @@ def place_bracket_orders(
             )
         except Exception as _e:
             logger.warning(f"[TM] OCO bracket order failed for {symbol}: {_e}")
-            # Fallback: place a plain stop so downside is always protected
+            # v86 (C7) — the OCO carried the only stop for the bracket_qty shares.
+            # On failure, guarantee a plain stop covering the bracket shares so that,
+            # together with the TP1-half stop above, the FULL position is protected.
+            # Never return with a resting TP and no stop on the downside.
             try:
-                stop_id = place_exchange_stop(broker, symbol, entry_price, qty, strategy)
-                logger.info(f"[TM] Fallback plain stop placed for {symbol}: {stop_id}")
+                signed_bracket = -bracket_qty if is_short else bracket_qty
+                stop_id = place_exchange_stop(broker, symbol, entry_price, signed_bracket, strategy)
+                logger.info(
+                    f"[TM] Fallback plain stop placed for {symbol} ({bracket_qty}sh): {stop_id}"
+                )
                 oco_order_id = stop_id
             except Exception:
                 pass
@@ -543,7 +571,19 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
 
         is_short = (side == "short") if side else False
         order_side = OrderSide.BUY if is_short else OrderSide.SELL
+        # v86 (H4) — size the replacement stop from the LIVE remaining position, not
+        # the original stored qty. After a TP1 partial fill the held share count
+        # shrinks; re-placing a stop for the original qty exceeds shares held → 422
+        # reject → remaining shares left unprotected.
         abs_qty = int(abs(float(qty))) if qty else 0
+        try:
+            live_pos = broker.get_position(symbol)
+            if live_pos:
+                live_qty = int(abs(float(live_pos.get("qty", 0) or 0)))
+                if live_qty > 0:
+                    abs_qty = live_qty
+        except Exception as _le:
+            logger.debug(f"[TM] update_exchange_stop live qty lookup failed for {symbol}: {_le}")
         if abs_qty <= 0:
             return None
 
@@ -575,30 +615,10 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
                 logger.debug(f"[TM] Could not scan open orders for {symbol}: {_fe}")
 
         # --- Place new OCO bracket with updated stop (preserve TP2 if we have it) ---
-        # The bracket covers bracket_qty = abs_qty - tp1_qty
-        # Since TP1 is a separate plain limit, we need to track how many shares it covers.
-        # Simplest: the OCO always covers the same bracket_qty as initially placed.
-        # We read this from position_state; if missing, use half of abs_qty (safe fallback).
-        try:
-            _conn2 = _gc()
-            try:
-                ps2_full = _conn2.execute(
-                    "SELECT tp1_order_id FROM position_state WHERE symbol=?",
-                    (symbol,)
-                ).fetchone()
-            finally:
-                _conn2.close()
-            # If TP1 order exists, it holds abs_qty//2 shares; OCO holds the rest
-            # If TP1 already filled, the position is smaller; OCO should now hold fewer shares
-            # For safety, we re-derive from current position qty
-        except Exception:
-            pass
-
-        if abs_qty == 1:
-            bracket_qty = 1
-        else:
-            tp1_qty = abs_qty // 2
-            bracket_qty = abs_qty - tp1_qty
+        # v86 (H4) — the ratcheted stop must cover the ENTIRE live remaining position
+        # (TP1 has typically already filled by the time we trail the stop), so size
+        # the replacement to the full current qty rather than half.
+        bracket_qty = abs_qty
 
         new_order_id = None
         if tp2_price:

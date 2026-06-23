@@ -158,7 +158,7 @@ def _get_gap_signals() -> list[dict]:
 
             # Pre-market price via fast_info
             try:
-                pre_price = getattr(ticker.fast_info, "preMarketPrice", None) or getattr(ticker.fast_info, "lastPrice", None)
+                pre_price = getattr(ticker.fast_info, "pre_market_price", None) or getattr(ticker.fast_info, "last_price", None)
                 if pre_price is None:
                     continue
                 pre_price = float(pre_price)

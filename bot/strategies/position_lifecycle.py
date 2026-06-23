@@ -127,20 +127,26 @@ def sync_exchange_fills(broker, db_conn):
     """
     try:
         open_syms = {p.get("symbol") for p in broker.get_positions()}
-        # Find symbols in our DB that are no longer open positions
-        if open_syms:
-            placeholders = ",".join("?" * len(open_syms))
-            rows = db_conn.execute(
-                f"SELECT symbol FROM position_state WHERE symbol NOT IN ({placeholders})",
-                list(open_syms)
-            ).fetchall()
-        else:
-            rows = db_conn.execute(
-                "SELECT symbol FROM position_state"
-            ).fetchall()
-        for (sym,) in rows:
+        # v86 (H3) — find closed symbols across BOTH state tables. Previously only
+        # position_state was scanned/cleaned, so the durable positions_state row
+        # leaked → the double-entry guard wrongly blocked re-entry and regime_exit
+        # acted on phantom rows.
+        def _closed_syms(table: str) -> set:
+            if open_syms:
+                placeholders = ",".join("?" * len(open_syms))
+                rows = db_conn.execute(
+                    f"SELECT symbol FROM {table} WHERE symbol NOT IN ({placeholders})",
+                    list(open_syms)
+                ).fetchall()
+            else:
+                rows = db_conn.execute(f"SELECT symbol FROM {table}").fetchall()
+            return {r[0] for r in rows}
+
+        closed = _closed_syms("position_state") | _closed_syms("positions_state")
+        for sym in closed:
             logger.info(f"[Lifecycle] {sym}: position closed by exchange order — syncing state")
             db_conn.execute("DELETE FROM position_state WHERE symbol=?", (sym,))
+            db_conn.execute("DELETE FROM positions_state WHERE symbol=?", (sym,))
             db_conn.commit()
             # Clear in-memory trade management state
             try:
@@ -266,9 +272,11 @@ def check_capital_and_displace(broker, db_conn, new_signal: dict) -> bool:
             )
             return False
 
-        if expected_rr < 3.0:
+        # v86 (M1) — market_buy's default RR target is 2.0, so a 3.0 bar was never
+        # cleared and displacement never ran. Align the threshold with the RR scale.
+        if expected_rr < 2.0:
             logger.info(
-                f"[Lifecycle] {new_signal.get('symbol')}: R:R={expected_rr:.1f} < 3.0 — no displacement"
+                f"[Lifecycle] {new_signal.get('symbol')}: R:R={expected_rr:.1f} < 2.0 — no displacement"
             )
             return False
 

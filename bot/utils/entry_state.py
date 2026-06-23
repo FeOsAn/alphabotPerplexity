@@ -138,9 +138,10 @@ def _get_atr_for_timeframe(symbol: str, timeframe: str, entry_price: float) -> f
             "feed": "iex",
             "adjustment": "raw",
         }
+        from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
         headers = {
-            "APCA-API-KEY-ID": "PKADXUOZZJ4XBCAQRB4KORUDEG",
-            "APCA-API-SECRET-KEY": "J91d12qXkkceyp51y7f4YyzVfKN1LbWupuPjP99WKJdR",
+            "APCA-API-KEY-ID": ALPACA_API_KEY,
+            "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
         }
         resp = requests.get(url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()

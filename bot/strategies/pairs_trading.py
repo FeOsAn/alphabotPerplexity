@@ -307,7 +307,10 @@ def run(broker: AlpacaBroker, db_conn) -> None:
                      notional / long_price, long_price, 0,
                      {"pair": key, "zscore": z, "leg": "long"})
 
-            broker.market_sell(short_sym, short_qty, STRATEGY_NAME)
+            # v86 (C8) — open the short leg via market_sell_short so it gets a
+            # positions_state row + a protective bracket and is visible to the
+            # double-entry guard / regime exit. market_sell only trims existing longs.
+            broker.market_sell_short(short_sym, notional, strategy=STRATEGY_NAME)
             tag_symbol(short_sym, STRATEGY_NAME)
             log_trade(db_conn, STRATEGY_NAME, short_sym, "sell_short",
                      short_qty, short_price, 0,

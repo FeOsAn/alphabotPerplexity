@@ -50,6 +50,7 @@ class AlpacaBroker:
             "cash": float(acct.cash),
             "buying_power": float(acct.buying_power),
             "equity": float(acct.equity),
+            "short_market_value": abs(float(getattr(acct, "short_market_value", 0) or 0)),
             "maintenance_margin": float(getattr(acct, "maintenance_margin", 0) or 0),
             "initial_margin": float(getattr(acct, "initial_margin", 0) or 0),
             "pnl_today": float(acct.equity) - float(acct.last_equity),
@@ -292,10 +293,14 @@ class AlpacaBroker:
         try:
             account = self.trading.get_account()
             cash = float(account.cash)
-            pv = float(account.portfolio_value)
-            if pv > 0 and cash / pv < 0.25:
+            equity = float(account.equity)
+            # v86 (C4) — short-sale proceeds inflate raw cash, so divide equity-adjusted
+            # available cash (cash minus short market value) by equity for the reserve.
+            short_mv = abs(float(getattr(account, "short_market_value", 0) or 0))
+            avail_ratio = (cash - short_mv) / equity if equity > 0 else 1.0
+            if equity > 0 and avail_ratio < 0.25:
                 if float(signal_score) < 0.85:
-                    logger.info(f"[Broker] {symbol}: cash={cash/pv:.0%} < 25% floor, score={signal_score:.2f} < 0.85 — skipping")
+                    logger.info(f"[Broker] {symbol}: avail_cash={avail_ratio:.0%} < 25% floor, score={signal_score:.2f} < 0.85 — skipping")
                     return None
                 # High conviction — try displacement
                 from strategies.position_lifecycle import check_capital_and_displace
@@ -311,30 +316,45 @@ class AlpacaBroker:
 
         if self._entry_blocked(symbol, "buy", strategy, notional):
             return None
+
+        # v86 (C5) — submit WHOLE-share quantities. Notional fills produced
+        # fractional share counts (e.g. 5.4, 33.9); stop/limit bracket legs require
+        # integer shares, so the fractional remainder was left with no stop/TP.
+        entry_price = self._latest_price(symbol)
+        if not entry_price or entry_price <= 0:
+            logger.warning(f"[Broker] {symbol}: no price for share sizing, skipping buy")
+            return None
+        share_qty = int(float(notional) / entry_price)
+        if share_qty < 1:
+            logger.info(
+                f"[Broker] {symbol}: notional ${notional:.0f} < 1 share @ "
+                f"${entry_price:.2f} — skipping buy"
+            )
+            return None
         req = MarketOrderRequest(
             symbol=symbol,
-            notional=round(notional, 2),
+            qty=share_qty,
             side=OrderSide.BUY,
             time_in_force=TimeInForce.DAY,
         )
         order = self.trading.submit_order(req)
         # Invalidate dedup cache so subsequent calls see this new open order
         self._open_orders_cache_ts = 0.0
-        logger.info(f"[{strategy}] BUY ${notional:.0f} {symbol} — order {order.id}")
+        logger.info(f"[{strategy}] BUY {share_qty} {symbol} (~${notional:.0f}) — order {order.id}")
 
         # v74 — record positions_state row for this entry.
-        filled_price = 0.0
-        filled_qty = 0.0
+        filled_qty = float(share_qty)
+        filled_price = entry_price
         try:
-            filled_price = _estimate_fill_price(order, symbol)
-            if filled_price > 0:
-                filled_qty = float(notional) / filled_price
-                _record_entry_safe(
-                    symbol=symbol, side="long", qty=filled_qty,
-                    entry_price=filled_price, strategy=strategy,
-                    tp_target_override=tp_target_override,
-                    stop_override=stop_override,
-                )
+            fp = _estimate_fill_price(order, symbol)
+            if fp > 0:
+                filled_price = fp
+            _record_entry_safe(
+                symbol=symbol, side="long", qty=filled_qty,
+                entry_price=filled_price, strategy=strategy,
+                tp_target_override=tp_target_override,
+                stop_override=stop_override,
+            )
         except Exception as e:
             logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
 
@@ -464,8 +484,42 @@ class AlpacaBroker:
             tif = TimeInForce.DAY if time_in_force.lower() == "day" else TimeInForce.GTC
             normalized_side = "buy" if order_side == OrderSide.BUY else "sell"
 
+            # v86 — classify the order: an ENTRY opens/adds exposure, a CLOSE/TRIM
+            # reduces an existing position. Alpaca reports shorts as a negative qty.
+            existing_pos = self.get_position(symbol)
+            existing_qty = float(existing_pos.get("qty", 0.0)) if existing_pos else 0.0
+            existing_long = existing_qty > 0
+            existing_short = existing_qty < 0
+            if order_side == OrderSide.BUY:
+                # buy-to-cover closes a short; otherwise we are opening/adding a long
+                is_entry = not existing_short
+            else:
+                # selling into an existing long is a close/trim; otherwise opening a short
+                is_entry = not existing_long
+
+            # v86 (C1) — route genuine entries through the double-entry / capital gate,
+            # the same guard market_buy/market_sell_short use. Skip it for closes/trims
+            # so exits are never blocked.
+            if is_entry:
+                approx_notional = 0.0
+                try:
+                    px = self._latest_price(symbol)
+                    if px > 0:
+                        approx_notional = px * qty
+                except Exception:
+                    approx_notional = 0.0
+                if self._entry_blocked(symbol, normalized_side,
+                                       strategy_tag or "unknown", approx_notional):
+                    logger.warning(
+                        f"[Broker] submit_order entry blocked by safety gate: "
+                        f"{normalized_side} {symbol}"
+                    )
+                    return None
+
             # v73 — BUY-side entry gates (cooldown + entry window + position cap)
-            if normalized_side == "buy":
+            # v86 — only for genuine entries; a buy-to-cover (closing a short) must
+            # not be blocked by entry-window/cooldown/blacklist gates.
+            if is_entry and normalized_side == "buy":
                 from utils.cooldown import is_on_cooldown
                 from utils.market_hours import is_entry_allowed
                 if is_on_cooldown(symbol):
@@ -518,32 +572,33 @@ class AlpacaBroker:
             self._open_orders_cache_ts = 0.0
             logger.info(f"[Broker] submit_order: {side} {qty} {symbol} → {result.id if result else 'no result'}")
 
-            # v74 — record positions_state row for this entry (BUY long, SELL short opens).
-            so_filled_price = 0.0
-            so_filled_qty = float(qty)
-            so_entry_side = "long" if order_side == OrderSide.BUY else "short"
-            try:
+            # v86 — only record state + place a protective bracket for genuine
+            # ENTRIES. A SELL that closes/trims a long (C2) must NOT be recorded as
+            # a short, and a buy-to-cover must not be recorded as a long.
+            if is_entry:
+                so_filled_qty = float(qty)
+                so_entry_side = "long" if order_side == OrderSide.BUY else "short"
                 so_filled_price = _estimate_fill_price(result, symbol)
-                if so_filled_price > 0:
-                    _record_entry_safe(
-                        symbol=symbol, side=so_entry_side, qty=so_filled_qty,
-                        entry_price=so_filled_price, strategy=strategy_tag or "unknown",
-                        tp_target_override=tp_target_override,
-                        stop_override=stop_override,
-                    )
-            except Exception as e:
-                logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
+                try:
+                    if so_filled_price > 0:
+                        _record_entry_safe(
+                            symbol=symbol, side=so_entry_side, qty=so_filled_qty,
+                            entry_price=so_filled_price, strategy=strategy_tag or "unknown",
+                            tp_target_override=tp_target_override,
+                            stop_override=stop_override,
+                        )
+                except Exception as e:
+                    logger.debug(f"[Broker] record_entry skipped for {symbol}: {e}")
 
-            # v81: place OCO bracket (TP1 limit + OCO stop/TP2) immediately after fill (BUY-side only)
-            if normalized_side == "buy":
+                # v86 (C3) — place an exchange bracket for both long and short
+                # entries (previously buys only, leaving shorts naked).
                 try:
                     from strategies.trade_management import place_bracket_orders
-                    is_so_short = so_entry_side == "short"
                     place_bracket_orders(
                         self, symbol, so_filled_price, so_filled_qty,
                         strategy=strategy_tag or "momentum",
                         signal_score=0.5,
-                        is_short=is_so_short,
+                        is_short=(so_entry_side == "short"),
                     )
                 except Exception as _e:
                     logger.warning(f"[Broker] Could not place bracket orders for {symbol}: {_e}")

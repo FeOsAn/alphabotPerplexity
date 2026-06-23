@@ -224,6 +224,7 @@ def _compute_score(sym: str) -> Optional[dict]:
             "ret_1m": ret_1m,
             "ret_1m_prior": ret_1m_prior,
             "rsi": rsi,
+            "ma50": ma50,
             "above_ma50": above_ma50,
             "ma20": ma20,
             "above_ma20": above_ma20,
@@ -260,7 +261,10 @@ def _passes_entry_filters(sig: dict) -> bool:
     # If score > 3.5 AND price > MA50, lower the floor to 0.75x
     # Captures strong trending names that move without volume surges (DELL, AMD pattern)
     _score = sig.get("score", 0) or sig.get("momentum_score", 0)
-    _above_ma50 = sig.get("price", 0) > sig.get("ma50", 0)
+    # v86 (H6) — "ma50" is now populated; guard against None so the MA50 gate on
+    # the volatility-floor override actually applies instead of always passing.
+    _ma50 = sig.get("ma50")
+    _above_ma50 = _ma50 is not None and sig.get("price", 0) > _ma50
     from config import VOL_RATIO_SCORE_OVERRIDE, SCORE_OVERRIDE_THRESHOLD
     if _score > SCORE_OVERRIDE_THRESHOLD and _above_ma50:
         _vol_threshold = min(_vol_threshold, VOL_RATIO_SCORE_OVERRIDE)

@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v85"
+VERSION = "v86"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -513,8 +513,12 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                     _notify_emergency("🚨 Margin Call Risk", msg, key="margin_call_risk", priority="urgent")
                     run_trade_management(broker, db_conn)  # still run exits
                     return
-            if live_pv > 0 and live_cash / live_pv < MIN_CASH_RESERVE_PCT:
-                msg = f"Cash floor: ${live_cash:,.0f} ({live_cash/live_pv:.1%}). Halting entries."
+            # v86 (C4) — short proceeds inflate raw cash; measure reserve against
+            # equity-adjusted available cash (cash minus short market value).
+            short_mv = float(acc.get("short_market_value") or 0.0)
+            avail_ratio = (live_cash - short_mv) / equity if equity > 0 else 1.0
+            if equity > 0 and avail_ratio < MIN_CASH_RESERVE_PCT:
+                msg = f"Cash floor: ${live_cash - short_mv:,.0f} ({avail_ratio:.1%} of equity). Halting entries."
                 logger.warning(msg)  # silent — bot handles this itself
                 run_trade_management(broker, db_conn)
                 return

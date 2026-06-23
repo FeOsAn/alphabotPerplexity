@@ -556,11 +556,18 @@ def run(broker, db_conn=None):
                 logger.warning(f"[EarningsNLP] {sym} position too small at ${price:.2f}")
                 continue
 
-            side = "buy" if direction == "long" else "sell"
-            broker.submit_order(
-                symbol=sym, qty=qty, side=side,
-                type="market", time_in_force="day"
-            )
+            if direction == "long":
+                broker.submit_order(
+                    symbol=sym, qty=qty, side="buy",
+                    type="market", time_in_force="day",
+                    strategy_tag="earnings_nlp",
+                )
+            else:
+                # v86 (C3) — short entries must go through market_sell_short so they
+                # get a recorded positions_state row + a protective bracket.
+                broker.market_sell_short(
+                    sym, notional=trade_value, strategy="earnings_nlp",
+                )
             _active_positions[sym] = {
                 "entry_price": price,
                 "entry_date": datetime.now(timezone.utc),

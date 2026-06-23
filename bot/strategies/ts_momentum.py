@@ -219,7 +219,8 @@ def run(broker, db_conn=None):
                 break
             order_result = broker.submit_order(
                 symbol=sym, qty=qty, side="buy",
-                type="market", time_in_force="day"
+                type="market", time_in_force="day",
+                strategy_tag="ts_momentum",
             )
             if order_result is None:
                 continue
