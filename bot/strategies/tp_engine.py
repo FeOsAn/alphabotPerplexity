@@ -20,6 +20,7 @@ _TP_MULTIPLES = {
     "trend_pullback":  (1.5, 3.0),   # pullback continuation — same as momentum
     "multi_tf_rsi":    (1.5, 3.0),   # multi-timeframe RSI — same as momentum
     "breakout":        (2.0, 4.0),   # breakouts can run hard
+    "52wh_vol":        (1.0, 2.0),   # 52wk-high breakout: single TP +10%, stop -5%
     "trend_following": (2.0, 5.0),   # longest duration trades
     "mean_reversion":  (1.0, 2.0),   # snap-back, tighter target
     "vwap_reclaim":    (1.0, 2.0),   # intraday reclaim, quick

@@ -22,6 +22,7 @@ REGIME_WEIGHTS = {
         # ── v83 new strategies ───────────────────────────────────────────────
         "trend_pullback": 1.5,   # B+G: bull = full authority, long only
         "multi_tf_rsi":   1.2,   # I:   bull = long only, solid edge
+        "52wh_vol":       1.0,   # v87: 52wk-high breakout — bull only at full weight
     },
     "BULL_NORMAL": {
         "momentum":       1.0,
@@ -38,6 +39,7 @@ REGIME_WEIGHTS = {
         "trend_following":1.0,
         "trend_pullback": 1.2,
         "multi_tf_rsi":   1.0,
+        "52wh_vol":       1.0,   # v87: bull = full weight
     },
     "CHOPPY": {
         # Trend-following strategies: OFF in chop (proven to bleed)
@@ -56,6 +58,7 @@ REGIME_WEIGHTS = {
         "mean_reversion": 1.5,
         "short_hedge":    0.5,
         "multi_tf_rsi":   0.8,   # I: positive in chop (+0.49%), run at 0.8×
+        "52wh_vol":       0.5,   # v87: chop = half weight (fewer clean breakouts)
     },
     "BEAR_MILD": {
         "momentum":       0.0,   # was 0.3 — no longs in bear
@@ -72,6 +75,7 @@ REGIME_WEIGHTS = {
         "short_hedge":    1.0,
         "trend_pullback": 0.8,   # short-side entries only, internally gated
         "multi_tf_rsi":   1.3,   # best regime: +0.91% avg/trade, short-heavy
+        "52wh_vol":       0.0,   # v87: no longs in bear
     },
     "BEAR_STRONG": {
         "momentum":       0.0,
@@ -88,6 +92,7 @@ REGIME_WEIGHTS = {
         "short_hedge":    1.5,
         "trend_pullback": 0.6,   # short-side only, conservative
         "multi_tf_rsi":   1.5,   # maximum authority in strong bear
+        "52wh_vol":       0.0,   # v87: no longs in bear
     },
 }
 
@@ -110,6 +115,7 @@ STRATEGY_REGIME_COMPAT = {
     "sector_rotation":  ["bull", "chop"],
     "pairs_trading":    ["bull", "chop", "bear"],
     "trend_following":  ["bull", "chop"],
+    "52wh_vol":         ["bull", "chop"],
 }
 
 DEFAULT_MULTIPLIER = 1.0

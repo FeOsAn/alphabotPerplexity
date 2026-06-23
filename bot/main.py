@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v86"
+VERSION = "v87"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -68,6 +68,7 @@ from strategies import mean_reversion, trend_following, ai_research
 from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import trend_pullback, multi_tf_rsi  # v83
+from strategies import fifty_two_wh  # v87 — 52WH-Vol breakout
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
@@ -670,6 +671,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (short_hedge.run,       "Short hedge"),      # 0.5×
                 (gap_scanner.run,       "Gap scanner"),      # exits only
                 (multi_tf_rsi.run,      "Multi-TF RSI"),     # proven positive in chop, 0.8×
+                (fifty_two_wh.run,      "52WH-Vol"),         # v87: 0.5× in chop
                 # Below handle exits only — self-skip new entries via regime_weight=0.0
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
@@ -697,6 +699,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (squeeze_screener.run,  "Squeeze screener"),
                 (trend_pullback.run,    "Trend pullback"),   # v83: 1.5×
                 (multi_tf_rsi.run,      "Multi-TF RSI"),     # v83: 1.2×
+                (fifty_two_wh.run,      "52WH-Vol"),         # v87: 1.0× in bull
             ]
 
         for fn, name in _strategy_list:
