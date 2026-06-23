@@ -1,5 +1,5 @@
 """
-Strategy: Dual Momentum (Antonacci-style)  — v91
+Strategy: Dual Momentum (Antonacci-style)  — v93
 -------------------------------------------------
 +45.0% / Sharpe 0.98 over 2 years in the v91 deep backtest. Gary Antonacci's
 dual-momentum applied to a small cross-asset ETF universe.
@@ -10,8 +10,15 @@ Two momentum filters, applied monthly (first Monday of the month):
   RELATIVE  — among the absolute survivors, rank by 12-1 momentum and hold the
               top 3, equal-weight (~33% each, ≈99% deployed).
 
-If fewer than 3 assets clear the absolute gate the empty slots are filled with
-GLD; if none clear it the sleeve is 100% GLD. This keeps the book defensive in
+v93 — dual momentum stays the most rules-based of the three, but a 12-month
+winner is no longer bought on that alone. Each candidate must additionally have
+positive 3- AND 6-month returns (not a dying trend), trade above its 50-day MA
+(not in freefall), and have 20-day realised vol ≤ 35% annualised (holdable as a
+core position). Equity ETFs are capped at 2 simultaneously so the third slot
+goes to a non-equity asset (GLD) for diversification.
+
+If fewer than 3 assets clear the gates the empty slots are filled with GLD; if
+none clear it the sleeve is 100% GLD. This keeps the book defensive in
 drawdowns rather than going to cash.
 
 Entry: ALL regimes. On each monthly rebalance the whole sleeve is rebuilt:
@@ -51,6 +58,13 @@ ABS_MOM_FLOOR = 0.048          # absolute momentum gate: 12-month return > 4.8%
 DEPLOY_PCT = 0.99              # ~99% deployed across the slots
 CATASTROPHIC_STOP_PCT = 0.15   # 15% hard stop (the only protective stop)
 LOOKBACK_DAYS = 280            # daily history to download (needs >= 252 trading rows)
+
+# ── v93 additional filters ─────────────────────────────────────────────────────
+MA_TREND = 50                  # must trade above the 50-day MA (not in freefall)
+MAX_VOL_ANNUAL = 0.35          # 20-day realised vol cap, annualised (holdable core)
+VOL_WINDOW = 20                # trading days for realised-vol estimate
+MAX_EQUITY_ETFS = 2            # cap simultaneous equity ETFs; 3rd slot → non-equity
+EQUITY_ETFS = {"SPY", "QQQ", "IWM", "XLK", "XLF", "XLE", "XLV"}  # vs GLD/bond proxies
 
 _LAST_RUN_MONTH_KEY = "dual_momentum_last_run_month"   # "YYYY-MM" guard
 _LAST_ENTRY_DATE_KEY = "dual_momentum_last_entry_date"  # "YYYY-MM-DD" first-run guard
@@ -123,10 +137,14 @@ def _download_closes(symbols: list[str]) -> dict[str, pd.Series]:
 
 
 def _rank_universe(symbols: list[str]) -> list[dict]:
-    """Compute 12-1 momentum + 12-month return for every symbol.
+    """Compute 12-1 momentum + multi-horizon returns, trend and vol for each symbol.
 
     score    = (close[-1] / close[-252]) - (close[-1] / close[-21])   (relative)
     ret_12m  = (close[-1] / close[-252]) - 1.0                         (absolute)
+    ret_6m   = (close[-1] / close[-126]) - 1.0
+    ret_3m   = (close[-1] / close[-63])  - 1.0
+    ma50     = mean(close[-50:])
+    vol_ann  = std(daily pct change over 20d) * sqrt(252)
     """
     closes = _download_closes(symbols)
     rows: list[dict] = []
@@ -134,12 +152,22 @@ def _rank_universe(symbols: list[str]) -> list[dict]:
         try:
             c_now = float(s.iloc[-1])
             c_252 = float(s.iloc[-252])
+            c_126 = float(s.iloc[-126])
+            c_63 = float(s.iloc[-63])
             c_21 = float(s.iloc[-21])
-            if c_now <= 0 or c_252 <= 0 or c_21 <= 0:
+            if min(c_now, c_252, c_126, c_63, c_21) <= 0:
                 continue
             score = (c_now / c_252) - (c_now / c_21)
             ret_12m = (c_now / c_252) - 1.0
-            rows.append({"symbol": sym, "score": score, "ret_12m": ret_12m, "price": c_now})
+            ret_6m = (c_now / c_126) - 1.0
+            ret_3m = (c_now / c_63) - 1.0
+            ma50 = float(s.tail(MA_TREND).mean())
+            vol_ann = float(s.pct_change().tail(VOL_WINDOW).std()) * (252 ** 0.5)
+            rows.append({
+                "symbol": sym, "score": score, "ret_12m": ret_12m,
+                "ret_6m": ret_6m, "ret_3m": ret_3m, "ma50": ma50,
+                "vol_ann": vol_ann, "price": c_now,
+            })
         except Exception as e:
             logger.debug(f"[DUAL-MOM] {sym}: score failed: {e}")
     rows.sort(key=lambda x: x["score"], reverse=True)
@@ -147,23 +175,52 @@ def _rank_universe(symbols: list[str]) -> list[dict]:
     return rows
 
 
+def _passes_filters(r: dict) -> bool:
+    """v93 filters layered on top of the absolute momentum gate. Logs the reason a
+    risk asset is rejected so the selection is debuggable."""
+    sym = r["symbol"]
+    if r["ret_12m"] <= ABS_MOM_FLOOR:
+        logger.info(f"[DUAL_MOM] {sym} rejected: ret_12m={r['ret_12m']*100:.1f}% <= {ABS_MOM_FLOOR*100:.1f}% (absolute gate)")
+        return False
+    if r["ret_3m"] <= 0 or r["ret_6m"] <= 0:
+        logger.info(f"[DUAL_MOM] {sym} rejected: ret_3m={r['ret_3m']*100:.1f}%, ret_6m={r['ret_6m']*100:.1f}% (dying momentum)")
+        return False
+    if r["price"] <= r["ma50"]:
+        logger.info(f"[DUAL_MOM] {sym} rejected: price={r['price']:.2f} <= MA{MA_TREND}={r['ma50']:.2f} (freefall)")
+        return False
+    if r["vol_ann"] > MAX_VOL_ANNUAL:
+        logger.info(f"[DUAL_MOM] {sym} rejected: vol={r['vol_ann']*100:.1f}% > {MAX_VOL_ANNUAL*100:.0f}% annualised (too volatile)")
+        return False
+    return True
+
+
 def _select_targets(ranked: list[dict]) -> list[dict]:
-    """Apply absolute gate then relative selection; fill empty slots with GLD.
+    """Apply absolute gate + v93 filters, cap equity ETFs at 2, then fill the
+    remaining slots with the non-equity safe asset (GLD).
 
     Returns a list of TOP_N target dicts (one per slot). GLD-fill slots reuse the
     GLD row so each slot carries a real price for sizing/stops.
     """
-    by_sym = {r["symbol"] for r in ranked}
     gld_row = next((r for r in ranked if r["symbol"] == SAFE_ASSET), None)
 
-    # ABSOLUTE gate: risk assets must clear the floor; GLD itself can always hold.
-    passers = [
-        r for r in ranked
-        if r["ret_12m"] > ABS_MOM_FLOOR and r["symbol"] != SAFE_ASSET
-    ]
-    targets = passers[:TOP_N]
+    # Risk assets (non-GLD) that clear the absolute gate AND the v93 filters.
+    passers = [r for r in ranked if r["symbol"] != SAFE_ASSET and _passes_filters(r)]
 
-    # Fill remaining slots with GLD (defensive rotation).
+    # Cap simultaneous equity ETFs at MAX_EQUITY_ETFS; non-equity passers (if any
+    # ever exist besides GLD) take the remaining risk slots.
+    targets: list[dict] = []
+    equity_count = 0
+    for r in passers:
+        if len(targets) >= TOP_N:
+            break
+        if r["symbol"] in EQUITY_ETFS:
+            if equity_count >= MAX_EQUITY_ETFS:
+                logger.info(f"[DUAL_MOM] {r['symbol']} skipped: equity ETF cap ({MAX_EQUITY_ETFS}) reached — slot reserved for non-equity")
+                continue
+            equity_count += 1
+        targets.append(r)
+
+    # Fill remaining slots with GLD (the non-equity diversifier / defensive rotation).
     if len(targets) < TOP_N:
         if gld_row is None:
             logger.warning(f"[DUAL-MOM] {SAFE_ASSET} unavailable — cannot fill defensive slots")

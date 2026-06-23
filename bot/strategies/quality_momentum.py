@@ -1,5 +1,5 @@
 """
-Strategy: Quality Momentum Combo  — v91
+Strategy: Quality Momentum Combo  — v93
 ---------------------------------------
 +66.7% / Sharpe 1.23 / Sortino 1.71 over 2 years in the v91 deep backtest.
 
@@ -8,11 +8,24 @@ Blends a defensive QUALITY factor (low 252-day realised volatility) with a
 The quality tilt lets it keep trading in CHOP (at half weight) where pure
 momentum bleeds.
 
+v93 — the combined factor score is now a SCREEN, not the entry trigger. It
+narrows the universe to a top-15 shortlist; an actual BUY then requires the
+trend to be actively strengthening AND the business to clear a fundamental
+quality bar. A high combined score alone is no longer a reason to buy.
+
 Monthly rebalance (first Monday of the month):
   quality   = 1 - (vol_rank_ascending / n)     (lower vol → higher quality)
   momentum  = (return_rank_ascending / n)        (6-month return, normalised)
   combined  = 0.4 * quality + 0.6 * momentum
-  → buy the top 8 by combined score, 8% equity each (≈64% deployment)
+  → top 15 by combined score form the shortlist; from it, BUY only names that
+    pass ALL of:
+      1. Momentum accelerating — return_1m > 0 AND return_1m > return_3m / 3
+      2. Trend rising — close > MA50 AND MA50 today > MA50 20 days ago
+      3. RSI(14) in [45, 68] — not oversold/broken, not overbought/extended
+      4. No earnings within 5 trading days
+      5. Quality fundamentals — trailingPE < 40 and (if available) ROE > 0.10
+  Up to 5 positions (was 8), 13% equity each. If fewer than 2 pass, deploy
+  nothing this month — cash is a position, no forced deployment.
 
 Entry: BULL (full) and CHOP (half size). No new entries in BEAR.
 Exit:
@@ -30,6 +43,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -48,9 +62,11 @@ QUALITY_MOM_UNIVERSE = [
 ]
 QUALITY_MOM_UNIVERSE = list(dict.fromkeys(QUALITY_MOM_UNIVERSE))
 
-TOP_N = 8                  # buy the top 8 by combined score
+SHORTLIST_N = 15           # rank to a top-15 shortlist; gates pick the actual buys
+MAX_POSITIONS = 5          # at most 5 new positions per cycle (was 8)
+MIN_PASSERS = 2            # if fewer than this pass ALL gates, open nothing
 EXIT_RANK = 16             # close when a holding falls out of the top 16
-POSITION_PCT = 0.08        # 8% of equity per position (8 × 8% = 64% deployment)
+POSITION_PCT = 0.13        # 13% of equity per position
 CHOP_SIZE_MULT = 0.5       # half size in CHOP regime
 STOP_PCT = 0.10            # 10% hard stop below entry
 TP_PCT = 0.25              # 25% take-profit above entry
@@ -60,6 +76,15 @@ LOOKBACK_DAYS = 280        # daily history to download (needs >= 252 trading row
 QUALITY_WEIGHT = 0.4
 MOMENTUM_WEIGHT = 0.6
 MOMENTUM_LOOKBACK = 126    # ~6 months of trading days
+
+# ── Entry gate thresholds (v93) ────────────────────────────────────────────────
+RSI_MIN = 45.0             # RSI(14) lower bound (not oversold/broken)
+RSI_MAX = 68.0             # RSI(14) upper bound (not overbought/extended)
+MA_TREND = 50              # close must be above the 50-day MA, which must be rising
+MA_RISING_LOOKBACK = 20    # MA50 today vs MA50 20 days ago
+EARNINGS_BLACKOUT_DAYS = 5 # skip if earnings within 5 trading days
+MAX_PE = 40.0              # trailingPE must be below this
+MIN_ROE = 0.10             # returnOnEquity floor (only if the field is available)
 
 _LAST_RUN_MONTH_KEY = "quality_momentum_last_run_month"   # "YYYY-MM" guard
 _LAST_ENTRY_DATE_KEY = "quality_momentum_last_entry_date"  # "YYYY-MM-DD" first-run guard
@@ -120,6 +145,73 @@ def _trading_days_open(entry_time) -> int:
         return 0
 
 
+def _rsi(series: pd.Series, period: int = 14) -> float:
+    """Wilder-style RSI; returns the latest value (NaN-safe → 50.0 fallback)."""
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    val = rsi.iloc[-1]
+    return float(val) if pd.notna(val) else 50.0
+
+
+def _trading_days_until(target_date) -> int:
+    """Mon-Fri days from today (UTC) to target_date. Negative if already past."""
+    today = datetime.now(timezone.utc).date()
+    if target_date < today:
+        return -1
+    days = 0
+    current = today
+    while current < target_date:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            days += 1
+    return days
+
+
+def _earnings_within(sym: str, n_trading_days: int, info: dict | None = None) -> bool:
+    """True if `sym` reports earnings within `n_trading_days`. Uses the supplied
+    .info dict when given, else fetches it; falls back to the ticker calendar.
+    Fail-open (False) on any error so a flaky source never blocks every name."""
+    dates: list = []
+    try:
+        ticker = yf.Ticker(sym)
+        if info is None:
+            try:
+                info = ticker.info or {}
+            except Exception:
+                info = {}
+        ts = info.get("earningsTimestamp") or info.get("earningsTimestampStart")
+        if ts:
+            try:
+                dates.append(datetime.fromtimestamp(int(ts), tz=timezone.utc).date())
+            except Exception:
+                pass
+        if not dates:
+            cal = ticker.calendar
+            raw = []
+            if isinstance(cal, dict):
+                ed = cal.get("Earnings Date", [])
+                raw = ed if isinstance(ed, list) else ([ed] if ed else [])
+            elif cal is not None and hasattr(cal, "columns") and "Earnings Date" in getattr(cal, "columns", []):
+                raw = cal["Earnings Date"].dropna().tolist()
+            for d in raw:
+                try:
+                    dates.append(d.date() if hasattr(d, "date") else d)
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.debug(f"[QMOM] {sym}: earnings lookup failed: {e}")
+        return False
+
+    for d in dates:
+        td = _trading_days_until(d)
+        if 0 <= td <= n_trading_days:
+            return True
+    return False
+
+
 def _download_closes(symbols: list[str]) -> dict[str, pd.Series]:
     """Download daily closes for the whole universe in ONE yfinance call."""
     closes: dict[str, pd.Series] = {}
@@ -153,8 +245,9 @@ def _download_closes(symbols: list[str]) -> dict[str, pd.Series]:
     return closes
 
 
-def _rank_universe(symbols: list[str]) -> list[dict]:
-    """Rank by combined = 0.4*quality + 0.6*momentum. Returns rows sorted desc."""
+def _rank_universe(symbols: list[str]) -> tuple[list[dict], dict[str, pd.Series]]:
+    """Rank by combined = 0.4*quality + 0.6*momentum. Returns (rows sorted desc,
+    {symbol: close_series}) so entry gates can reuse the downloaded closes."""
     closes = _download_closes(symbols)
     raw: list[dict] = []
     for sym, s in closes.items():
@@ -171,7 +264,7 @@ def _rank_universe(symbols: list[str]) -> list[dict]:
 
     n = len(raw)
     if n == 0:
-        return []
+        return [], closes
 
     # vol_rank ascending: lowest vol → rank 0 → highest quality.
     by_vol = sorted(raw, key=lambda x: x["vol"])
@@ -187,7 +280,74 @@ def _rank_universe(symbols: list[str]) -> list[dict]:
 
     raw.sort(key=lambda x: x["combined"], reverse=True)
     gc.collect()
-    return raw
+    return raw, closes
+
+
+def _passes_entry_gates(sym: str, s: pd.Series) -> bool:
+    """Concrete entry trigger required for a BUY (v93). The combined factor put
+    this name on the shortlist; the trend must be actively strengthening and the
+    business must clear a fundamental quality bar to justify buying. Logs the
+    failing gate."""
+    try:
+        c_now = float(s.iloc[-1])
+
+        # 1. Momentum accelerating — recent pace faster than the 3-month average.
+        ret_1m = (c_now / float(s.iloc[-21])) - 1.0
+        ret_3m = (c_now / float(s.iloc[-63])) - 1.0
+        if not (ret_1m > 0 and ret_1m > ret_3m / 3.0):
+            logger.info(
+                f"[QUAL_MOM] {sym} rejected: momentum not accelerating "
+                f"(ret_1m={ret_1m*100:.1f}%, ret_3m/3={ret_3m/3*100:.1f}%)"
+            )
+            return False
+
+        # 2. Trend actively rising — above MA50 AND MA50 higher than 20 days ago.
+        ma_now = float(s.tail(MA_TREND).mean())
+        ma_prev = float(s.iloc[-(MA_TREND + MA_RISING_LOOKBACK):-MA_RISING_LOOKBACK].mean())
+        if c_now <= ma_now:
+            logger.info(f"[QUAL_MOM] {sym} rejected: close={c_now:.2f} <= MA{MA_TREND}={ma_now:.2f}")
+            return False
+        if ma_now <= ma_prev:
+            logger.info(f"[QUAL_MOM] {sym} rejected: MA{MA_TREND} not rising ({ma_now:.2f} <= {ma_prev:.2f})")
+            return False
+
+        # 3. RSI(14) in the sweet spot.
+        rsi = _rsi(s, 14)
+        if not (RSI_MIN <= rsi <= RSI_MAX):
+            logger.info(f"[QUAL_MOM] {sym} rejected: RSI={rsi:.1f} outside [{RSI_MIN:.0f}, {RSI_MAX:.0f}]")
+            return False
+
+        # Fetch .info once for the earnings + fundamental gates.
+        info = {}
+        try:
+            info = yf.Ticker(sym).info or {}
+        except Exception:
+            info = {}
+
+        # 4. No earnings within the blackout window.
+        if _earnings_within(sym, EARNINGS_BLACKOUT_DAYS, info=info):
+            logger.info(f"[QUAL_MOM] {sym} rejected: earnings within {EARNINGS_BLACKOUT_DAYS} trading days")
+            return False
+
+        # 5. Fundamental quality — skip fields that are unavailable (don't disqualify on missing data).
+        pe = info.get("trailingPE")
+        if pe is not None and pe >= MAX_PE:
+            logger.info(f"[QUAL_MOM] {sym} rejected: trailingPE={pe:.1f} >= {MAX_PE:.0f}")
+            return False
+        roe = info.get("returnOnEquity")
+        if roe is not None and roe <= MIN_ROE:
+            logger.info(f"[QUAL_MOM] {sym} rejected: returnOnEquity={roe:.2f} <= {MIN_ROE}")
+            return False
+
+        logger.info(
+            f"[QUAL_MOM] {sym} PASSED all gates: ret_1m={ret_1m*100:.1f}%, "
+            f"RSI={rsi:.1f}, MA{MA_TREND} rising, "
+            f"PE={pe if pe is None else round(pe,1)}, ROE={roe if roe is None else round(roe,2)}"
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"[QUAL_MOM] {sym}: gate evaluation failed ({e}) — skipping")
+        return False
 
 
 def _close_position(broker: AlpacaBroker, db_conn, pos: dict, reason: str) -> bool:
@@ -261,14 +421,14 @@ def run(broker: AlpacaBroker, db_conn):
         return
 
     logger.info("=== Quality Momentum: monthly rebalance ===")
-    ranked = _rank_universe(QUALITY_MOM_UNIVERSE)
+    ranked, closes = _rank_universe(QUALITY_MOM_UNIVERSE)
     if not ranked:
         logger.warning("[QMOM] No rankings computed — will retry next cycle")
         return
 
     logger.info(
-        f"[QMOM] Ranked {len(ranked)} names; top {TOP_N}: "
-        + ", ".join(f"{r['symbol']}({r['combined']:.3f})" for r in ranked[:TOP_N])
+        f"[QMOM] Ranked {len(ranked)} names; shortlist top {SHORTLIST_N}: "
+        + ", ".join(f"{r['symbol']}({r['combined']:.3f})" for r in ranked[:SHORTLIST_N])
     )
 
     # ── Rebalance exits: drop holdings out of the top 16 combined-score ──────
@@ -279,10 +439,42 @@ def run(broker: AlpacaBroker, db_conn):
         if sym in ranked_syms and sym not in top_syms:
             _close_position(broker, db_conn, pos, f"dropped out of top {EXIT_RANK}")
 
-    # ── Entries ──────────────────────────────────────────────────────────────
+    # ── Entries: combined score screened the universe; a strengthening trend and
+    #    a fundamental quality bar justify the actual buy. No forced deployment. ─
     size_mult = CHOP_SIZE_MULT if regime == "chop" else 1.0
     held = {p["symbol"] for p in broker.get_positions() if p["strategy"] == STRATEGY_NAME}
-    targets = [r for r in ranked[:TOP_N] if r["symbol"] not in held]
+    shortlist = [r for r in ranked[:SHORTLIST_N] if r["symbol"] not in held]
+
+    from utils.cooldown import is_on_cooldown
+    passers: list[dict] = []
+    for r in shortlist:
+        sym = r["symbol"]
+        if is_on_cooldown(sym):
+            logger.debug(f"[QMOM] {sym} on cooldown — skipping")
+            continue
+        s = closes.get(sym)
+        if s is None:
+            logger.debug(f"[QMOM] {sym}: no price series — skipping")
+            continue
+        if _passes_entry_gates(sym, s):
+            passers.append(r)
+        if len(passers) >= MAX_POSITIONS:
+            break
+
+    if len(passers) < MIN_PASSERS:
+        logger.info(
+            f"[QMOM] Only {len(passers)} name(s) passed all gates (need >= {MIN_PASSERS}) "
+            f"— no forced deployment, holding cash this month"
+        )
+        set_state(db_conn, _LAST_RUN_MONTH_KEY, _this_month())
+        set_state(db_conn, _LAST_ENTRY_DATE_KEY, _today())
+        return
+
+    targets = passers[:MAX_POSITIONS]
+    logger.info(
+        f"[QMOM] {len(targets)} name(s) cleared all gates: "
+        + ", ".join(t["symbol"] for t in targets)
+    )
 
     account = broker.get_account()
     equity = account["equity"]
@@ -290,16 +482,6 @@ def run(broker: AlpacaBroker, db_conn):
 
     for r in targets:
         sym = r["symbol"]
-
-        from utils.cooldown import is_on_cooldown
-        if is_on_cooldown(sym):
-            logger.debug(f"[QMOM] {sym} on cooldown — skipping")
-            continue
-
-        from utils.earnings_calendar import has_upcoming_earnings
-        if has_upcoming_earnings(sym):
-            logger.info(f"[QMOM] Skipping {sym} — earnings blackout (within 2 days)")
-            continue
 
         notional = equity * POSITION_PCT * size_mult
         min_cash = portfolio_value * MIN_CASH_RESERVE_PCT
@@ -314,9 +496,9 @@ def run(broker: AlpacaBroker, db_conn):
         stop_px = round(entry_ref * (1.0 - STOP_PCT), 2)
         tp_px = round(entry_ref * (1.0 + TP_PCT), 2)
         # v92: normalise the combined factor to a 0.85–1.0 signal_score by rank so
-        # top selections clear the broker's 0.85 displacement gate. Top → 1.0, 8th → 0.85.
+        # top selections clear the broker's 0.85 displacement gate. Top of shortlist → 1.0.
         rank_idx = next((i for i, rr in enumerate(ranked) if rr["symbol"] == sym), 0)
-        sig_score = max(0.85, 1.0 - 0.15 * (rank_idx / max(1, TOP_N - 1)))
+        sig_score = max(0.85, 1.0 - 0.15 * (rank_idx / max(1, SHORTLIST_N - 1)))
 
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", r["combined"],
                    {"combined": r["combined"], "quality": r["quality"],
