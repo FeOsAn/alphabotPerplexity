@@ -160,6 +160,23 @@ def init_db():
             ON positions_state(strategy)
     """)
 
+    # v89 — weekly Conviction Long scan log: one row per ticker per scan.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS conviction_scan_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            total_score REAL,
+            momentum_score REAL,
+            earnings_score REAL,
+            analyst_score REAL,
+            research_score REAL,
+            reasoning TEXT,
+            was_selected INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     # v75 — per-symbol performance ledger driving the blacklist (FIX 3).
     c.execute("""
         CREATE TABLE IF NOT EXISTS symbol_performance (

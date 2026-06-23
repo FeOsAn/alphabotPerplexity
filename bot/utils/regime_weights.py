@@ -116,6 +116,7 @@ STRATEGY_REGIME_COMPAT = {
     "pairs_trading":    ["bull", "chop", "bear"],
     "trend_following":  ["bull", "chop"],
     "52wh_vol":         ["bull", "chop"],
+    "conviction_long":  ["bull", "chop"],
 }
 
 DEFAULT_MULTIPLIER = 1.0

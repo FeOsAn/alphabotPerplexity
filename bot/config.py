@@ -74,6 +74,7 @@ STRATEGY_CAPITAL_LIMITS = {
     "ts_momentum":      0.20,
     "trend_following":  0.15,
     "pairs_trading":    0.15,
+    "conviction_long":  0.60,  # 2–4 multi-week holds @ ~12% equity each
     "default":          0.15,  # all other strategies
 }
 

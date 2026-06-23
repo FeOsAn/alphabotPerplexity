@@ -69,6 +69,7 @@ from strategies import earnings_drift, sector_rotation, spy_dip
 from strategies import vix_reversal, gap_scanner
 from strategies import trend_pullback, multi_tf_rsi  # v83
 from strategies import fifty_two_wh  # v87 — 52WH-Vol breakout
+from strategies import conviction_long  # v89 — Conviction Long (weekly scan, daily management)
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
@@ -632,6 +633,18 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.debug(f"[Regime] could not persist current_regime: {e}")
 
+        # v89 — Conviction Long daily management. New conviction positions are
+        # only opened from the weekly cron (weekly_scan.py), but existing holds
+        # must be managed EVERY day (ratchet, 60-day time stop, bear exit) across
+        # all regimes — so call it here, after position management + regime eval.
+        try:
+            _conv_orders = broker.get_orders(status="open")
+            conviction_long.manage_conviction_positions(
+                broker, positions, _conv_orders, db_conn
+            )
+        except Exception as e:
+            logger.error(f"[ConvL] management failed: {e}", exc_info=True)
+
         # v85 — regime-change exits: close positions whose opening_strategy is no
         # longer compatible with the current regime. Runs once per day on the
         # first strategy pass after the regime is (re)evaluated at the open.
@@ -679,6 +692,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (spy_dip.run,           "SPY dip"),
+                (conviction_long.run,   "Conviction Long"),  # v89: management only
             ]
 
         else:  # bull
@@ -701,6 +715,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (trend_pullback.run,    "Trend pullback"),   # v83: 1.5×
                 (multi_tf_rsi.run,      "Multi-TF RSI"),     # v83: 1.2×
                 (fifty_two_wh.run,      "52WH-Vol"),         # v87: 1.0× in bull
+                (conviction_long.run,   "Conviction Long"),  # v89: management only
             ]
 
         for fn, name in _strategy_list:

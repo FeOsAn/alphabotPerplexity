@@ -36,6 +36,7 @@ _TP_MULTIPLES = {
     "options_flow":    (1.5, 3.0),   # unusual options flow follow-through
     "earnings_prediction": (1.5, 2.5),  # earnings catalyst drift (like earnings_drift)
     "earnings_nlp":    (1.5, 2.5),   # earnings NLP sentiment drift
+    "conviction_long": (2.0, 4.0),   # wider targets for multi-week conviction holds
     "sector_rotation": (0.0, 0.0),   # no fixed TP — rotation managed separately
     "pairs_trading":   (0.0, 0.0),   # TP = z-score target, managed separately
     "short_hedge":     (0.0, 0.0),   # hedge, no TP
