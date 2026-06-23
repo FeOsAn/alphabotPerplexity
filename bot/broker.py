@@ -17,6 +17,7 @@ import pandas as pd
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL,
     MAX_TOTAL_POSITIONS, MAX_GROSS_EXPOSURE_PCT, STRATEGY_CAPITAL_LIMITS,
+    MIN_CASH_RESERVE_PCT,
 )
 import time as _time
 
@@ -287,9 +288,9 @@ class AlpacaBroker:
         v74: After a successful submit, calls `record_entry` to persist a
         positions_state row so trade_management can drive dollar-based stops
         and TPs off durable state.
-        v79: capital floor guard — 25% NAV cash floor with displacement engine.
+        v92: capital floor guard — MIN_CASH_RESERVE_PCT NAV cash floor with displacement engine.
         """
-        # v79: capital floor guard
+        # v92: capital floor guard (was a hardcoded 25% — now the configured 15% reserve)
         try:
             account = self.trading.get_account()
             cash = float(account.cash)
@@ -298,10 +299,10 @@ class AlpacaBroker:
             # available cash (cash minus short market value) by equity for the reserve.
             short_mv = abs(float(getattr(account, "short_market_value", 0) or 0))
             avail_ratio = (cash - short_mv) / equity if equity > 0 else 1.0
-            if equity > 0 and avail_ratio < 0.25:
+            if equity > 0 and avail_ratio < MIN_CASH_RESERVE_PCT:
                 if float(signal_score) < 0.85:
                     # v90: explicit [CASH FLOOR] line so logs distinguish "no signal"
-                    # from "entry blocked by the 25% cash floor".
+                    # from "entry blocked by the cash floor".
                     logger.info(
                         f"[CASH FLOOR] Entry blocked for {symbol} ({strategy or 'unknown'}) — "
                         f"cash_ratio={avail_ratio:.1%}, signal_score={float(signal_score):.2f}"

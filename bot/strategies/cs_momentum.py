@@ -65,6 +65,27 @@ def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _needs_first_run(broker: AlpacaBroker, db_conn) -> bool:
+    """First-run override (v92): deploy immediately instead of waiting for Monday.
+
+    Fires when we hold NO cs_momentum positions AND have not entered in the last
+    7 days. This gets capital deployed the first run after going live rather than
+    idling until the next Monday. Once positions exist (or a recent entry is on
+    record) the normal Monday-only schedule resumes.
+    """
+    held = [p for p in broker.get_positions() if p["strategy"] == STRATEGY_NAME]
+    if held:
+        return False
+    last = get_state(db_conn, _LAST_ENTRY_KEY)
+    if not last:
+        return True
+    try:
+        last_dt = datetime.strptime(last, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last_dt).days >= 7
+    except Exception:
+        return True
+
+
 def _trading_days_open(entry_time) -> int:
     """Count trading days (Mon-Fri) between entry_time and today UTC."""
     if entry_time is None:
@@ -239,9 +260,12 @@ def run(broker: AlpacaBroker, db_conn):
     _check_exits(broker, db_conn, ranked)
     set_state(db_conn, _LAST_DAILY_KEY, today)
 
-    # ── Entries: Monday only, once per week, BULL regime only ────────────────
-    if datetime.now(timezone.utc).weekday() != 0:
+    # ── Entries: Monday (or first-run override), once per week, BULL only ─────
+    first_run = _needs_first_run(broker, db_conn)
+    if datetime.now(timezone.utc).weekday() != 0 and not first_run:
         return
+    if first_run:
+        logger.info("[CS-MOM] First-run override — deploying without waiting for Monday")
     if regime != "bull":
         logger.info(f"[CS-MOM] Regime={regime} — no new entries (bull only)")
         return
@@ -289,7 +313,10 @@ def run(broker: AlpacaBroker, db_conn):
         entry_ref = r["price"]
         stop_px = round(entry_ref * (1.0 - STOP_PCT), 2)
         tp_px = round(entry_ref * (1.0 + TP_PCT), 2)
-        sig_score = max(0.0, min(1.0, r["score"]))
+        # v92: signal_score as momentum-rank percentile so high-conviction picks
+        # clear the broker's 0.85 displacement gate. Top pick → 1.0, 6th → 0.85.
+        rank_idx = next((i for i, rr in enumerate(ranked) if rr["symbol"] == sym), 0)
+        sig_score = max(0.85, 1.0 - 0.15 * (rank_idx / max(1, TOP_N - 1)))
 
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", r["score"],
                    {"momentum_score": r["score"], "price": entry_ref})

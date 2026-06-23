@@ -62,10 +62,30 @@ MOMENTUM_WEIGHT = 0.6
 MOMENTUM_LOOKBACK = 126    # ~6 months of trading days
 
 _LAST_RUN_MONTH_KEY = "quality_momentum_last_run_month"   # "YYYY-MM" guard
+_LAST_ENTRY_DATE_KEY = "quality_momentum_last_entry_date"  # "YYYY-MM-DD" first-run guard
 
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _needs_first_run(broker: AlpacaBroker, db_conn) -> bool:
+    """First-run override (v92): deploy immediately instead of waiting for the
+    first Monday of the month. Fires when we hold NO quality_momentum positions
+    AND have not entered in the last 7 days. Normal monthly schedule resumes once
+    positions exist or a recent entry is on record.
+    """
+    held = [p for p in broker.get_positions() if p["strategy"] == STRATEGY_NAME]
+    if held:
+        return False
+    last = get_state(db_conn, _LAST_ENTRY_DATE_KEY)
+    if not last:
+        return True
+    try:
+        last_dt = datetime.strptime(last, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last_dt).days >= 7
+    except Exception:
+        return True
 
 
 def _this_month() -> str:
@@ -226,11 +246,14 @@ def run(broker: AlpacaBroker, db_conn):
         _bear_loss_sweep(broker, db_conn)
         return
 
-    # ── Monthly rebalance gate (first Monday of the month, once per month) ────
-    if not _is_first_week_monday():
+    # ── Monthly rebalance gate (first Monday of month, or first-run override) ──
+    first_run = _needs_first_run(broker, db_conn)
+    if not _is_first_week_monday() and not first_run:
         return
-    if get_state(db_conn, _LAST_RUN_MONTH_KEY) == _this_month():
+    if not first_run and get_state(db_conn, _LAST_RUN_MONTH_KEY) == _this_month():
         return
+    if first_run:
+        logger.info("[QMOM] First-run override — deploying without waiting for first Monday")
 
     from utils.market_hours import is_entry_allowed
     if not is_entry_allowed():
@@ -290,7 +313,10 @@ def run(broker: AlpacaBroker, db_conn):
         entry_ref = r["price"]
         stop_px = round(entry_ref * (1.0 - STOP_PCT), 2)
         tp_px = round(entry_ref * (1.0 + TP_PCT), 2)
-        sig_score = max(0.0, min(1.0, r["combined"]))
+        # v92: normalise the combined factor to a 0.85–1.0 signal_score by rank so
+        # top selections clear the broker's 0.85 displacement gate. Top → 1.0, 8th → 0.85.
+        rank_idx = next((i for i, rr in enumerate(ranked) if rr["symbol"] == sym), 0)
+        sig_score = max(0.85, 1.0 - 0.15 * (rank_idx / max(1, TOP_N - 1)))
 
         log_signal(db_conn, STRATEGY_NAME, sym, "buy", r["combined"],
                    {"combined": r["combined"], "quality": r["quality"],
@@ -323,5 +349,6 @@ def run(broker: AlpacaBroker, db_conn):
             break
 
     set_state(db_conn, _LAST_RUN_MONTH_KEY, _this_month())
+    set_state(db_conn, _LAST_ENTRY_DATE_KEY, _today())
     active = len([p for p in broker.get_positions() if p["strategy"] == STRATEGY_NAME])
     logger.info(f"[QMOM] Rebalance complete — {active} active quality_momentum position(s)")
