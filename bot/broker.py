@@ -366,6 +366,8 @@ class AlpacaBroker:
                 strategy=strategy or "momentum",
                 signal_score=signal_score,
                 is_short=False,
+                stop_override=stop_override,
+                tp_target_override=tp_target_override,
             )
         except Exception as _e:
             logger.warning(f"[Broker] Could not place bracket orders for {symbol}: {_e}")

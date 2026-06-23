@@ -659,6 +659,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (earnings_drift.run,    "Earnings drift"),   # catalyst-driven, 0.5×
                 (trend_pullback.run,    "Trend pullback"),   # short-side entries, 0.8×
                 (multi_tf_rsi.run,      "Multi-TF RSI"),     # strongest in bear, 1.3×
+                (fifty_two_wh.run,      "52WH-Vol"),         # exits only — self-skips new entries via regime_weight=0.0
             ]
 
         elif regime == "chop":

@@ -106,6 +106,7 @@ _STRATEGY_BASE_STOP = {
     "gap_scanner":     0.06,
     "spy_dip":         0.04,
     "vix_reversal":    0.03,
+    "52wh_vol":        0.05,
 }
 
 
@@ -370,6 +371,8 @@ def place_bracket_orders(
     strategy: str = "unknown",
     signal_score: float = 0.5,
     is_short: bool = False,
+    stop_override: Optional[float] = None,
+    tp_target_override: Optional[float] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     v81: Primary exit-order placement. Called immediately after every entry fill.
@@ -410,6 +413,19 @@ def place_bracket_orders(
             symbol, entry_price, strategy,
             is_short=is_short, signal_score=signal_score
         )
+
+        # Strategy-supplied overrides (e.g. fifty_two_wh's fixed 5% stop / 10% TP)
+        # take precedence over the ATR / tp_engine defaults.
+        if stop_override and stop_override > 0:
+            stop_price = round(float(stop_override), 2)
+        if tp_target_override and tp_target_override > 0:
+            tp2 = round(float(tp_target_override), 2)
+            # Derive a partial TP1 at the midpoint between entry and the override.
+            if is_short:
+                tp1 = round(entry_price - (entry_price - tp2) * 0.5, 2)
+            else:
+                tp1 = round(entry_price + (tp2 - entry_price) * 0.5, 2)
+
         if not tp1 or not tp2:
             # Strategy has no fixed TP (sector_rotation etc) — just place a plain stop
             logger.info(f"[TM] {symbol}: no fixed TP for strategy={strategy}, placing plain stop only")

@@ -110,7 +110,7 @@ STRATEGY_REGIME_COMPAT = {
     "multi_tf_rsi":     ["bull", "chop", "bear"],
     "vwap_reclaim":     ["bull", "chop", "bear"],
     "vix_reversal":     ["bear", "chop"],
-    "spy_dip_buy":      ["bull", "chop"],
+    "spy_dip":          ["bull", "chop"],
     "earnings_drift":   ["bull", "chop", "bear"],
     "sector_rotation":  ["bull", "chop"],
     "pairs_trading":    ["bull", "chop", "bear"],

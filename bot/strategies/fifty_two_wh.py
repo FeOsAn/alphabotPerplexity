@@ -34,6 +34,7 @@ One symbol at a time for RAM safety on Railway 512MB.
 
 import gc
 import logging
+import time
 import pandas as pd
 import yfinance as yf
 import pandas_ta as _pta
@@ -191,10 +192,10 @@ def _compute_signals(sym: str) -> Optional[dict]:
         high_prev_252 = float(close.iloc[:-1].tail(252).max())
         cond_breakout = price_now > high_prev_252
 
-        # 2. Volume confirmation. Use the previous COMPLETED day (iloc[-2]); during
-        #    market hours iloc[-1] is a partial bar that always reads ~0.1x average.
+        # 2. Volume confirmation on the breakout bar itself (iloc[-1]) so the gate
+        #    checks the SAME bar as the breakout test, not the prior day.
         vol_avg_20 = float(volume.tail(21).iloc[:-1].mean()) if len(volume) >= 21 else float(volume.mean())
-        vol_last = float(volume.iloc[-2]) if len(volume) >= 2 else float(volume.iloc[-1])
+        vol_last = float(volume.iloc[-1])
         vol_ratio = vol_last / vol_avg_20 if vol_avg_20 > 0 else 0.0
         cond_volume = vol_ratio >= VOL_MULT_MIN
 
@@ -233,6 +234,24 @@ def _compute_signals(sym: str) -> Optional[dict]:
         return None
     finally:
         gc.collect()
+
+
+def _signal_score(vol_ratio: float, price: float, ma50: Optional[float]) -> float:
+    """Conviction score (0.0–1.0) from volume confirmation + momentum strength.
+
+    Volume: 1.2x avg -> 0.0, 2.5x avg -> 1.0 (linear).
+    Momentum: extension above the 50-day SMA beyond the 3% entry buffer,
+              capped so +10% above MA50 -> 1.0.
+    The two are averaged, giving wider TP targets to high-conviction breakouts.
+    """
+    vol_comp = (vol_ratio - VOL_MULT_MIN) / (2.5 - VOL_MULT_MIN)
+    vol_comp = max(0.0, min(1.0, vol_comp))
+    if ma50 and ma50 > 0:
+        mom = (price / ma50 - 1.0) - MA50_BUFFER
+        mom_comp = max(0.0, min(1.0, mom / 0.07))
+    else:
+        mom_comp = 0.0
+    return max(0.0, min(1.0, 0.5 * vol_comp + 0.5 * mom_comp))
 
 
 def _conviction_multiplier(vol_ratio: float) -> float:
@@ -278,14 +297,25 @@ def _check_exits(broker: AlpacaBroker, db_conn):
                 f"[52WH] TIME STOP {sym} — held {days_held} trading days "
                 f"(>= {TIME_STOP_DAYS}), pnl={pos['unrealized_pnl_pct']:.1f}%"
             )
-            broker.close_position(sym, STRATEGY_NAME)
-            log_trade(
-                db_conn, STRATEGY_NAME, sym, "sell_time_stop",
-                pos["qty"], current_price, pos["unrealized_pnl"],
-            )
-            from utils.cooldown import set_cooldown
-            set_cooldown(sym)
-            _clear_ratchet_stage(db_conn, sym)
+            # Cancel resting GTC bracket orders first — they reserve the shares,
+            # so close_position() is rejected while they are open. Pattern mirrors
+            # regime_exit.py: cancel → sleep → close, then only record on success.
+            from strategies.regime_exit import _cancel_open_orders_for_symbol
+            n_cancelled = _cancel_open_orders_for_symbol(broker, sym)
+            if n_cancelled:
+                logger.info(f"[52WH] {sym}: cancelled {n_cancelled} open order(s) before time-stop close")
+            time.sleep(3)
+            result = broker.close_position(sym, STRATEGY_NAME)
+            if result is not None:
+                log_trade(
+                    db_conn, STRATEGY_NAME, sym, "sell_time_stop",
+                    pos["qty"], current_price, pos["unrealized_pnl"],
+                )
+                from utils.cooldown import set_cooldown
+                set_cooldown(sym)
+                _clear_ratchet_stage(db_conn, sym)
+            else:
+                logger.warning(f"[52WH] {sym}: time-stop close failed — will retry next cycle")
             continue
 
         # ── Trailing ratchet ─────────────────────────────────────────────────────
@@ -500,10 +530,12 @@ def run(broker: AlpacaBroker, db_conn):
             f"stop=${stop_px:.2f}, tp=${tp_px:.2f}"
         )
 
+        sig_score = _signal_score(sig["vol_ratio"], sig["price"], sig["ma50"])
         _buy_result = broker.market_buy(
             sym, notional, STRATEGY_NAME,
             tp_target_override=tp_px,
             stop_override=stop_px,
+            signal_score=sig_score,
         )
         tag_symbol(sym, STRATEGY_NAME)
         _mark_traded_today(db_conn, sym)

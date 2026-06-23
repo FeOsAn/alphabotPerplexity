@@ -31,6 +31,11 @@ _TP_MULTIPLES = {
     "squeeze_screener":(2.0, 4.0),   # post-squeeze big moves
     "spy_dip":         (1.0, 2.0),
     "vix_reversal":    (1.0, 2.0),
+    "ai_research":     (1.5, 3.0),   # research-driven momentum — let winners run
+    "insider_buying":  (1.5, 3.0),   # insider-cluster drift, momentum profile
+    "options_flow":    (1.5, 3.0),   # unusual options flow follow-through
+    "earnings_prediction": (1.5, 2.5),  # earnings catalyst drift (like earnings_drift)
+    "earnings_nlp":    (1.5, 2.5),   # earnings NLP sentiment drift
     "sector_rotation": (0.0, 0.0),   # no fixed TP — rotation managed separately
     "pairs_trading":   (0.0, 0.0),   # TP = z-score target, managed separately
     "short_hedge":     (0.0, 0.0),   # hedge, no TP
