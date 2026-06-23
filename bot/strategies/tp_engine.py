@@ -38,6 +38,9 @@ _TP_MULTIPLES = {
     # earnings_nlp deprecated in v90 — dead/orphaned strategy (never dispatched,
     # superseded by earnings_prediction); config removed.
     "conviction_long": (2.0, 4.0),   # wider targets for multi-week conviction holds
+    "cs_momentum":     (1.5, 3.0),   # v91: 12-1 cross-sectional momentum
+    "quality_momentum":(2.0, 4.0),   # v91: quality+momentum combo
+    "dual_momentum":   (3.0, 6.0),   # v91: cross-asset dual momentum, let it run
     "sector_rotation": (0.0, 0.0),   # no fixed TP — rotation managed separately
     "pairs_trading":   (0.0, 0.0),   # TP = z-score target, managed separately
     "short_hedge":     (0.0, 0.0),   # hedge, no TP

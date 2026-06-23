@@ -120,6 +120,10 @@ STRATEGY_REGIME_COMPAT = {
     # regimes); ai_research carries nonzero weight through bear_mild.
     "earnings_prediction": ["bull", "chop", "bear"],
     "ai_research":         ["bull", "chop", "bear"],
+    # v91: deep-backtest momentum sleeves.
+    "cs_momentum":      ["bull"],                  # pure 12-1 momentum, bull only
+    "quality_momentum": ["bull", "chop"],          # quality tilt survives chop
+    "dual_momentum":    ["bull", "chop", "bear"],  # rotates to GLD, all regimes
 }
 
 DEFAULT_MULTIPLIER = 1.0

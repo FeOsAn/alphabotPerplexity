@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v87"
+VERSION = "v91"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -70,6 +70,7 @@ from strategies import vix_reversal, gap_scanner
 from strategies import trend_pullback, multi_tf_rsi  # v83
 from strategies import fifty_two_wh  # v87 — 52WH-Vol breakout
 from strategies import conviction_long  # v89 — Conviction Long (weekly scan, daily management)
+from strategies import cs_momentum, quality_momentum, dual_momentum  # v91 — deep-backtest momentum sleeves
 from strategies import momentum, breakout, short_hedge
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
@@ -673,6 +674,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (trend_pullback.run,    "Trend pullback"),   # short-side entries, 0.8×
                 (multi_tf_rsi.run,      "Multi-TF RSI"),     # strongest in bear, 1.3×
                 (fifty_two_wh.run,      "52WH-Vol"),         # exits only — self-skips new entries via regime_weight=0.0
+                (cs_momentum.run,       "CS Momentum"),      # v91: closes all in bear
+                (quality_momentum.run,  "Quality Momentum"), # v91: bear loss sweep only
+                (dual_momentum.run,     "Dual Momentum"),    # v91: runs all regimes (rotates to GLD)
             ]
 
         elif regime == "chop":
@@ -693,6 +697,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (sector_rotation.run,   "Sector rotation"),
                 (spy_dip.run,           "SPY dip"),
                 (conviction_long.run,   "Conviction Long"),  # v89: management only
+                (cs_momentum.run,       "CS Momentum"),      # v91: exits only in chop
+                (quality_momentum.run,  "Quality Momentum"), # v91: 0.5× entries in chop
+                (dual_momentum.run,     "Dual Momentum"),    # v91: runs all regimes
             ]
 
         else:  # bull
@@ -716,6 +723,9 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (multi_tf_rsi.run,      "Multi-TF RSI"),     # v83: 1.2×
                 (fifty_two_wh.run,      "52WH-Vol"),         # v87: 1.0× in bull
                 (conviction_long.run,   "Conviction Long"),  # v89: management only
+                (cs_momentum.run,       "CS Momentum"),      # v91: weekly top-6 entries
+                (quality_momentum.run,  "Quality Momentum"), # v91: monthly top-8 entries
+                (dual_momentum.run,     "Dual Momentum"),    # v91: monthly cross-asset rebalance
             ]
 
         for fn, name in _strategy_list:

@@ -75,6 +75,9 @@ STRATEGY_CAPITAL_LIMITS = {
     "trend_following":  0.15,
     "pairs_trading":    0.15,
     "conviction_long":  0.60,  # 2–4 multi-week holds @ ~12% equity each
+    "cs_momentum":      0.65,  # 6 holds @ 10% equity each (~60% deployment)
+    "quality_momentum": 0.70,  # 8 holds @ 8% equity each (~64% deployment)
+    "dual_momentum":    1.00,  # 3 cross-asset slots @ ~33% each (~99% deployment)
     "default":          0.15,  # all other strategies
 }
 
