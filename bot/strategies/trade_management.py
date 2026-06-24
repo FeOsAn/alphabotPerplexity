@@ -1506,6 +1506,196 @@ _RSI_TTL = 600          # 10 minutes
 _post_earnings_checked: set = set()
 
 
+def reconcile_residuals_and_cooldowns(broker: AlpacaBroker, db_conn) -> None:
+    """
+    v94 — post-fill reconciliation. Runs once per cycle BEFORE strategies enter.
+
+    Closes three gaps that let losers churn / linger:
+
+    1. Exchange-side stop/TP fills bypass set_cooldown. When an OCO/stop order
+       fills on Alpaca the position closes WITHOUT going through
+       broker.close_position(), so the cross-strategy cooldown was never set and
+       a strategy could re-enter the same symbol the same cycle (the MRVL/NKE
+       rapid-fire loop). Here we detect any positions_state row whose live
+       position is gone and set the cooldown + clean up the stale row.
+
+    2. Fractional residuals. A whole-share exchange stop on a position that held
+       a fractional share count (legacy notional fills) leaves a fractional
+       remainder behind with no protective order (the XLK 16.87sh / MRVL 5.43sh
+       residuals). Any position that was REDUCED below its recorded qty and now
+       holds a fractional remainder — or any equity position worth less than
+       MIN_ENTRY_NOTIONAL — is closed immediately and locked.
+
+    3. Naked / mispriced short stops. Verifies every short carries a live
+       protective buy-stop no looser than entry × (1 + STOP_LOSS_PCT); re-places
+       the bracket if the stop is missing.
+    """
+    from config import MIN_ENTRY_NOTIONAL, STOP_LOSS_PCT
+
+    try:
+        live_positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[Reconcile] get_positions failed: {e}")
+        return
+    live_by_sym = {p["symbol"]: p for p in live_positions}
+
+    # ---- 1 & 2: state rows whose live position vanished or shrank to a residual
+    try:
+        state_rows = db_conn.execute(
+            "SELECT symbol, qty, side, entry_price, strategy FROM positions_state"
+        ).fetchall()
+    except Exception as e:
+        logger.debug(f"[Reconcile] positions_state read failed: {e}")
+        state_rows = []
+
+    for row in state_rows:
+        sym = row["symbol"]
+        rec_qty = abs(float(row["qty"] or 0))
+        live = live_by_sym.get(sym)
+
+        # 1. Fully closed on the exchange — ensure the cross-strategy lock is set.
+        if live is None or abs(float(live.get("qty", 0) or 0)) < 1e-6:
+            logger.info(
+                f"[Reconcile] {sym}: positions_state row but no live position — "
+                f"exchange stop/TP filled. Setting cross-strategy cooldown + cleanup."
+            )
+            try:
+                set_cooldown(sym, reason="exchange_fill")
+                delete_position_state(db_conn, sym)
+                clear_symbol(sym)
+            except Exception as e:
+                logger.warning(f"[Reconcile] cleanup failed for {sym}: {e}")
+            continue
+
+        # 2. Reduced below recorded qty AND a fractional remainder lingers.
+        live_qty = abs(float(live.get("qty", 0) or 0))
+        is_fractional = abs(live_qty - round(live_qty)) > 1e-6
+        if live_qty < rec_qty - 1e-6 and is_fractional:
+            logger.info(
+                f"[Reconcile] {sym}: fractional residual {live_qty:.4f}sh after a "
+                f"partial stop fill (recorded {rec_qty:.4f}sh) — auto-closing residual."
+            )
+            _close_residual(broker, db_conn, live, reason="fractional_residual")
+
+    # ---- 2b: sweep ALL live equity positions for sub-floor / fractional dust
+    for p in live_positions:
+        sym = p["symbol"]
+        if p.get("asset_class") == "option":
+            continue
+        qty = abs(float(p.get("qty", 0) or 0))
+        if qty < 1e-9:
+            continue
+        mv = abs(float(p.get("market_value", 0) or 0))
+        is_fractional = abs(qty - round(qty)) > 1e-6
+        # A fractional remnant, or any position below the entry floor, is a
+        # residual not worth holding.
+        if mv < MIN_ENTRY_NOTIONAL or (is_fractional and qty < 1):
+            logger.info(
+                f"[Reconcile] {sym}: residual sweep — {qty:.4f}sh worth ${mv:.0f} "
+                f"(fractional={is_fractional}) below ${MIN_ENTRY_NOTIONAL} floor — closing."
+            )
+            _close_residual(broker, db_conn, p, reason="residual_sweep")
+
+    # ---- 3: verify protective stops on shorts
+    try:
+        _verify_short_stops(broker, db_conn, live_positions, STOP_LOSS_PCT)
+    except Exception as e:
+        logger.warning(f"[Reconcile] short-stop verification failed: {e}")
+
+
+def _close_residual(broker: AlpacaBroker, db_conn, pos: dict, reason: str) -> None:
+    """Close a residual position fully and lock it cross-strategy."""
+    sym = pos["symbol"]
+    strategy = pos.get("strategy", "unknown")
+    try:
+        broker.close_position(sym, strategy)
+        log_trade(
+            db_conn, strategy, sym, "sell_residual_cleanup",
+            pos.get("qty"), pos.get("current_price"), pos.get("unrealized_pnl"),
+            metadata={"reason": reason, "market_value": pos.get("market_value")},
+        )
+        set_cooldown(sym, reason=reason)
+        delete_position_state(db_conn, sym)
+        clear_symbol(sym)
+        _record_close_perf(db_conn, sym, pos.get("unrealized_pnl"))
+        logger.info(f"[Reconcile] {sym} residual closed + cooldown set ({reason})")
+    except Exception as e:
+        logger.error(f"[Reconcile] residual close failed for {sym}: {e}")
+
+
+def _verify_short_stops(broker: AlpacaBroker, db_conn, positions, stop_loss_pct: float) -> None:
+    """Ensure every short carries a live buy-stop no looser than entry×(1+stop_pct).
+    Re-places the protective bracket if the short is naked."""
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+
+    for p in positions:
+        try:
+            qty = float(p.get("qty", 0) or 0)
+        except Exception:
+            continue
+        if qty >= 0:
+            continue  # longs handled by the ratchet path
+        sym = p["symbol"]
+        entry = float(p.get("avg_entry", 0) or 0)
+        current = float(p.get("current_price", 0) or 0)
+        ps = get_position_state(db_conn, sym)
+        if ps and ps.get("entry_price"):
+            entry = float(ps["entry_price"])
+        if entry <= 0:
+            continue
+        max_allowed_stop = round(entry * (1 + stop_loss_pct), 2)
+
+        # Find live buy-stop orders for this short.
+        try:
+            orders = broker.trading.get_orders(
+                GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[sym])
+            )
+        except Exception as e:
+            logger.debug(f"[ShortStop] {sym}: order fetch failed: {e}")
+            continue
+
+        live_stop_price = None
+        for o in (orders or []):
+            otype = str(getattr(o, "order_type", getattr(o, "type", ""))).lower()
+            oclass = str(getattr(o, "order_class", "")).lower()
+            side = str(getattr(o, "side", "")).lower()
+            sp = getattr(o, "stop_price", None)
+            if "buy" in side and ("stop" in otype or "oco" in oclass) and sp:
+                try:
+                    live_stop_price = float(sp)
+                except Exception:
+                    pass
+            elif "buy" in side and "oco" in oclass:
+                live_stop_price = live_stop_price or max_allowed_stop
+
+        if live_stop_price is None:
+            # Naked short — current price tells us whether the stop is overdue.
+            overdue = current >= max_allowed_stop
+            logger.warning(
+                f"[ShortStop] {sym}: NAKED short (no live buy-stop). "
+                f"entry=${entry:.2f} target stop=${max_allowed_stop:.2f} "
+                f"current=${current:.2f}{' — STOP OVERDUE' if overdue else ''} — re-placing bracket."
+            )
+            try:
+                place_bracket_orders(
+                    broker, sym, entry, abs(qty),
+                    strategy=p.get("strategy", "short_hedge"),
+                    is_short=True,
+                )
+            except Exception as e:
+                logger.error(f"[ShortStop] {sym}: bracket re-place failed: {e}")
+        elif live_stop_price > max_allowed_stop + 0.01:
+            logger.warning(
+                f"[ShortStop] {sym}: stop ${live_stop_price:.2f} is LOOSER than "
+                f"max ${max_allowed_stop:.2f} (entry×{1 + stop_loss_pct:.2f}) — tightening."
+            )
+            try:
+                update_exchange_stop(broker, sym, max_allowed_stop)
+            except Exception as e:
+                logger.error(f"[ShortStop] {sym}: stop tighten failed: {e}")
+
+
 def _get_current_rsi(symbol: str) -> float:
     """Compute RSI(14) from the last ~20 days of daily closes via yf_cache.
 
@@ -1967,6 +2157,13 @@ def check_overnight_exit(broker: AlpacaBroker, db_conn):
 
 def run_trade_management(broker: AlpacaBroker, db_conn):
     """v44 entry point — earnings tightening + post-earnings review BEFORE normal ratchet logic."""
+    # v94 — reconcile exchange fills, fractional residuals, and naked short
+    # stops BEFORE any other management so a vanished/residual symbol is locked
+    # before strategies get a chance to re-enter it this cycle.
+    try:
+        reconcile_residuals_and_cooldowns(broker, db_conn)
+    except Exception as e:
+        logger.error(f"[TradeMgt] reconcile failed: {e}", exc_info=True)
     try:
         positions = broker.get_positions()
     except Exception as e:

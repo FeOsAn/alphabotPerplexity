@@ -81,6 +81,7 @@ from strategies.trade_management import (
     apply_earnings_stop_tightening,
     check_overnight_exit,
     migrate_missing_brackets,
+    reconcile_residuals_and_cooldowns,
 )
 from reporting.weekly_report import generate_weekly_report
 from utils import news_scanner
@@ -929,6 +930,14 @@ def main():
             logger.info(f"[Startup] migrate_missing_brackets: placed {n} OCO bracket(s)")
     except Exception as e:
         logger.warning(f"[Startup] migrate_missing_brackets failed: {e}")
+
+    # v94: on restart, reconcile any exchange-filled stops/TPs that closed
+    # positions while the bot was down (set cooldowns), sweep fractional
+    # residuals, and re-protect any naked shorts.
+    try:
+        reconcile_residuals_and_cooldowns(broker, db_conn)
+    except Exception as e:
+        logger.warning(f"[Startup] reconcile_residuals_and_cooldowns failed: {e}")
 
     logger.info("[Startup] NOW flagged for manual post-earnings review")
 

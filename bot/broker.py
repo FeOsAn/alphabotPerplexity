@@ -159,12 +159,49 @@ class AlpacaBroker:
         """
         Centralised pre-order gate. Returns True if the order should be blocked.
         Enforces:
+          - cross-strategy symbol cooldown lock (v94 — ALL entry sides)
+          - minimum entry notional (v94 — no sub-$500 entries / residuals)
           - symbol blacklist (v75 — FIX 3, BUY only)
           - MAX_TOTAL_POSITIONS (only for NEW symbol buys)
           - per-strategy capital ceiling
           - portfolio gross exposure cap
           - open-order deduplication (same symbol + side already pending)
+
+        Every entry path (market_buy, market_sell_short, submit_order entries)
+        funnels through here, so this is the single choke point that guarantees
+        cooldowns are honoured cross-strategy. Closes/trims/buy-to-cover do NOT
+        call this gate, so exits are never blocked.
         """
+        # --- Cross-strategy cooldown lock (v94) ---------------------------
+        # Once ANY strategy stops out of / takes profit on a symbol, NO strategy
+        # may re-enter for SYMBOL_COOLDOWN_HOURS. This is what stops the
+        # rapid-fire stop→re-enter loop (MRVL/NKE) where a different strategy
+        # re-entered minutes after the stop fired.
+        try:
+            from utils.cooldown import is_on_cooldown
+            if is_on_cooldown(symbol):
+                logger.info(
+                    f"[Broker] {symbol} on cross-strategy cooldown — blocking "
+                    f"{side} entry ({strategy})"
+                )
+                return True
+        except Exception as e:
+            logger.debug(f"[Broker] cooldown check failed for {symbol}: {e}")
+
+        # --- Minimum entry notional (v94) ---------------------------------
+        # Don't open positions worth less than MIN_ENTRY_NOTIONAL — fractional
+        # residuals below this are not worth holding and just churn.
+        try:
+            from config import MIN_ENTRY_NOTIONAL
+            if notional and 0 < float(notional) < MIN_ENTRY_NOTIONAL:
+                logger.info(
+                    f"[Broker] {symbol} entry notional ${float(notional):.0f} < "
+                    f"${MIN_ENTRY_NOTIONAL} minimum — skipping {side}"
+                )
+                return True
+        except Exception as e:
+            logger.debug(f"[Broker] min-notional check failed for {symbol}: {e}")
+
         # --- Symbol blacklist (BUY side only) -----------------------------
         if side.lower() == "buy":
             try:
@@ -337,6 +374,15 @@ class AlpacaBroker:
                 f"${entry_price:.2f} — skipping buy"
             )
             return None
+        # v94 — qty × price floor: a rounded share count can land below the
+        # MIN_ENTRY_NOTIONAL floor even when the requested notional cleared it.
+        from config import MIN_ENTRY_NOTIONAL
+        if share_qty * entry_price < MIN_ENTRY_NOTIONAL:
+            logger.info(
+                f"[Broker] {symbol}: {share_qty}sh × ${entry_price:.2f} = "
+                f"${share_qty * entry_price:.0f} < ${MIN_ENTRY_NOTIONAL} floor — skipping buy"
+            )
+            return None
         req = MarketOrderRequest(
             symbol=symbol,
             qty=share_qty,
@@ -413,6 +459,14 @@ class AlpacaBroker:
             return None
 
         qty = max(1, int(float(notional) / current_price))
+        # v94 — qty × price floor for shorts too.
+        from config import MIN_ENTRY_NOTIONAL
+        if qty * current_price < MIN_ENTRY_NOTIONAL:
+            logger.info(
+                f"[Broker] {symbol}: short {qty}sh × ${current_price:.2f} = "
+                f"${qty * current_price:.0f} < ${MIN_ENTRY_NOTIONAL} floor — skipping short"
+            )
+            return None
         req = MarketOrderRequest(
             symbol=symbol,
             qty=qty,

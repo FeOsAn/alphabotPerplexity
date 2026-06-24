@@ -177,6 +177,20 @@ def init_db():
         )
     """)
 
+    # v94 — cross-strategy symbol cooldown lock. One row per locked symbol.
+    # Set whenever ANY strategy stops out of / takes profit on a symbol; the
+    # central entry gate (_entry_blocked) refuses re-entry by ANY strategy
+    # until locked_until passes. Replaces the per-symbol bot_state cooldown keys
+    # so the lock is durable, global, and queryable.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_cooldown (
+            symbol       TEXT PRIMARY KEY,
+            locked_until TEXT NOT NULL,
+            reason       TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
     # v75 — per-symbol performance ledger driving the blacklist (FIX 3).
     c.execute("""
         CREATE TABLE IF NOT EXISTS symbol_performance (
@@ -425,3 +439,77 @@ def delete_position_state(conn: sqlite3.Connection, symbol: str) -> None:
         conn.commit()
     except Exception as e:
         logger.warning(f"[db.delete_position_state] {symbol}: {e}")
+
+
+# ── v94: cross-strategy symbol cooldown lock ─────────────────────────────────
+def set_symbol_cooldown(conn: sqlite3.Connection, symbol: str, hours: float,
+                        reason: Optional[str] = None) -> None:
+    """Lock a symbol from re-entry by ANY strategy for `hours`. Upserts; never
+    shortens an existing, longer lock."""
+    try:
+        from datetime import timedelta
+        until = (now_utc() + timedelta(hours=hours)).isoformat()
+        row = conn.execute(
+            "SELECT locked_until FROM symbol_cooldown WHERE symbol=?", (symbol,)
+        ).fetchone()
+        if row and row["locked_until"] and row["locked_until"] >= until:
+            return  # existing lock extends at least as far — keep the longer one
+        conn.execute("""
+            INSERT INTO symbol_cooldown (symbol, locked_until, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                locked_until=excluded.locked_until,
+                reason=excluded.reason,
+                created_at=excluded.created_at
+        """, (symbol, until, reason, now_utc().isoformat()))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[db.set_symbol_cooldown] {symbol}: {e}")
+
+
+def is_symbol_locked(conn: sqlite3.Connection, symbol: str) -> bool:
+    """True if symbol is still inside its cross-strategy cooldown window.
+    Self-cleans expired rows."""
+    try:
+        row = conn.execute(
+            "SELECT locked_until FROM symbol_cooldown WHERE symbol=?", (symbol,)
+        ).fetchone()
+        if not row or not row["locked_until"]:
+            return False
+        try:
+            until = datetime.fromisoformat(row["locked_until"])
+        except Exception:
+            conn.execute("DELETE FROM symbol_cooldown WHERE symbol=?", (symbol,))
+            conn.commit()
+            return False
+        if now_utc() >= until:
+            conn.execute("DELETE FROM symbol_cooldown WHERE symbol=?", (symbol,))
+            conn.commit()
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"[db.is_symbol_locked] {symbol}: {e}")
+        return False
+
+
+def clear_symbol_cooldown(conn: sqlite3.Connection, symbol: str) -> None:
+    """Remove a symbol's cross-strategy lock."""
+    try:
+        conn.execute("DELETE FROM symbol_cooldown WHERE symbol=?", (symbol,))
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"[db.clear_symbol_cooldown] {symbol}: {e}")
+
+
+def get_active_symbol_cooldowns(conn: sqlite3.Connection) -> dict[str, str]:
+    """Return {symbol: locked_until_iso} for all still-active locks."""
+    try:
+        now_iso = now_utc().isoformat()
+        rows = conn.execute(
+            "SELECT symbol, locked_until FROM symbol_cooldown WHERE locked_until > ?",
+            (now_iso,),
+        ).fetchall()
+        return {r["symbol"]: r["locked_until"] for r in rows}
+    except Exception as e:
+        logger.warning(f"[db.get_active_symbol_cooldowns] {e}")
+        return {}

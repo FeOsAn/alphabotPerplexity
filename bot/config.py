@@ -29,6 +29,14 @@ UNIVERSE = [
 # ============================================================
 MAX_TOTAL_POSITIONS = 15         # hard cap on total positions (across all strategies)
 STOP_LOSS_PCT = 0.05             # 5% stop loss per position
+# v94: minimum dollar value to open ANY position. Fractional residuals below
+# this are not worth holding — qty × price < MIN_ENTRY_NOTIONAL is blocked at
+# the central entry gate and swept by the residual-cleanup pass.
+MIN_ENTRY_NOTIONAL = 500
+# v94: cross-strategy symbol lock. Once ANY strategy stops out of / takes profit
+# on a symbol, NO strategy may re-enter it for this many hours. Stored in the
+# dedicated `symbol_cooldown` DB table so it survives restarts and is global.
+SYMBOL_COOLDOWN_HOURS = 48
 ATR_STOP_MULT = 1.0          # v80: stop = max(STOP_LOSS_PCT, ATR_STOP_MULT × ATR/price)
 ATR_STOP_MAX_PCT = 0.12      # v80: cap ATR stop at 12% — never risk more than this
 TAKE_PROFIT_PCT = 0.20           # 20% take profit target
