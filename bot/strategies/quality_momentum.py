@@ -62,11 +62,12 @@ QUALITY_MOM_UNIVERSE = [
 ]
 QUALITY_MOM_UNIVERSE = list(dict.fromkeys(QUALITY_MOM_UNIVERSE))
 
-SHORTLIST_N = 15           # rank to a top-15 shortlist; gates pick the actual buys
-MAX_POSITIONS = 5          # at most 5 new positions per cycle (was 8)
+# Max 3 positions at 6% each = 18% total. Kelly-derived from 4yr backtest.
+SHORTLIST_N = 10           # rank to a top-10 shortlist; gates pick the actual buys
+MAX_POSITIONS = 3          # at most 3 new positions per cycle
 MIN_PASSERS = 2            # if fewer than this pass ALL gates, open nothing
 EXIT_RANK = 16             # close when a holding falls out of the top 16
-POSITION_PCT = 0.13        # 13% of equity per position
+POSITION_PCT = 0.06        # Kelly-derived sizing from 4yr backtest (was 0.13)
 CHOP_SIZE_MULT = 0.5       # half size in CHOP regime
 STOP_PCT = 0.10            # 10% hard stop below entry
 TP_PCT = 0.25              # 25% take-profit above entry

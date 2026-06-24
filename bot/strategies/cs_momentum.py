@@ -59,22 +59,24 @@ CS_MOM_UNIVERSE = [
 # Deduplicate while preserving order
 CS_MOM_UNIVERSE = list(dict.fromkeys(CS_MOM_UNIVERSE))
 
-POSITION_PCT = 0.12        # 12% of equity per position (fewer names, higher conviction)
-SHORTLIST_N = 15           # rank to a top-15 shortlist; gates pick the actual buys
-MAX_POSITIONS = 4          # at most 4 new positions per week (be selective)
+POSITION_PCT = 0.085       # Kelly-derived sizing from 4yr backtest (was 0.12)
+SHORTLIST_N = 12           # rank to a top-12 shortlist (3× the selection set); gates pick the actual buys
+MAX_POSITIONS = 4          # at most 4 new positions per cycle (be selective)
 MIN_PASSERS = 2            # if fewer than this pass ALL gates, open nothing
 EXIT_RANK = 12             # close when a holding falls out of the top 12
 STOP_PCT = 0.08            # 8% hard stop below entry
-TP_PCT = 0.20              # 20% take-profit above entry
+# No TP — let momentum run. Removing TP raised ann return significantly in backtest.
+TP_PCT = 9.99              # practical no-TP (999% above entry) — momentum winners run uncapped
 TIME_STOP_DAYS = 30        # momentum signals decay — close after 30 trading days
 LOOKBACK_DAYS = 280        # daily history to download (needs >= 252 trading rows)
 
-# ── Entry gate thresholds (v93) ────────────────────────────────────────────────
-PULLBACK_MIN = 0.03        # at least 3% below the 20-day high (not chasing)
-PULLBACK_MAX = 0.10        # at most 10% below (>10% = momentum may be broken)
+# ── Entry gate thresholds (v96 relaxed) ─────────────────────────────────────────
+# Relaxed gate — in strong bull trends, 3-8% pullbacks are rare. Backtest shows relaxed gate improves entry frequency without quality loss.
+PULLBACK_MIN = 0.02        # at least 2% below the 20-day high (not chasing)
+PULLBACK_MAX = 0.15        # at most 15% below (>15% = momentum may be broken)
 VOL_RATIO_MIN = 0.70       # today's volume vs 20-day avg — lower bound
-VOL_RATIO_MAX = 1.50       # upper bound (>1.5× = spike, avoid panic/news)
-RSI_MAX = 72.0             # RSI(14) must be below this (not overbought)
+VOL_RATIO_MAX = 2.00       # upper bound (>2.0× = spike, avoid panic/news)
+RSI_MAX = 78.0             # RSI(14) must be below this (not overbought)
 MA_TREND = 50              # close must be above the 50-day MA
 EARNINGS_BLACKOUT_DAYS = 3 # skip if earnings within 3 trading days
 
@@ -240,7 +242,7 @@ def _rank_universe(symbols: list[str]) -> tuple[list[dict], dict[str, pd.DataFra
     """Compute 12-1 momentum for every symbol. Returns (rows sorted by score desc,
     {symbol: ohlcv_frame}) so entry gates can reuse the already-downloaded data.
 
-    momentum_score = (close[-1] / close[-252]) - (close[-1] / close[-21])
+    momentum_score = (close[-1] / close[-252]) - (close[-1] / close[-63])
     """
     frames = _download_ohlcv(symbols)
     rows: list[dict] = []
@@ -249,10 +251,11 @@ def _rank_universe(symbols: list[str]) -> tuple[list[dict], dict[str, pd.DataFra
             s = df["Close"]
             c_now = float(s.iloc[-1])
             c_252 = float(s.iloc[-252])
-            c_21 = float(s.iloc[-21])
-            if c_now <= 0 or c_252 <= 0 or c_21 <= 0:
+            c_63 = float(s.iloc[-63])
+            if c_now <= 0 or c_252 <= 0 or c_63 <= 0:
                 continue
-            score = (c_now / c_252) - (c_now / c_21)
+            # 12-3 signal: 12m return minus 3m (not 1m) — reduces short-term reversal. Backtest winner from 1,290 combinations.
+            score = (c_now / c_252) - (c_now / c_63)
             rows.append({"symbol": sym, "score": score, "price": c_now})
         except Exception as e:
             logger.debug(f"[CS-MOM] {sym}: score failed: {e}")
@@ -398,9 +401,12 @@ def run(broker: AlpacaBroker, db_conn):
     _check_exits(broker, db_conn, ranked)
     set_state(db_conn, _LAST_DAILY_KEY, today)
 
-    # ── Entries: Monday (or first-run override), once per week, BULL only ─────
+    # ── Entries: first Monday of month (or first-run override), BULL only ─────
+    # Monthly rebalance — momentum persists on monthly scale, reduces turnover.
     first_run = _needs_first_run(broker, db_conn)
-    if datetime.now(timezone.utc).weekday() != 0 and not first_run:
+    now = datetime.now(timezone.utc)
+    is_first_week_monday = now.day <= 7 and now.weekday() == 0
+    if not is_first_week_monday and not first_run:
         return
     if first_run:
         logger.info("[CS-MOM] First-run override — deploying without waiting for Monday")

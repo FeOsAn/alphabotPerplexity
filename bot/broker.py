@@ -17,7 +17,7 @@ import pandas as pd
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL,
     MAX_TOTAL_POSITIONS, MAX_GROSS_EXPOSURE_PCT, STRATEGY_CAPITAL_LIMITS,
-    MIN_CASH_RESERVE_PCT,
+    MIN_CASH_RESERVE_PCT, MAX_PORTFOLIO_EXPOSURE,
 )
 import time as _time
 
@@ -345,6 +345,21 @@ class AlpacaBroker:
                     f"[Broker] Gross exposure cap would be exceeded "
                     f"({projected_gross:.1%} > {MAX_GROSS_EXPOSURE_PCT:.0%}), "
                     f"skipping {side} {symbol}"
+                )
+                return True
+
+        # --- Hard portfolio exposure cap (80%, BUY side only) -------------
+        # Never deploy more than MAX_PORTFOLIO_EXPOSURE of equity across all
+        # long positions. Stops dual_momentum (and friends) from grabbing 99%.
+        if side.lower() == "buy" and equity > 0:
+            current_long_exposure = sum(
+                float(p.get("market_value", 0.0)) for p in positions
+                if float(p.get("market_value", 0.0)) > 0
+            ) / equity
+            if current_long_exposure >= MAX_PORTFOLIO_EXPOSURE:
+                logger.info(
+                    f"[EXPOSURE CAP] Blocked {symbol} — portfolio at "
+                    f"{current_long_exposure:.1%} (cap: 80%)"
                 )
                 return True
 

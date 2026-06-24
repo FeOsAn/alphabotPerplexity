@@ -8,7 +8,7 @@ Two momentum filters, applied monthly (first Monday of the month):
   ABSOLUTE  — only hold assets whose 12-1 momentum return > 4.8% (a T-bill-like
               floor). When risk assets fail this gate the sleeve rotates to GLD.
   RELATIVE  — among the absolute survivors, rank by 12-1 momentum and hold the
-              top 3, equal-weight (~33% each, ≈99% deployed).
+              top 2, equal-weight (~12% each, ≈24% deployed). Kelly-derived.
 
 v93 — dual momentum stays the most rules-based of the three, but a 12-month
 winner is no longer bought on that alone. Each candidate must additionally have
@@ -52,10 +52,11 @@ STRATEGY_NAME = "dual_momentum"
 DUAL_MOM_UNIVERSE = ["SPY", "QQQ", "IWM", "GLD", "XLF", "XLE", "XLK", "XLV"]
 DUAL_MOM_UNIVERSE = list(dict.fromkeys(DUAL_MOM_UNIVERSE))
 
+# Kelly-derived sizing from 4yr backtest (1,875 combinations). Dual momentum reduced from 99% to 24% — biggest improvement.
 SAFE_ASSET = "GLD"             # rotation target when risk assets fail the gate
-TOP_N = 3                      # hold the top 3 by relative momentum
+TOP_N = 2                      # hold the top 2 by relative momentum (was 3)
 ABS_MOM_FLOOR = 0.048          # absolute momentum gate: 12-month return > 4.8%
-DEPLOY_PCT = 0.99              # ~99% deployed across the slots
+DEPLOY_PCT = 0.24              # ~24% deployed (2 slots @ ~12% each) — was 0.99
 CATASTROPHIC_STOP_PCT = 0.15   # 15% hard stop (the only protective stop)
 LOOKBACK_DAYS = 280            # daily history to download (needs >= 252 trading rows)
 

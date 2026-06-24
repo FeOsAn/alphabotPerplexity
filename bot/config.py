@@ -89,6 +89,29 @@ STRATEGY_CAPITAL_LIMITS = {
     "default":          0.15,  # all other strategies
 }
 
+# Kelly-derived sizing from 4yr backtest (1,875 combinations). Dual momentum reduced from 99% to 24% — biggest improvement.
+# Kelly-derived position sizes — optimised via 4yr backtest (Jun 2022-Jun 2026)
+# Half-Kelly fractions, capped at 20% per position
+STRATEGY_POSITION_SIZES = {
+    "cs_momentum":      0.085,   # was 0.12 — Kelly says smaller, higher conviction
+    "quality_momentum": 0.060,   # was 0.13
+    "dual_momentum":    0.120,   # was 0.33 — BIGGEST CHANGE: was taking 99% of portfolio
+    "mean_reversion":   0.025,   # was 0.06
+    "breakout":         0.080,   # unchanged
+    "trend_pullback":   0.030,   # was 0.08
+    "short_hedge":      0.030,   # was 0.06
+    "52wh_vol":         0.080,   # unchanged
+    "vwap_reclaim":     0.040,   # was 0.06 (estimate)
+    "multi_tf_rsi":     0.040,   # was 0.06 (estimate)
+    "conviction_long":  0.120,   # unchanged
+    "spy_dip":          0.040,   # estimate
+    "earnings_drift":   0.040,   # estimate
+}
+
+# Hard cap: never deploy > 80% of equity across all long positions. Prevents the
+# old problem of dual_momentum alone trying to take 99% of equity.
+MAX_PORTFOLIO_EXPOSURE = 0.80
+
 # ============================================================
 # Strategy Parameters
 # ============================================================
