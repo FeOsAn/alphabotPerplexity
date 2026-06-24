@@ -154,6 +154,43 @@ class AlpacaBroker:
             logger.warning(f"[Broker] strategy_capital calc failed: {e}")
             return 0.0
 
+    def _apply_transition_gate(self, symbol: str, strategy: str,
+                               notional: float):
+        """
+        v95 (Idea 1) — regime transition band gate + VIX overlay.
+
+        Returns the (possibly reduced) notional to use for the entry, or None if
+        the entry is blocked entirely. Applied to every new long/short entry:
+          - 0.0× (blocked) for momentum strategies inside the ±1% MA50 band
+          - 0.0× (blocked) when VIX > 25
+          - 0.5× when VIX 20–25
+          - scaled by transition_confidence during an unconfirmed regime flip
+        """
+        try:
+            from utils.regime_detector import get_regime_context
+            ctx = get_regime_context(strategy)
+        except Exception as e:
+            logger.debug(f"[Broker] transition gate unavailable for {symbol}: {e}")
+            return notional
+
+        mult = ctx.get("entry_multiplier", 1.0)
+        if mult <= 0.0:
+            logger.info(
+                f"[TRANSITION GATE] {symbol} blocked — "
+                f"SPY {ctx.get('spy_distance_pct', 0):+.2%} from MA50, "
+                f"VIX={ctx.get('vix', 0):.1f}, regime={ctx.get('regime')}, "
+                f"conf={ctx.get('transition_confidence', 1.0):.2f} ({strategy})"
+            )
+            return None
+        if mult < 1.0:
+            logger.info(
+                f"[TRANSITION GATE] {symbol} sized {mult:.2f}× "
+                f"(VIX={ctx.get('vix', 0):.1f}, conf="
+                f"{ctx.get('transition_confidence', 1.0):.2f}) ({strategy})"
+            )
+            return float(notional) * mult
+        return notional
+
     def _entry_blocked(self, symbol: str, side: str, strategy: str,
                        notional: float) -> bool:
         """
@@ -326,7 +363,15 @@ class AlpacaBroker:
         positions_state row so trade_management can drive dollar-based stops
         and TPs off durable state.
         v92: capital floor guard — MIN_CASH_RESERVE_PCT NAV cash floor with displacement engine.
+        v95: transition band gate — block/scale entries near the MA50 boundary.
         """
+        # v95 (Idea 1) — regime transition gate. Block momentum entries inside the
+        # ±1% MA50 band; scale all entries by the VIX overlay + transition confidence.
+        gated = self._apply_transition_gate(symbol, strategy, notional)
+        if gated is None:
+            return None
+        notional = gated
+
         # v92: capital floor guard (was a hardcoded 25% — now the configured 15% reserve)
         try:
             account = self.trading.get_account()
@@ -450,6 +495,13 @@ class AlpacaBroker:
         dollar amount to a whole-share qty using the latest trade price and submit
         a plain SELL market order (negative net position == short with margin on).
         """
+        # v95 (Idea 1) — regime transition gate (VIX overlay applies to shorts too;
+        # short_hedge/vix_reversal are defensive so the band block won't hit them).
+        gated = self._apply_transition_gate(symbol, strategy, notional)
+        if gated is None:
+            return None
+        notional = gated
+
         if self._entry_blocked(symbol, "sell", strategy, notional):
             return None
 

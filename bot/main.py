@@ -180,6 +180,26 @@ def get_market_regime() -> str:
         return _regime_cache_value
 
     regime = "bull"  # safe default
+
+    # v95 — PRIMARY signal: composite regime score (SPY+VIX+IVTS+credit) passed
+    # through the N-day confirmation state machine. Returns bull/transition/bear.
+    try:
+        from utils.regime_detector import get_regime_context
+        ctx = get_regime_context()
+        confirmed = ctx.get("regime")
+        if confirmed in ("bull", "transition", "bear"):
+            _regime_cache_date = today
+            _regime_cache_value = confirmed
+            _regime_cache_vix = ctx.get("vix", _regime_cache_vix) or _regime_cache_vix
+            logger.info(
+                f"[Regime] Composite score={ctx.get('score')} → {confirmed.upper()} "
+                f"(raw={ctx.get('raw_regime')}, conf={ctx.get('transition_confidence', 1.0):.2f}, "
+                f"SPY {ctx.get('spy_distance_pct', 0):+.2%} vs MA50, VIX={ctx.get('vix', 0):.1f})"
+            )
+            return confirmed
+    except Exception as e:
+        logger.debug(f"[Regime] composite score unavailable: {e} — falling back to HMM")
+
     try:
         from utils.regime_detector import get_regime as _rd_get_regime
         hmm_regime, confidence = _rd_get_regime()
@@ -221,6 +241,60 @@ def get_market_regime() -> str:
     _regime_cache_value = regime
     _regime_cache_vix   = _vix_now if _vix_now > 0 else _regime_cache_vix
     return regime
+
+
+# v95 — track last emergency stop-compression cycle so VIX>30 only re-compresses
+# stops a few times per session, not every 5-min cycle.
+_last_emergency_compress_ts: float = 0.0
+_EMERGENCY_COMPRESS_COOLDOWN = 1800  # 30 min between compression sweeps
+
+
+def run_emergency_stop_compression(broker):
+    """
+    v95 (Idea 1, VIX > 30) — emergency stop compression. Tighten EVERY open
+    equity position's protective stop to TRANSITION_EMERGENCY_STOP_PCT (3%) from
+    its entry. Throttled to once per 30 min so a sustained VIX spike doesn't
+    re-submit stops every cycle.
+    """
+    global _last_emergency_compress_ts
+    import time as _t
+    now = _t.time()
+    if now - _last_emergency_compress_ts < _EMERGENCY_COMPRESS_COOLDOWN:
+        return
+    _last_emergency_compress_ts = now
+
+    from config import TRANSITION_EMERGENCY_STOP_PCT
+    from strategies.trade_management import update_exchange_stop
+
+    try:
+        positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[EMERGENCY STOP] could not fetch positions: {e}")
+        return
+
+    compressed = 0
+    for pos in positions:
+        if pos.get("asset_class") == "option":
+            continue
+        symbol = pos.get("symbol")
+        entry = pos.get("avg_entry") or 0.0
+        side = (pos.get("side") or "").lower()
+        if not symbol or entry <= 0:
+            continue
+        if side == "short":
+            new_stop = round(entry * (1 + TRANSITION_EMERGENCY_STOP_PCT), 2)
+        else:
+            new_stop = round(entry * (1 - TRANSITION_EMERGENCY_STOP_PCT), 2)
+        try:
+            if update_exchange_stop(broker, symbol, new_stop):
+                compressed += 1
+                logger.info(
+                    f"[EMERGENCY STOP] {symbol} ({side}) stop → ${new_stop:.2f} "
+                    f"(3% from entry ${entry:.2f})"
+                )
+        except Exception as e:
+            logger.warning(f"[EMERGENCY STOP] {symbol}: stop compression failed: {e}")
+    logger.info(f"[EMERGENCY STOP] VIX>30 — compressed {compressed} stop(s) to 3%")
 
 
 
@@ -635,6 +709,15 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.debug(f"[Regime] could not persist current_regime: {e}")
 
+        # v95 (Idea 1) — emergency stop compression when VIX > 30.
+        try:
+            from utils.regime_detector import get_regime_context
+            if get_regime_context().get("emergency_stop_compression"):
+                logger.warning("[EMERGENCY STOP] VIX>30 detected — compressing all stops to 3%")
+                run_emergency_stop_compression(broker)
+        except Exception as e:
+            logger.error(f"[EMERGENCY STOP] compression check failed: {e}", exc_info=True)
+
         # v89 — Conviction Long daily management. New conviction positions are
         # only opened from the weekly cron (weekly_scan.py), but existing holds
         # must be managed EVERY day (ratchet, 60-day time stop, bear exit) across
@@ -678,6 +761,32 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (cs_momentum.run,       "CS Momentum"),      # v91: closes all in bear
                 (quality_momentum.run,  "Quality Momentum"), # v91: bear loss sweep only
                 (dual_momentum.run,     "Dual Momentum"),    # v91: runs all regimes (rotates to GLD)
+            ]
+
+        elif regime == "transition":
+            logger.info("TRANSITION regime — defensive strategies only (0.75×) + dual momentum")
+            _strategy_list = [
+                (mean_reversion.run,    "Mean reversion"),   # 0.75× — primary defensive
+                (vwap_reclaim.run,      "VWAP reclaim"),     # 0.75×
+                (vix_reversal.run,      "VIX reversal"),     # 0.75×
+                (short_hedge.run,       "Short hedge"),      # 0.75×
+                (multi_tf_rsi.run,      "Multi-TF RSI"),     # 0.75×
+                (spy_dip.run,           "SPY dip"),          # 0.75× — counter-trend dip buy
+                (pairs_trading.run,     "Pairs trading"),    # market-neutral
+                (gap_scanner.run,       "Gap scanner"),      # exits only
+                (dual_momentum.run,     "Dual Momentum"),    # 1.0× — own cross-asset filter
+                # Below handle exits/management only — self-skip new entries via
+                # TRANSITION regime_weight=0.0.
+                (momentum.run,          "Momentum"),
+                (breakout.run,          "Breakout"),
+                (trend_following.run,   "Trend following"),
+                (sector_rotation.run,   "Sector rotation"),
+                (trend_pullback.run,    "Trend pullback"),
+                (fifty_two_wh.run,      "52WH-Vol"),
+                (earnings_drift.run,    "Earnings drift"),
+                (conviction_long.run,   "Conviction Long"),  # management only
+                (cs_momentum.run,       "CS Momentum"),      # exits only
+                (quality_momentum.run,  "Quality Momentum"), # exits only
             ]
 
         elif regime == "chop":

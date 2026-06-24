@@ -158,6 +158,36 @@ CATALYST_EARNINGS_DAYS  = 14    # within 14 days of earnings = catalyst window
 MAX_CATALYST_POSITION_PCT = MAX_SINGLE_POSITION_PCT
 
 # ============================================================
+# v95 — Regime Transition Protection (band gate + N-day confirm + composite score)
+# ============================================================
+TRANSITION_BAND_PCT = 0.01       # 1% band around MA50 — block momentum entries inside it
+TRANSITION_VIX_HALF = 20         # VIX above this → 50% size cut on ANY new position
+TRANSITION_VIX_BLOCK = 25        # VIX above this → no new entries
+TRANSITION_VIX_EMERGENCY = 30    # VIX above this → compress all open stops to 3%
+TRANSITION_EMERGENCY_STOP_PCT = 0.03  # emergency stop distance when VIX > 30
+
+# Momentum/breakout-type strategies — BLOCKED from new entries inside the
+# transition band (|SPY - MA50| < 1%). These are the trend-followers that bleed
+# when the market drifts across the MA50 boundary.
+TRANSITION_BLOCKED_STRATEGIES = {
+    "cs_momentum", "quality_momentum", "breakout", "52wh_vol",
+    "trend_pullback", "momentum", "sector_rotation", "gap_scanner",
+    "earnings_drift", "dual_momentum", "conviction_long",
+}
+
+# Defensive / mean-reversion strategies — ALLOWED inside the transition band
+# (still subject to the VIX size cut). These are counter-trend and don't depend
+# on a clean regime read.
+TRANSITION_ALLOWED_STRATEGIES = {
+    "mean_reversion", "vwap_reclaim", "short_hedge",
+    "vix_reversal", "multi_tf_rsi", "spy_dip",
+}
+
+# In the composite-score "transition" regime, defensive strategies run at this
+# fraction of normal size; dual_momentum runs full (its own filter handles it).
+TRANSITION_DEFENSIVE_SIZE = 0.75
+
+# ============================================================
 # Scheduling
 # ============================================================
 MARKET_OPEN_BUFFER_MIN = 15    # Wait 15min after open before trading

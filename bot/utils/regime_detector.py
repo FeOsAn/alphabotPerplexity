@@ -22,11 +22,130 @@ _thread = None
 
 UPDATE_INTERVAL = 1800  # 30 minutes
 
+# v95 — short cache for the composite regime context (base, strategy-agnostic).
+# compute_regime_score() already caches its downloads for 1h; this guards the
+# state-machine read + dict build against per-order recompute storms.
+_CTX_TTL = 60
+_ctx_cache: dict = {}
+_ctx_cache_ts: float = 0.0
+_ctx_lock = threading.Lock()
+
 
 def get_regime() -> tuple:
     """Thread-safe regime read. Returns (regime_str, confidence)."""
     with _regime_lock:
         return current_regime, regime_confidence
+
+
+def _base_context() -> dict:
+    """
+    Build the strategy-agnostic regime context from the composite score (Idea 3)
+    passed through the N-day confirmation state machine (Idea 2). Cached ~60s.
+    """
+    global _ctx_cache, _ctx_cache_ts
+    now = time.time()
+    with _ctx_lock:
+        if _ctx_cache and (now - _ctx_cache_ts) < _CTX_TTL:
+            return dict(_ctx_cache)
+
+    from config import (
+        TRANSITION_BAND_PCT, TRANSITION_VIX_HALF, TRANSITION_VIX_BLOCK,
+        TRANSITION_VIX_EMERGENCY,
+    )
+    from utils.regime_scorer import compute_regime_score
+
+    score = compute_regime_score()
+    raw_regime = score["regime"]          # bull | transition | bear
+    vix = float(score["vix"])
+    spy_dist = float(score["spy_dist_pct"])
+    in_band = abs(spy_dist) < TRANSITION_BAND_PCT
+
+    # N-day confirmation (Idea 2) — needs a DB connection.
+    confirmed = raw_regime
+    confidence = 1.0
+    candidate = None
+    days = 0
+    try:
+        from db import get_connection
+        from utils.regime_state_machine import RegimeStateMachine
+        conn = get_connection()
+        try:
+            sm = RegimeStateMachine(conn)
+            res = sm.update(raw_regime)
+            confirmed = res["confirmed_regime"]
+            confidence = res["transition_confidence"]
+            candidate = res["candidate_regime"]
+            days = res["days_confirming"]
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug(f"[RegimeContext] state machine unavailable: {e}")
+
+    emergency = vix > TRANSITION_VIX_EMERGENCY
+
+    # Base (no strategy) VIX-driven multiplier — Idea 1 VIX overlay.
+    if vix > TRANSITION_VIX_EMERGENCY:
+        base_mult = 0.0
+    elif vix > TRANSITION_VIX_BLOCK:
+        base_mult = 0.0
+    elif vix > TRANSITION_VIX_HALF:
+        base_mult = 0.5
+    else:
+        base_mult = 1.0
+
+    ctx = {
+        "regime": confirmed,
+        "raw_regime": raw_regime,
+        "in_transition_band": in_band,
+        "spy_distance_pct": spy_dist,
+        "vix": vix,
+        "entry_multiplier": base_mult,
+        "emergency_stop_compression": emergency,
+        "transition_confidence": confidence,
+        "candidate_regime": candidate,
+        "days_confirming": days,
+        "score": score["score"],
+    }
+    with _ctx_lock:
+        _ctx_cache = dict(ctx)
+        _ctx_cache_ts = now
+    return ctx
+
+
+def get_regime_context(strategy: str = None) -> dict:
+    """
+    v95 — unified regime context for the transition-protection gate (Idea 1).
+
+    Returns a dict with the confirmed regime, transition-band state, VIX, and a
+    strategy-aware `entry_multiplier`:
+
+      - 0.0 if the strategy is momentum-type AND SPY is inside the ±1% MA50 band
+      - 0.0 if VIX > 25 (or > 30, which also sets emergency_stop_compression)
+      - 0.5 if VIX 20–25
+      - otherwise 1.0
+      - scaled down further by transition_confidence while a flip is unconfirmed
+
+    `strategy=None` returns the base (VIX-only) multiplier without the
+    momentum-band block.
+    """
+    from config import TRANSITION_BLOCKED_STRATEGIES
+
+    ctx = _base_context()
+    mult = ctx["entry_multiplier"]
+
+    # Momentum-type strategies are blocked entirely inside the transition band.
+    if strategy and ctx["in_transition_band"] and strategy in TRANSITION_BLOCKED_STRATEGIES:
+        mult = 0.0
+
+    # During an unconfirmed regime flip, scale entries down by confidence (Idea 2).
+    conf = ctx.get("transition_confidence", 1.0)
+    if conf < 1.0:
+        mult *= conf
+
+    ctx = dict(ctx)
+    ctx["entry_multiplier"] = round(mult, 4)
+    ctx["strategy"] = strategy
+    return ctx
 
 
 def _compute_regime() -> tuple:
