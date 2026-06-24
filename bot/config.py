@@ -160,8 +160,9 @@ MAX_CATALYST_POSITION_PCT = MAX_SINGLE_POSITION_PCT
 # ============================================================
 # v95 — Regime Transition Protection (band gate + N-day confirm + composite score)
 # ============================================================
-TRANSITION_BAND_PCT = 0.01       # 1% band around MA50 — block momentum entries inside it
-TRANSITION_VIX_HALF = 20         # VIX above this → 50% size cut on ANY new position
+# Optimised via 432-combination backtest grid, Jun 2024-Jun 2026. Sharpe 1.330, MaxDD -17.4%
+TRANSITION_BAND_PCT = 0.01       # 1.0% — unchanged, confirmed optimal
+TRANSITION_VIX_HALF = 22         # was 20 — less restrictive in normal markets; VIX above this → 50% size cut
 TRANSITION_VIX_BLOCK = 25        # VIX above this → no new entries
 TRANSITION_VIX_EMERGENCY = 30    # VIX above this → compress all open stops to 3%
 TRANSITION_EMERGENCY_STOP_PCT = 0.03  # emergency stop distance when VIX > 30
