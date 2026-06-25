@@ -105,6 +105,8 @@ def _base_context() -> dict:
         "candidate_regime": candidate,
         "days_confirming": days,
         "score": score["score"],
+        "pre_transition_alert": bool(score.get("pre_transition_alert", False)),
+        "pre_alert_source": score.get("pre_alert_source", "n/a"),
     }
     with _ctx_lock:
         _ctx_cache = dict(ctx)

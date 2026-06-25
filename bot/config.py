@@ -212,6 +212,29 @@ TRANSITION_ALLOWED_STRATEGIES = {
 TRANSITION_DEFENSIVE_SIZE = 0.75
 
 # ============================================================
+# v97 — Regime Transition Protection (IVTS pre-alert + tight stop + GLD/SH hedge)
+# ============================================================
+# Final params from a 192-combination backtest over 70 transition events (2015–2026).
+# PRE_TRANSITION_ALERT fires when the VIX term structure flattens/inverts (IVTS high)
+# AND SPY is sitting right on its 50-day MA — the classic pre-regime-flip setup.
+PRE_TRANSITION_IVTS_MIN = 0.97        # IVTS = ^VIX / ^VIX3M; >= this = term structure stress
+PRE_TRANSITION_SPY_BAND = 0.02        # |SPY/MA50 - 1| <= this = price pinned to the MA50
+PRE_TRANSITION_VIX_FALLBACK = 22      # if ^VIX3M unavailable: VIX above this + in band = alert
+
+# When PRE_TRANSITION_ALERT is active, momentum stops compress from the base 8% to this.
+PRE_TRANSITION_TIGHT_STOP_PCT = 0.05  # 5% tight stop on all open momentum positions
+
+# Rotation hedge sizing on PRE_TRANSITION_ALERT False→True.
+PRE_TRANSITION_GLD_PCT = 0.10         # 10% of equity into GLD
+PRE_TRANSITION_SH_PCT = 0.05          # 5% of equity into SH (inverse SPY)
+
+# Momentum-type strategies affected by the v97 tight stop + entry block on alert.
+PRE_TRANSITION_MOMENTUM_STRATEGIES = {
+    "cs_momentum", "quality_momentum", "dual_momentum", "momentum",
+    "breakout", "52wh_vol", "trend_pullback",
+}
+
+# ============================================================
 # Scheduling
 # ============================================================
 MARKET_OPEN_BUFFER_MIN = 15    # Wait 15min after open before trading

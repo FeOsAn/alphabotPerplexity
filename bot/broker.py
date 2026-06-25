@@ -173,6 +173,26 @@ class AlpacaBroker:
             logger.debug(f"[Broker] transition gate unavailable for {symbol}: {e}")
             return notional
 
+        # v97 — PRE_TRANSITION_ALERT hard block for momentum-type strategies.
+        # Unconditional regardless of composite score: when the pre-alert is active
+        # (IVTS stressed AND SPY pinned to MA50, or the VIX fallback), momentum
+        # entries are blocked outright. This also closes the gate-#4 bypass where a
+        # still-elevated composite score (65+) let momentum entries through while
+        # SPY hugged the MA50 boundary.
+        from config import PRE_TRANSITION_MOMENTUM_STRATEGIES, PRE_TRANSITION_SPY_BAND
+        is_momentum = strategy in PRE_TRANSITION_MOMENTUM_STRATEGIES
+        if is_momentum:
+            pre_alert = ctx.get("pre_transition_alert", False)
+            near_ma50 = abs(ctx.get("spy_distance_pct", 0.0)) <= PRE_TRANSITION_SPY_BAND
+            if pre_alert or near_ma50:
+                logger.info(
+                    f"[PRE_TRANSITION_ALERT] {symbol} momentum entry blocked — "
+                    f"alert={pre_alert} (source={ctx.get('pre_alert_source')}), "
+                    f"SPY {ctx.get('spy_distance_pct', 0):+.2%} from MA50 "
+                    f"(band±{PRE_TRANSITION_SPY_BAND:.0%}) ({strategy})"
+                )
+                return None
+
         mult = ctx.get("entry_multiplier", 1.0)
         if mult <= 0.0:
             logger.info(

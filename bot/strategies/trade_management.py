@@ -548,11 +548,16 @@ def place_bracket_orders(
         return None, None, None
 
 
-def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional[str]:
+def update_exchange_stop(broker, symbol: str, new_stop_price: float,
+                         settle_delay: float = 0.0) -> Optional[str]:
     """
     v81: Replace the OCO bracket order with a new one at the ratcheted stop price,
     preserving the same TP2 limit. Also handles legacy plain-stop orders.
     Returns the new OCO order ID or None on failure.
+
+    settle_delay: seconds to sleep between cancelling the old order and submitting
+    the replacement (v88 cancel → sleep → replace pattern). Defaults to 0 to keep
+    existing callers unchanged; the v97 pre-transition tightening passes 3.
     """
     try:
         from alpaca.trading.requests import (
@@ -630,6 +635,12 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
             except Exception as _fe:
                 logger.debug(f"[TM] Could not scan open orders for {symbol}: {_fe}")
 
+        # v88 cancel → sleep → replace: let the cancel settle on Alpaca's side
+        # before submitting the replacement so the new stop isn't rejected for
+        # exceeding shares held (the cancelled order still reserves them briefly).
+        if settle_delay and settle_delay > 0:
+            time.sleep(settle_delay)
+
         # --- Place new OCO bracket with updated stop (preserve TP2 if we have it) ---
         # v86 (H4) — the ratcheted stop must cover the ENTIRE live remaining position
         # (TP1 has typically already filled by the time we trail the stop), so size
@@ -704,6 +715,107 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float) -> Optional
     except Exception as e:
         logger.warning(f"[TM] update_exchange_stop failed for {symbol}: {e}")
         return None
+
+
+def _live_stop_price(broker, symbol: str) -> Optional[float]:
+    """Return the stop price of the live protective stop/OCO for a symbol, or None."""
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        orders = broker.trading.get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+        )
+    except Exception as e:
+        logger.debug(f"[PreAlertStop] {symbol}: order fetch failed: {e}")
+        return None
+    for o in (orders or []):
+        otype = str(getattr(o, "order_type", getattr(o, "type", ""))).lower()
+        oclass = str(getattr(o, "order_class", "")).lower()
+        sp = getattr(o, "stop_price", None)
+        if sp and ("stop" in otype or "oco" in oclass):
+            try:
+                return float(sp)
+            except Exception:
+                pass
+    return None
+
+
+def apply_pre_transition_stops(broker: AlpacaBroker, db_conn):
+    """
+    v97 — when PRE_TRANSITION_ALERT is active, tighten every open momentum
+    position's protective stop from the base 8% to PRE_TRANSITION_TIGHT_STOP_PCT (5%).
+
+      - LONG  : new stop = max(entry × 0.95, current × 0.95)  (always below current)
+      - SHORT : new stop = min(entry × 1.05, current × 1.05)  (always above current)
+
+    Only TIGHTENS — never loosens an existing stop. Uses the cancel → sleep(3) →
+    replace pattern via update_exchange_stop(settle_delay=3).
+    """
+    try:
+        from utils.regime_detector import get_regime_context
+        ctx = get_regime_context()
+    except Exception as e:
+        logger.debug(f"[PreAlertStop] regime context unavailable: {e}")
+        return
+
+    if not ctx.get("pre_transition_alert"):
+        return
+
+    from config import PRE_TRANSITION_TIGHT_STOP_PCT, PRE_TRANSITION_MOMENTUM_STRATEGIES
+    tight = PRE_TRANSITION_TIGHT_STOP_PCT
+
+    try:
+        positions = broker.get_positions()
+    except Exception as e:
+        logger.warning(f"[PreAlertStop] could not fetch positions: {e}")
+        return
+
+    logger.info(
+        f"[PRE_TRANSITION_ALERT] active (source={ctx.get('pre_alert_source')}) — "
+        f"tightening momentum stops to {tight:.0%}"
+    )
+    tightened = 0
+    for pos in positions:
+        if pos.get("asset_class") == "option":
+            continue
+        strategy = pos.get("strategy", "unknown")
+        if strategy not in PRE_TRANSITION_MOMENTUM_STRATEGIES:
+            continue
+        symbol = pos.get("symbol")
+        side = (pos.get("side") or "").lower()
+        current = float(pos.get("current_price") or 0.0)
+        entry = _resolve_entry_price(symbol, pos, db_conn)
+        if not symbol or current <= 0 or entry <= 0:
+            continue
+
+        if side == "short":
+            new_stop = round(min(entry * (1 + tight), current * (1 + tight)), 2)
+            if new_stop <= current:
+                continue  # must be ABOVE current price
+            live = _live_stop_price(broker, symbol)
+            # tighter for a short = closer to current = LOWER stop
+            if live is not None and new_stop >= live:
+                continue
+        else:
+            new_stop = round(max(entry * (1 - tight), current * (1 - tight)), 2)
+            if new_stop >= current:
+                continue  # must be BELOW current price
+            live = _live_stop_price(broker, symbol)
+            # tighter for a long = closer to current = HIGHER stop
+            if live is not None and new_stop <= live:
+                continue
+
+        try:
+            if update_exchange_stop(broker, symbol, new_stop, settle_delay=3):
+                tightened += 1
+                logger.info(
+                    f"[PRE_TRANSITION_ALERT] {symbol} ({side}) stop → ${new_stop:.2f} "
+                    f"(5% tight | entry=${entry:.2f} current=${current:.2f})"
+                )
+        except Exception as e:
+            logger.warning(f"[PreAlertStop] {symbol}: stop tighten failed: {e}")
+
+    logger.info(f"[PRE_TRANSITION_ALERT] tightened {tightened} momentum stop(s) to {tight:.0%}")
 
 
 def place_exchange_tp(broker, symbol: str, tp1_price: float, tp2_price: float,

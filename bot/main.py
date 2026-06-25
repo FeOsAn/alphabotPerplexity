@@ -1,5 +1,5 @@
 """
-AlphaBot — Main entry point  (v44)
+AlphaBot — Main entry point  (v97)
 Multi-factor algorithmic trading bot for Alpaca Markets
 Runs 24/7 on Railway. Handles all strategies + API server.
 """
@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v92"
+VERSION = "v97"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -298,6 +298,101 @@ def run_emergency_stop_compression(broker):
 
 
 
+# v97 — PRE_TRANSITION_ALERT edge-detection + hedge state. Persisted to bot_state
+# so the False→True / True→False transitions survive restarts.
+_prev_pre_transition_alert: bool = False
+_pre_transition_hedge_active: bool = False
+_PRE_TRANSITION_HEDGE_SYMBOLS = ("GLD", "SH")
+
+
+def manage_pre_transition_hedge(broker: AlpacaBroker, db_conn):
+    """
+    v97 — rotate into a GLD (10%) + SH (5%) hedge on the PRE_TRANSITION_ALERT
+    False→True edge, and unwind it on the True→False edge.
+
+    GLD/SH are only closed here if WE opened them as transition hedges (tracked via
+    the persisted _pre_transition_hedge_active flag) so a dual_momentum GLD rotation
+    isn't clobbered.
+    """
+    global _prev_pre_transition_alert, _pre_transition_hedge_active
+
+    try:
+        from utils.regime_detector import get_regime_context
+        alert = bool(get_regime_context().get("pre_transition_alert", False))
+    except Exception as e:
+        logger.debug(f"[PreTransitionHedge] regime context unavailable: {e}")
+        return
+
+    from config import (
+        PRE_TRANSITION_GLD_PCT, PRE_TRANSITION_SH_PCT, MIN_ENTRY_NOTIONAL,
+    )
+
+    # ── False → True: open the hedge ─────────────────────────────────────────
+    if alert and not _prev_pre_transition_alert:
+        logger.info("PRE_TRANSITION_ALERT: Opening GLD (10%) + SH (5%) hedge")
+        try:
+            equity = float(broker.get_account().get("equity") or 0.0)
+            held = {p["symbol"] for p in broker.get_positions()}
+        except Exception as e:
+            logger.warning(f"[PreTransitionHedge] account/positions fetch failed: {e}")
+            equity, held = 0.0, set()
+
+        for symbol, pct in (("GLD", PRE_TRANSITION_GLD_PCT), ("SH", PRE_TRANSITION_SH_PCT)):
+            if symbol in held:
+                logger.info(f"[PreTransitionHedge] {symbol} already open — skipping hedge buy")
+                continue
+            notional = round(equity * pct, 2)
+            if notional < MIN_ENTRY_NOTIONAL:
+                logger.info(
+                    f"[PreTransitionHedge] {symbol} hedge notional ${notional:.0f} < "
+                    f"${MIN_ENTRY_NOTIONAL} floor — skipping"
+                )
+                continue
+            price = broker._latest_price(symbol)
+            if not price or price <= 0:
+                logger.warning(f"[PreTransitionHedge] {symbol}: no price — skipping hedge buy")
+                continue
+            qty = round(notional / price)
+            if qty < 1:
+                continue
+            try:
+                from alpaca.trading.requests import MarketOrderRequest
+                from alpaca.trading.enums import OrderSide, TimeInForce
+                req = MarketOrderRequest(
+                    symbol=symbol, qty=int(qty),
+                    side=OrderSide.BUY, time_in_force=TimeInForce.DAY,
+                )
+                order = broker.trading.submit_order(req)
+                logger.info(
+                    f"[PreTransitionHedge] BUY {int(qty)} {symbol} "
+                    f"(~${notional:.0f}, {pct:.0%} equity) — order {order.id}"
+                )
+            except Exception as e:
+                logger.error(f"[PreTransitionHedge] {symbol} hedge buy failed: {e}")
+
+        _pre_transition_hedge_active = True
+
+    # ── True → False: close the hedge we opened ──────────────────────────────
+    elif not alert and _prev_pre_transition_alert:
+        if _pre_transition_hedge_active:
+            logger.info("PRE_TRANSITION_ALERT cleared: Closing GLD/SH hedge")
+            for symbol in _PRE_TRANSITION_HEDGE_SYMBOLS:
+                try:
+                    if broker.get_position(symbol):
+                        broker.close_position(symbol, strategy="pre_transition_hedge")
+                except Exception as e:
+                    logger.error(f"[PreTransitionHedge] {symbol} hedge close failed: {e}")
+            _pre_transition_hedge_active = False
+
+    # Persist edge-detection + hedge state so transitions survive restarts.
+    _prev_pre_transition_alert = alert
+    try:
+        set_state(db_conn, "prev_pre_transition_alert", "1" if alert else "0")
+        set_state(db_conn, "pre_transition_hedge_active", "1" if _pre_transition_hedge_active else "0")
+    except Exception as e:
+        logger.debug(f"[PreTransitionHedge] persist failed: {e}")
+
+
 # Track last risk-metrics fire date (logged once daily after 10 AM ET)
 _last_metrics_date: str = ""
 
@@ -338,7 +433,15 @@ def _restore_state(db_conn):
     global _circuit_breaker_active, _circuit_breaker_reset_date
     global _recap_sent_date, _gap_protection_run_date
     global _last_report_date, _last_metrics_date, _last_regime_exit_date
+    global _prev_pre_transition_alert, _pre_transition_hedge_active
     try:
+        ppa = get_state(db_conn, "prev_pre_transition_alert")
+        if ppa is not None:
+            _prev_pre_transition_alert = (ppa == "1")
+        pha = get_state(db_conn, "pre_transition_hedge_active")
+        if pha is not None:
+            _pre_transition_hedge_active = (pha == "1")
+
         cb = get_state(db_conn, "circuit_breaker_active")
         if cb is not None:
             _circuit_breaker_active = (cb == "1")
@@ -717,6 +820,19 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 run_emergency_stop_compression(broker)
         except Exception as e:
             logger.error(f"[EMERGENCY STOP] compression check failed: {e}", exc_info=True)
+
+        # v97 — PRE_TRANSITION_ALERT: tighten momentum stops to 5% and rotate into
+        # the GLD/SH hedge on the alert edge. Entry-blocking is handled inside the
+        # broker transition gate; this covers stop-tightening + the hedge rotation.
+        try:
+            from strategies.trade_management import apply_pre_transition_stops
+            apply_pre_transition_stops(broker, db_conn)
+        except Exception as e:
+            logger.error(f"[PRE_TRANSITION_ALERT] stop tightening failed: {e}", exc_info=True)
+        try:
+            manage_pre_transition_hedge(broker, db_conn)
+        except Exception as e:
+            logger.error(f"[PRE_TRANSITION_ALERT] hedge management failed: {e}", exc_info=True)
 
         # v89 — Conviction Long daily management. New conviction positions are
         # only opened from the weekly cron (weekly_scan.py), but existing holds

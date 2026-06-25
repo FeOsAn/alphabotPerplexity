@@ -117,6 +117,22 @@ def _compute() -> dict:
     else:
         regime = "bear"
 
+    # ── v97: PRE_TRANSITION_ALERT — pre-regime-flip detection ────────────────
+    # Fires when the VIX term structure is stressed (IVTS high) AND SPY is pinned
+    # to its 50-day MA — the setup that precedes most regime transitions.
+    from config import (
+        PRE_TRANSITION_IVTS_MIN, PRE_TRANSITION_SPY_BAND,
+        PRE_TRANSITION_VIX_FALLBACK,
+    )
+    spy_vs_ma50 = abs(spy_dist)
+    if ivts is not None:
+        pre_alert = (ivts >= PRE_TRANSITION_IVTS_MIN) and (spy_vs_ma50 <= PRE_TRANSITION_SPY_BAND)
+        pre_alert_source = "ivts"
+    else:
+        # ^VIX3M unavailable — fall back to absolute VIX level.
+        pre_alert = (vix > PRE_TRANSITION_VIX_FALLBACK) and (spy_vs_ma50 <= PRE_TRANSITION_SPY_BAND)
+        pre_alert_source = "vix_fallback"
+
     result = {
         "score": score,
         "regime": regime,
@@ -125,11 +141,18 @@ def _compute() -> dict:
         "vix": vix,
         "ivts": ivts,
         "credit_change": credit_change,
+        "pre_transition_alert": bool(pre_alert),
+        "pre_alert_source": pre_alert_source,
     }
     logger.info(
         f"[RegimeScore] {score}/100 → {regime.upper()} | "
         f"SPY_dist={spy_dist:+.2%} VIX={vix:.1f} "
         f"comp(trend={c1},vix={c2},ivts={c3},credit={c4})"
+    )
+    ivts_txt = f"{ivts:.3f}" if ivts is not None else "n/a"
+    logger.info(
+        f"[PreAlert] PRE_TRANSITION_ALERT={pre_alert} (source={pre_alert_source}) | "
+        f"IVTS={ivts_txt} SPY_vs_MA50={spy_vs_ma50:.2%} VIX={vix:.1f}"
     )
     return result
 
@@ -157,6 +180,8 @@ def compute_regime_score(force: bool = False) -> dict:
             "vix": 20.0,
             "ivts": None,
             "credit_change": None,
+            "pre_transition_alert": False,
+            "pre_alert_source": "fallback",
         }
     with _lock:
         _cache = result
