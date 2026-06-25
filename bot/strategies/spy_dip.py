@@ -76,6 +76,13 @@ def _get_signals() -> dict:
             ma20_prev = float(close.tail(25).head(20).mean())  # 5 days ago
             ma20_slope = (ma20_now - ma20_prev) / ma20_prev if ma20_prev > 0 else 0.0
 
+            # v98 — 20-day realised vol → VIX-style proxy. Previously absent from
+            # the SPY indicator dict, which left vix_proxy NaN/undefined for any
+            # downstream consumer and silently suppressed the signal. Computed
+            # here alongside the other indicators so the field path matches.
+            rvol20 = float(close.pct_change().tail(20).std() * (252 ** 0.5))
+            vix_proxy = rvol20 * 100
+
             buy_signal = (
                 above_ma50 and
                 DIP_MIN_PCT <= pct_off_high <= DIP_MAX_PCT and
@@ -93,6 +100,8 @@ def _get_signals() -> dict:
                 "pct_off_high": pct_off_high,
                 "rsi": rsi,
                 "ma20_slope": ma20_slope,
+                "rvol20": rvol20,
+                "vix_proxy": vix_proxy,
                 "buy_signal": buy_signal,
                 "sell_signal_regime": sell_signal_regime,
             }

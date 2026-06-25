@@ -37,7 +37,7 @@ STOP_LOSS_PCT    = 0.03   # 3% stop — tight, these should bounce fast
 TAKE_PROFIT_PCT  = 0.05   # 5% take profit — fear bounces are quick
 ALLOCATION_PCT   = 0.15   # 15% of portfolio — high conviction setup
 MAX_HOLD_DAYS    = 5      # Exit after 5 trading days if neither stop nor TP hit
-VIX_SPIKE_RATIO  = 1.25   # VIX must be 25% above its 10-day average
+VIX_SPIKE_RATIO  = 1.20   # v98 — VIX must be 20% above its 3-day average (was 25% / 10-day)
 VIXY_ABS_MIN     = 35.0   # OR VIXY above $35 in absolute terms (= real VIX ~85, genuine panic)
 SPY_DROP_MIN     = 0.02   # SPY must be down 2%+ on the day
 
@@ -52,7 +52,7 @@ def _get_vix_signal() -> dict:
     """
     result = {
         "vixy_price": 0.0,
-        "vixy_avg10": 0.0,
+        "vixy_avg3": 0.0,
         "spike_ratio": 0.0,
         "spy_price": 0.0,
         "spy_change_today": 0.0,
@@ -71,11 +71,12 @@ def _get_vix_signal() -> dict:
             return result
 
         vixy_price = float(vixy_hist["Close"].iloc[-1])
-        vixy_avg10 = float(vixy_hist["Close"].tail(10).mean())
-        spike_ratio = vixy_price / vixy_avg10 if vixy_avg10 > 0 else 1.0
+        # v98 — 3-day spike window (was 10-day): fire on faster fear spikes.
+        vixy_avg3 = float(vixy_hist["Close"].tail(3).mean())
+        spike_ratio = vixy_price / vixy_avg3 if vixy_avg3 > 0 else 1.0
 
         result["vixy_price"] = vixy_price
-        result["vixy_avg10"] = vixy_avg10
+        result["vixy_avg3"] = vixy_avg3
         result["spike_ratio"] = spike_ratio
 
         # VIX spiked if ratio >= threshold OR VIXY is at an extreme absolute level
@@ -106,7 +107,7 @@ def _get_vix_signal() -> dict:
         result["buy_signal"] = vix_spiked and result["spy_dropped"] and spy_above_ma200
 
         logger.info(
-            f"[VIX] VIXY=${vixy_price:.2f} (avg10=${vixy_avg10:.2f}, ratio={spike_ratio:.2f}) | "
+            f"[VIX] VIXY=${vixy_price:.2f} (avg3=${vixy_avg3:.2f}, ratio={spike_ratio:.2f}) | "
             f"SPY day={spy_change*100:+.1f}% | above MA200={spy_above_ma200} | "
             f"BUY={'YES' if result['buy_signal'] else 'no'}"
         )
@@ -193,7 +194,7 @@ def run(broker: AlpacaBroker, db_conn):
     )
     log_signal(db_conn, STRATEGY_NAME, "SPY", "buy", sig["spike_ratio"], {
         "vixy_price": sig["vixy_price"],
-        "vixy_avg10": sig["vixy_avg10"],
+        "vixy_avg3": sig["vixy_avg3"],
         "spike_ratio": round(sig["spike_ratio"], 3),
         "spy_change_today": round(sig["spy_change_today"] * 100, 2),
         "spy_above_ma200": sig["spy_above_ma200"],

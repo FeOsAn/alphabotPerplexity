@@ -218,10 +218,18 @@ def run(broker: AlpacaBroker, db_conn):
     global _scanned_today
     logger.info("=== Gap Scanner Strategy: Running ===")
 
-    from utils.regime import is_bull_market
-    if not is_bull_market():
-        logger.info("[gap_scanner] Bear regime detected — skipping new entries")
-        return
+    # v98 — regime expansion: gap plays now run in BULL / CHOP / TRANSITION
+    # (previously bull-only). Only a confirmed BEAR regime blocks new entries.
+    try:
+        from utils.regime_detector import get_regime_context
+        if get_regime_context(STRATEGY_NAME).get("regime") == "bear":
+            logger.info("[gap_scanner] Bear regime detected — skipping new entries")
+            return
+    except Exception:
+        from utils.regime import is_bull_market
+        if not is_bull_market():
+            logger.info("[gap_scanner] Bear regime detected — skipping new entries")
+            return
 
     from utils.market_hours import is_entry_allowed
     if not is_entry_allowed():

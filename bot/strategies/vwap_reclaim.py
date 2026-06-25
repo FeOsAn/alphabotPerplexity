@@ -125,6 +125,19 @@ def _get_intraday_data(symbol: str) -> dict:
 
         current = float(today_bars["Close"].iloc[-1])
 
+        # v98 — volume confirmation: today's cumulative volume vs the 20-day
+        # average daily volume. Overtrading fix (strategy fired ~1,348×/yr);
+        # entries now require an elevated-volume session.
+        vol_ratio = 1.0
+        try:
+            daily = ticker.history(period="2mo", interval="1d", auto_adjust=True)
+            if daily is not None and len(daily) >= 21:
+                avg20_vol = float(daily["Volume"].iloc[-21:-1].mean())
+                if avg20_vol > 0:
+                    vol_ratio = vol_sum / avg20_vol
+        except Exception:
+            vol_ratio = 1.0
+
         try:
             prev_bars = hist[bar_dates != today_str_et]
         except Exception:
@@ -140,6 +153,7 @@ def _get_intraday_data(symbol: str) -> dict:
             "prev_close": prev_close,
             "gap_pct": gap_pct,
             "above_vwap": current >= vwap,
+            "vol_ratio": vol_ratio,
         }
     except Exception as e:
         logger.debug(f"[VWAPReclaim] Data error {symbol}: {e}")
@@ -294,6 +308,11 @@ def run(broker, db_conn=None):
         above_vwap = data.get("above_vwap", False)
         current = data.get("current_price", 0.0)
         vwap = data.get("vwap", 0.0)
+        vol_ratio = data.get("vol_ratio", 1.0)
+
+        # v98 — require elevated volume (>1.1× 20-day average) to confirm entry.
+        if vol_ratio < 1.1:
+            continue
 
         if gap_pct <= -GAP_DOWN_MIN and above_vwap and current > 0:
             _scanned_today.add(sym)

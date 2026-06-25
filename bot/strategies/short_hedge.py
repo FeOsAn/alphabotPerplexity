@@ -18,7 +18,11 @@ from db import log_trade, log_signal, get_connection
 logger = logging.getLogger("alphabot.short_hedge")
 STRATEGY_NAME = "short_hedge"
 
-# Inverse ETF universe — each represents a bear position on a major index/sector
+# Inverse ETF universe — each represents a bear position on a major index/sector.
+# v98: paper trading cannot short individual stocks, so the redesigned
+# "short individual stock" leg is expressed via leveraged inverse index ETFs in
+# BEAR. The TRANSITION leg uses the 1x inverse S&P (SH) — low-decay, the task's
+# explicit "use SH ETF on transition" instrument.
 INVERSE_ETFS = {
     "SDS":   {"description": "2x inverse S&P500",     "beta": 2.0},
     "SQQQ":  {"description": "3x inverse QQQ/tech",   "beta": 3.0},
@@ -26,12 +30,14 @@ INVERSE_ETFS = {
     "SOXS":  {"description": "3x inverse semis",      "beta": 3.0},
     "UVXY":  {"description": "1.5x long volatility",  "beta": 1.5},
 }
+# v98 — TRANSITION-regime instrument: 1x inverse S&P, low leverage/decay.
+TRANSITION_ETF = "SH"
 
 MAX_SHORT_POSITIONS = 2       # max concurrent inverse ETF positions
 STOP_LOSS_PCT = 0.08          # 8% stop (tight — leveraged decay accelerates losses)
 TAKE_PROFIT_PCT = 0.15        # 15% take profit (leveraged moves fast)
 MAX_HOLD_DAYS = 5             # force-close after 5 days regardless (decay protection)
-MAX_POSITION_PCT = 0.05       # 5% of portfolio per inverse ETF position
+MAX_POSITION_PCT = 0.03       # v98 — 3% of portfolio per hedge position (was 5%)
 
 # Track entry times so max-hold-days check works (broker.get_positions() doesn't include entry_time)
 _entry_times: dict[str, datetime] = {}  # symbol -> entry datetime (UTC)
@@ -93,6 +99,43 @@ def _get_signals(symbol: str) -> Optional[dict]:
         return None
 
 
+def _market_downtrend_bounce() -> bool:
+    """
+    v98 redesigned signal. The old gate (RSI > 70 AND price < MA50) is
+    structurally near-impossible — sub-MA50 price keeps RSI depressed. The new
+    gate detects a *bounce within a confirmed downtrend* on SPY (the index we
+    hedge via inverse ETFs):
+
+      • SPY has closed below its 50-day MA for 5+ consecutive sessions
+        (confirmed downtrend), AND
+      • SPY RSI(14) > 65 (a counter-trend bounce that is likely to roll over).
+
+    When both hold, adding inverse exposure has positive expectancy.
+    """
+    try:
+        hist = yf.Ticker("SPY").history(period="6mo", interval="1d")
+        if hist.empty or len(hist) < 60:
+            return False
+        close = hist["Close"]
+        ma50 = close.rolling(50).mean()
+
+        # 5+ consecutive closes below MA50.
+        below = (close < ma50).tail(5)
+        confirmed_downtrend = bool(below.all()) and len(below) == 5
+
+        rsi = float(_pta.rsi(close, length=14).iloc[-1])
+        bounce = rsi > 65
+
+        logger.info(
+            f"[SHORT] Market gate: SPY below-MA50×5d={confirmed_downtrend} "
+            f"RSI14={rsi:.1f} (>65={bounce})"
+        )
+        return confirmed_downtrend and bounce
+    except Exception as e:
+        logger.warning(f"[SHORT] Market signal error: {e}")
+        return False
+
+
 def _check_exits(broker: AlpacaBroker, db_conn) -> None:
     """Check stops, take profits, and max hold duration on all short hedge positions."""
     positions = broker.get_positions()
@@ -147,8 +190,18 @@ def run(broker: AlpacaBroker, db_conn) -> None:
     from db import delete_position_state as _delete_position_state
     regime = get_regime()
 
-    # Force-close all short positions if we somehow still hold them in a bull regime
-    if regime not in ("BEAR_MILD", "BEAR_STRONG"):
+    # v98 — composite-score TRANSITION regime also activates the hedge (uses SH).
+    is_transition = False
+    try:
+        from utils.regime_detector import get_regime_context
+        is_transition = get_regime_context(STRATEGY_NAME).get("regime") == "transition"
+    except Exception:
+        is_transition = False
+
+    is_bear = regime in ("BEAR_MILD", "BEAR_STRONG")
+
+    # Force-close all hedge positions if we hold them outside BEAR/TRANSITION.
+    if not (is_bear or is_transition):
         all_positions = broker.get_positions()
         short_positions = [p for p in all_positions if p["strategy"] == STRATEGY_NAME]
         if short_positions:
@@ -172,7 +225,8 @@ def run(broker: AlpacaBroker, db_conn) -> None:
             logger.info(f"[SHORT] Regime={regime} — short hedge inactive (bull market)")
         return
 
-    logger.info(f"=== Short Hedge Strategy: Active (regime={regime}) ===")
+    _regime_label = "TRANSITION" if (is_transition and not is_bear) else regime
+    logger.info(f"=== Short Hedge Strategy: Active (regime={_regime_label}) ===")
 
     # Check exits first
     _check_exits(broker, db_conn)
@@ -183,9 +237,22 @@ def run(broker: AlpacaBroker, db_conn) -> None:
     short_count = len(short_positions)
     held_symbols = {p["symbol"] for p in short_positions}
 
-    max_positions = 1 if regime == "BEAR_MILD" else MAX_SHORT_POSITIONS
+    # v98 — TRANSITION hedges via the 1x inverse SH (single position); BEAR uses
+    # the leveraged inverse-ETF universe.
+    if is_bear:
+        scan_universe = list(INVERSE_ETFS.keys())
+        max_positions = 1 if regime == "BEAR_MILD" else MAX_SHORT_POSITIONS
+    else:  # transition
+        scan_universe = [TRANSITION_ETF]
+        max_positions = 1
+
     if short_count >= max_positions:
-        logger.info(f"[SHORT] At max positions ({short_count}/{max_positions}) for regime={regime}")
+        logger.info(f"[SHORT] At max positions ({short_count}/{max_positions}) for regime={_regime_label}")
+        return
+
+    # v98 — redesigned entry gate: only add hedges on a confirmed-downtrend bounce.
+    if not _market_downtrend_bounce():
+        logger.info("[SHORT] Market downtrend-bounce gate not met — no new hedge entries")
         return
 
     # Check cash
@@ -197,21 +264,23 @@ def run(broker: AlpacaBroker, db_conn) -> None:
         logger.info(f"[SHORT] Insufficient cash (${cash:,.0f} <= reserve ${min_cash:,.0f})")
         return
 
-    # Scan inverse ETFs for entry signals
+    # v98 — entry is driven by the market downtrend-bounce gate (above), not by
+    # per-ETF momentum (the inverse ETF is typically *falling* during the bounce
+    # we are fading). _get_signals is still used for price/quality context.
     candidates = []
-    for symbol in INVERSE_ETFS:
+    for symbol in scan_universe:
         if symbol in held_symbols:
             continue
         sig = _get_signals(symbol)
-        if sig and sig["buy_signal"]:
+        if sig:
             candidates.append(sig)
 
     if not candidates:
-        logger.info("[SHORT] No inverse ETF entry signals this cycle")
+        logger.info("[SHORT] No inverse ETF data this cycle")
         return
 
-    # Sort by slope (strongest bear momentum first)
-    candidates.sort(key=lambda x: x["slope_5d"], reverse=True)
+    # Prefer lower-leverage instruments first when fading a bounce (safer).
+    candidates.sort(key=lambda x: INVERSE_ETFS.get(x["symbol"], {}).get("beta", 1.0))
     slots = max_positions - short_count
 
     for sig in candidates[:slots]:

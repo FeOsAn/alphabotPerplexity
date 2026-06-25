@@ -1,5 +1,5 @@
 """
-AlphaBot — Main entry point  (v97)
+AlphaBot — Main entry point  (v98)
 Multi-factor algorithmic trading bot for Alpaca Markets
 Runs 24/7 on Railway. Handles all strategies + API server.
 """
@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v97"
+VERSION = "v98"
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503

@@ -168,7 +168,7 @@ def _scan_signals(regime: str) -> list[dict]:
         long_ok = (
             price > ma_trend and
             pdi > ndi and
-            38 <= rsi <= 55 and
+            35 <= rsi <= 65 and   # v98 — widened pullback band (was 38–55)
             rsi > rsi_prev
         )
 
