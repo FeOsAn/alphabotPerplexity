@@ -1,6 +1,7 @@
 .env
 *.db
 *.log
+conviction_positions.json
 __pycache__/
 *.pyc
 *.pyo

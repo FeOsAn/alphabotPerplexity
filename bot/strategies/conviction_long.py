@@ -1,5 +1,5 @@
 """
-conviction_long.py — v89
+conviction_long.py — v99
 
 Conviction Long: a slow-moving, second-layer strategy that sits on top of the
 daily short-term strategies. It runs a WEEKLY scan (Sunday nights, driven by
@@ -14,7 +14,9 @@ daily loop so existing conviction holds get trailing ratchets, a 60-trading-day
 time stop, and a bear-regime exit — even though new entries are only opened on
 the weekly cron.
 """
+import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -24,6 +26,14 @@ import yfinance as yf
 logger = logging.getLogger("alphabot.conviction_long")
 
 STRATEGY_NAME = "conviction_long"
+
+# Local JSON tracking file for conviction slots. Alpaca's paper API does not
+# support custom metadata/tags on positions, so we cannot tag a position with
+# its owning strategy and read it back to count conviction slots. Instead we
+# track conviction holds in this file, which lives in the same persistent data
+# directory as the SQLite DB (repo root → /app in the Docker image).
+_DATA_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CONVICTION_FILE = os.path.join(_DATA_DIR, "conviction_positions.json")
 
 # Regime compatibility — conviction longs are bull/chop only. No new entries in
 # bear, but existing positions are still managed (and exited if they turn down).
@@ -321,31 +331,88 @@ def run_weekly_scan() -> list[dict]:
     return top
 
 
-# ── position opening (weekly cron) ───────────────────────────────────────────
-def _count_conviction_positions(broker) -> int:
-    """How many conviction_long positions are currently open (DB is source of truth)."""
+# ── local conviction-position tracking ───────────────────────────────────────
+def _load_conviction_file() -> dict:
+    """Load the conviction tracking file. Returns an empty skeleton on any error."""
     try:
-        from db import get_connection
-        conn = get_connection()
-        try:
-            rows = conn.execute(
-                "SELECT symbol FROM positions_state "
-                "WHERE strategy=? OR opening_strategy=?",
-                (STRATEGY_NAME, STRATEGY_NAME),
-            ).fetchall()
-            return len(rows)
-        finally:
-            conn.close()
+        if os.path.exists(CONVICTION_FILE):
+            with open(CONVICTION_FILE, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("positions"), dict):
+                return data
     except Exception as e:
-        logger.debug(f"[ConvL] count via DB failed: {e}")
-        # Fall back to live tags
-        try:
-            return sum(
-                1 for p in broker.get_positions()
-                if p.get("strategy") == STRATEGY_NAME
-            )
-        except Exception:
-            return 0
+        logger.warning(f"[ConvL] could not read {CONVICTION_FILE}: {e}")
+    return {"positions": {}, "last_updated": None}
+
+
+def _save_conviction_file(data: dict) -> None:
+    """Atomically persist the conviction tracking file."""
+    data["last_updated"] = datetime.now(timezone.utc).isoformat()
+    try:
+        os.makedirs(os.path.dirname(CONVICTION_FILE), exist_ok=True)
+        tmp = CONVICTION_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, CONVICTION_FILE)
+    except Exception as e:
+        logger.warning(f"[ConvL] could not write {CONVICTION_FILE}: {e}")
+
+
+def record_conviction_position(symbol: str, qty: int, entry_price: float,
+                               stop_price: float, tp_price: float) -> None:
+    """Add a freshly-opened conviction hold to the local tracking file."""
+    data = _load_conviction_file()
+    data["positions"][symbol] = {
+        "symbol": symbol,
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "qty": int(qty),
+        "entry_price": round(float(entry_price), 2),
+        "stop_price": round(float(stop_price), 2),
+        "tp_price": round(float(tp_price), 2),
+    }
+    _save_conviction_file(data)
+    logger.info(f"[ConvL] recorded conviction position {symbol} → {CONVICTION_FILE}")
+
+
+def remove_conviction_position(symbol: str) -> None:
+    """Drop a conviction hold from the local file (called on stop/TP/close)."""
+    data = _load_conviction_file()
+    if symbol in data["positions"]:
+        data["positions"].pop(symbol, None)
+        _save_conviction_file(data)
+        logger.info(f"[ConvL] removed conviction position {symbol} from tracking file")
+
+
+def get_conviction_slot_count(broker) -> int:
+    """
+    Count open conviction holds from the local file, reconciled with live Alpaca
+    positions: any tracked symbol no longer present in Alpaca (stopped out / TP /
+    manually closed) is pruned from the file before counting.
+    """
+    data = _load_conviction_file()
+    tracked = data.get("positions", {})
+    if not tracked:
+        return 0
+    try:
+        live = {p.get("symbol") for p in broker.get_positions()}
+    except Exception as e:
+        logger.warning(
+            f"[ConvL] could not fetch live positions to reconcile slots: {e} — "
+            f"counting file as-is ({len(tracked)})"
+        )
+        return len(tracked)
+
+    stale = [s for s in tracked if s not in live]
+    for s in stale:
+        tracked.pop(s, None)
+        logger.info(f"[ConvL] {s} no longer in Alpaca — pruning from conviction file")
+    if stale:
+        data["positions"] = tracked
+        _save_conviction_file(data)
+    return len(tracked)
+
+
+# ── position opening (weekly cron) ───────────────────────────────────────────
 
 
 def open_conviction_positions(broker, candidates: list[dict], account_info: dict) -> list[str]:
@@ -356,6 +423,7 @@ def open_conviction_positions(broker, candidates: list[dict], account_info: dict
     """
     from broker import tag_symbol
     from db import get_connection, log_trade
+    from utils.cooldown import is_on_cooldown
 
     opened: list[str] = []
     equity = float(account_info.get("equity", 0) or 0)
@@ -363,22 +431,44 @@ def open_conviction_positions(broker, candidates: list[dict], account_info: dict
         logger.error("[ConvL] equity <= 0 — cannot size positions, aborting open")
         return opened
 
-    existing = _count_conviction_positions(broker)
-    slots = MAX_POSITIONS - existing
+    used = get_conviction_slot_count(broker)
+    slots = MAX_POSITIONS - used
     if slots <= 0:
-        logger.info(f"[ConvL] already holding {existing} conviction positions — no slots free")
+        logger.info(f"[ConvL] already holding {used} conviction positions — no slots free")
         return opened
+
+    # Symbols currently held by ANY strategy. A name already in the portfolio is
+    # skipped cleanly — we never try to buy on top of an existing position (which
+    # would collide with that position's open stop order and trip Alpaca's
+    # wash-trade rejection). This is NOT a stop-out, so no cooldown language.
+    try:
+        held = {p.get("symbol") for p in broker.get_positions()}
+    except Exception as e:
+        logger.warning(f"[ConvL] could not fetch live positions: {e}")
+        held = set()
 
     notional = round(equity * ALLOCATION_PCT, 2)
     logger.info(
-        f"[ConvL] equity=${equity:,.0f}, {existing} open, {slots} slot(s), "
+        f"[ConvL] equity=${equity:,.0f}, {used} open, {slots} slot(s), "
         f"notional/position=${notional:,.0f}"
     )
 
     conn = get_connection()
     try:
-        for cand in candidates[:slots]:
+        for cand in candidates:
+            if len(opened) >= slots:
+                break
             sym = cand["symbol"]
+
+            # Already in the portfolio (this or any other strategy) — skip cleanly.
+            if sym in held:
+                logger.info(f"[ConvL] {sym}: already in portfolio, skipping")
+                continue
+            # Inside the 48h cross-strategy cooldown after a stop-out / TP.
+            if is_on_cooldown(sym):
+                logger.info(f"[ConvL] {sym}: in 48h cooldown after stop-out, skipping")
+                continue
+
             price = broker._latest_price(sym)
             if not price or price <= 0:
                 logger.warning(f"[ConvL] {sym}: no price — skipping entry")
@@ -386,10 +476,17 @@ def open_conviction_positions(broker, candidates: list[dict], account_info: dict
             stop_px = round(price * (1.0 - STOP_PCT), 2)
             tp_px = round(price * (1.0 + TP_PCT), 2)
             sig_score = min(1.0, max(0.0, float(cand["total_score"]) / 100.0))
+            qty = int(notional / price)
+            if qty < 1:
+                logger.info(
+                    f"[ConvL] {sym}: notional ${notional:,.0f} < 1 share @ "
+                    f"${price:.2f} — skipping entry"
+                )
+                continue
 
             logger.info(
                 f"[ConvL] ENTER {sym} score={cand['total_score']} "
-                f"~${notional:,.0f} @ ${price:.2f} stop=${stop_px:.2f} tp=${tp_px:.2f}"
+                f"~${notional:,.0f} ({qty}sh) @ ${price:.2f} stop=${stop_px:.2f} tp=${tp_px:.2f}"
             )
             result = broker.market_buy(
                 sym, notional, STRATEGY_NAME,
@@ -401,6 +498,8 @@ def open_conviction_positions(broker, candidates: list[dict], account_info: dict
                 logger.info(f"[ConvL] {sym}: entry blocked by broker safety gate")
                 continue
             tag_symbol(sym, STRATEGY_NAME)
+            record_conviction_position(sym, qty, price, stop_px, tp_px)
+            held.add(sym)
             opened.append(sym)
             try:
                 log_trade(
@@ -480,6 +579,7 @@ def _close_position(broker, symbol: str, reason: str) -> bool:
         ok = False
     if ok:
         logger.info(f"[ConvL] CLOSED {symbol} — {reason}")
+        remove_conviction_position(symbol)
         try:
             from db import get_connection, del_state
             _c = get_connection()
