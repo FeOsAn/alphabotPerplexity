@@ -7,6 +7,24 @@ three priority-roadmap strategies (`options_flow`, `squeeze_screener`,
 > **Backtest every change before implementing it. Only implement when the
 > backtest proves it's an improvement.**
 
+## Headline (full-fleet scorecard, added later)
+
+After the three roadmap strategies, the harness was pointed at every
+backtestable equity strategy in the bot (`scorecard.py`). The single most
+important result of this whole exercise:
+
+> **No entry signal beats a trivial baseline.** "Enter these mega-caps every 10
+> days at random and use the bot's own exit engine" returns **+0.42%/trade
+> (PF 1.28)**. Every strategy either *matches* that (`multi_tf_rsi`,
+> `quality_momentum`) or is *worse* than random entry timing (`breakout`,
+> `momentum`, `52wh_vol`, `trend_pullback`, `cs_momentum`), with `gap_scanner`
+> and `mean_reversion` barely above zero.
+
+The bot's returns come from **survivorship beta + the exit engine (trailing
+ratchet + 20% TP) + being long quality names** — *not* from entry alpha. The
+19-strategy entry apparatus is, at best, neutral vs random on this universe.
+See §4 for the table and the (important) caveats.
+
 ## TL;DR — what the numbers say
 
 | Strategy | Backtestable free? | Verdict | Evidence |
@@ -152,3 +170,75 @@ live (paper) account. Disabling or repurposing them changes live trading
 behaviour, so those edits are left for the account owner to approve rather than
 applied unilaterally. This directory is purely additive analysis — it does not
 touch `bot/`.
+
+---
+
+## 4. Full-fleet strategy scorecard (`scorecard.py`, `engine.py`, `strategies_bt.py`)
+
+Every backtestable equity strategy, run through a faithful replica of the LIVE
+exit engine (per-strategy stop + peak-based trailing ratchet + 20% TP +
+dead-money timeout), 2015–2026, on the live 50-name mega-cap universe. Entries
+are point-in-time (gates through bar i, fill at bar i+1 open).
+
+Ranked by per-trade expectancy. `vs_base` = expectancy minus the best trivial
+baseline (always-long-above-MA50 / enter-every-10-days on the same universe).
+
+```
+strategy          verdict          N   win%    PF  exp/trade   vs_base
+(baseline = +0.42%/trade, PF 1.28)
+BASELINE_10d      —             8565    43%  1.28      0.42%     0.00%
+multi_tf_rsi      ~BASELINE     3296    43%  1.26      0.41%    -0.01%
+quality_momentum  ~BASELINE      374    49%  1.24      0.39%    -0.03%
+cs_momentum       WORSE          501    45%  1.20      0.34%    -0.08%
+breakout          WORSE         2367    43%  1.23      0.33%    -0.09%
+trend_pullback    WORSE         3568    43%  1.21      0.32%    -0.10%
+52wh_vol          WORSE         1728    42%  1.22      0.30%    -0.12%
+momentum          WORSE          496    47%  1.18      0.28%    -0.13%
+BASELINE_ma50     —             8548    42%  1.16      0.27%    -0.15%
+gap_scanner       WORSE         2272    40%  1.03      0.05%    -0.37%
+mean_reversion    WORSE         1976    42%  1.02      0.03%    -0.39%
+
+dual_momentum (rotation sleeve): CAGR 10.64% | Sharpe 0.90 | MaxDD -16.9%
+  SPY same window: Sharpe 1.04   -> underperforms buy-and-hold risk-adjusted,
+  but lower drawdown = mild defensive/diversification value.
+```
+
+### How to read this
+
+- **Absolute**: most strategies are mildly +EV (they make money) — because the
+  universe trended up and the exit engine is good.
+- **Relative (the real test)**: none beat random-timed entry on the same names.
+  `gap_scanner` and `mean_reversion` are the only two that barely clear zero and
+  are the worst vs baseline — they actively pick bad moments (chasing gaps /
+  catching knives on mega-caps).
+- **The lever is the exit + universe + sizing, not the entry.** This matches the
+  earlier momentum-pop finding (§2c): the same entry was +1.09% or −0.94%/trade
+  purely from the exit rule. Effort spent tuning entries is low-leverage; effort
+  on the exit engine, position sizing, and cutting correlated sleeves is high.
+
+### Caveats (why this is "no alpha vs baseline", not "these lose money")
+
+1. **Survivorship** inflates *all* long results, baseline included — which is
+   exactly why the comparison is baseline-*relative*. The relative ranking is
+   fair; the absolute numbers are optimistic.
+2. **Replica fidelity**: adaptive thresholds are set to documented defaults, and
+   regime gating / position caps / cross-strategy cooldowns are not modelled.
+   The live bot's regime gating (no longs in bear) likely improves real
+   drawdowns vs this ungated test — but the baseline is ungated too, so the
+   "entries ≈ random" conclusion holds like-for-like.
+3. **No transaction costs.** At ~0.3–0.4%/trade expectancy, 5–10 bps round-trip
+   on liquid mega-caps eats a meaningful slice but doesn't flip the ranking.
+4. **Not modelled here** (need separate rigs): `vwap_reclaim` (intraday),
+   `spy_dip`/`vix_reversal`/`short_hedge` (market-timed/short-side),
+   `ai_research`/`earnings_*`/`insider_buying`/`event_driven` (external data).
+
+### Recommendation
+
+- **Cut the two genuine laggards:** `gap_scanner` and `mean_reversion` — barely
+  break even and are the worst vs baseline. (Live-behaviour change → owner's call.)
+- **Keep the rest, but stop treating them as alpha.** They harvest beta + the
+  exit engine. The 7 long-momentum sleeves are highly correlated (see main
+  findings §3) — consolidating them wouldn't cost much return and would cut
+  complexity and correlated drawdown.
+- **Redirect effort to the exit engine, position sizing, and drawdown/regime
+  behaviour** — that's where the P&L actually comes from.
