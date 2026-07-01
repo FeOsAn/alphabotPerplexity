@@ -29,6 +29,16 @@ PAIRS = [
     ("GS",  "MS"),    # Investment banks
 ]
 
+# ── New-entry kill switch ─────────────────────────────────────────────────────
+# Backtest (backtests/pairs_trading_backtest.py, 2015-2026): the shipped config
+# earns Sharpe 0.07 / CAGR 0.05%, and the BEST of 324 parameter combinations
+# tops out at Sharpe 0.45 — never clearing the project's 0.8 bar. Even the single
+# strongest pair (GS/MS) is only 0.66 standalone. Classic crowded-pairs decay on
+# liquid large-caps. New pair entries are therefore disabled; the strategy still
+# runs to MANAGE and CLOSE any legs that are already open (exits are unaffected).
+# Flip back to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
+
 Z_ENTRY = 2.0      # Enter when z-score exceeds this
 Z_EXIT = 0.5       # Exit when z-score reverts to this
 Z_STOP = 3.5       # Stop-loss: spread diverging further (z exceeded this)
@@ -227,6 +237,11 @@ def run(broker: AlpacaBroker, db_conn) -> None:
         _check_exits(broker, db_conn)
     except Exception as e:
         logger.error(f"[PAIRS] Exit check failed: {e}", exc_info=True)
+
+    # Backtest-driven: no new pairs (see ENABLE_NEW_ENTRIES note above). Exits above
+    # still run every cycle, so open legs are managed/closed normally.
+    if not ENABLE_NEW_ENTRIES:
+        return
 
     if len(_active_pairs) >= MAX_PAIRS_ACTIVE:
         logger.info(f"[PAIRS] At max pairs ({MAX_PAIRS_ACTIVE}) — exits only")

@@ -15,11 +15,13 @@ three priority-roadmap strategies (`options_flow`, `squeeze_screener`,
 | `squeeze_screener` (#1) | ⚠️ core only | **Misconfigured + premise backwards** | (a) Live UNIVERSE is all mega-caps (short float ~1–3%) vs a 15% gate → **never fires in prod**. (b) On a genuinely squeeze-prone universe the entry core is **−0.31%/trade** (30% win, PF 0.91). |
 | `options_flow` (#1) | ❌ no | **Cannot be validated** with free data | Flow signal needs historical per-strike option volume/OI (paid only). Exit geometry floor is a benign +0.44%/trade — not flow alpha. |
 
-**Bonus finding:** the squeeze entry *core* (5-day return ≥ +3%, volume ≥ 1.5× 20d,
-RSI 45–72, +12%/−5%/10d) is a **robust momentum-continuation edge on quality
-mega-caps**: +1.09%/trade overall, and +0.87% → +1.44%/trade across three
-independent sub-periods (PF 1.44–1.83). It's the *short-interest premise* that's
-wrong, not the price logic.
+**Bonus finding (with a sting in the tail):** the squeeze entry *core* (5-day
+return ≥ +3%, volume ≥ 1.5× 20d, RSI 45–72) looks like a momentum-continuation
+edge on quality mega-caps — **but only under a fixed +12%/−5%/10-day bracket**
+(+1.09%/trade, robust across sub-periods). Run through the bot's *actual* exit
+engine (trailing 5% ratchet stop + 20% TP, which is what squeeze positions get
+in prod) the **same entry is −0.94%/trade** and negative in all 81 sweep combos.
+The "edge" is exit-structure-dependent, not a robust entry edge — see §2(c).
 
 ## Files
 
@@ -31,6 +33,7 @@ wrong, not the price logic.
 | `pairs_sweep.py` | 324-combo parameter sweep over z_entry/z_exit/z_stop/hold/lookback/zwin. |
 | `squeeze_backtest.py` | Squeeze entry core on a curated squeeze-prone universe **and** on the live mega-cap universe (control). |
 | `options_flow_backtest.py` | Documents why the flow signal is unbacktestable free; measures the +8%/−4%/7d exit floor only. |
+| `momentum_pop_backtest.py` | Re-tests the mega-cap momentum-pop entry under a faithful replica of the LIVE exit engine (trailing ratchet + 20% TP). Shows the §2 edge is exit-dependent and −EV in production. |
 
 ## Running
 
@@ -102,11 +105,31 @@ sign flips. Sub-period robustness on mega-caps:
 delisted (BBBY, WISH, etc. — 404 on fetch), i.e. some of the worst blowups drop
 out. So the true −EV of chasing these names is, if anything, understated here.
 
-**Recommendation:** don't ship the short-squeeze premise. If you want the
-momentum-continuation edge, it belongs on the quality universe — but first check
-it isn't already captured by the existing `momentum` / `breakout` strategies
-before adding a redundant sleeve. (Not implemented here: that's a live-behaviour
-change on a running account and should be your call — see below.)
+**(c) The mega-cap edge is EXIT-DEPENDENT — and −EV under the live engine.**
+The +1.09%/trade above uses a fixed +12%/−5%/10-day bracket. But squeeze
+positions in production go through the shared exit engine
+(`trade_management.py`): a 5% initial stop that **trails/ratchets up** as the
+position gains, a 20% TP cap, and no fixed timeout. Re-running the *same*
+mega-cap momentum-pop entry through a faithful replica of that engine
+(`momentum_pop_backtest.py`) flips the sign:
+
+```
+Fixed +12%/-5%/10d bracket : +1.09%/trade  (54% win, PF 1.59)
+LIVE trailing/ratchet/20%TP : -0.94%/trade  (38% win, PF 1.13)  <-- what prod gives
+```
+
+An 81-combo entry-param sweep under the live engine is negative in **every**
+combo (best −0.78%/trade). The trailing stop shakes the position out of fast
+pops before they resolve; the entry has no robust edge independent of a
+short-horizon fixed bracket.
+
+**Recommendation:** do **not** repurpose `squeeze_screener` to this momentum-pop
+core under the default exit engine — it loses money. The edge only survives with
+a dedicated fixed +12%/−5%/10-day bracket that bypasses the trailing ratchet,
+which is a deliberate per-strategy exit change (some strategies already carry
+custom time-stops, so it's feasible — but it's invasive on a live account and
+should be an explicit decision, not a silent repurpose). Absent that, disable
+`squeeze_screener` (it never fires today anyway).
 
 ### 3. `options_flow` — unbacktestable with free data (roadmap #1)
 
