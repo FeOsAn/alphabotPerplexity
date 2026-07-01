@@ -64,6 +64,20 @@ ALLOC_HIGH  = 0.05
 COOLDOWN_DAYS = 7
 DB_RAN_KEY = "squeeze_screener_ran_date"
 
+# ── Kill switch ───────────────────────────────────────────────────────────────
+# Disabled for three independent, backtest-backed reasons (see backtests/README §2):
+#   1. Dead in prod: the live UNIVERSE is all mega-caps (~1-3% short float) vs a
+#      15% SHORT_PCT_MIN gate, so the scan never finds a candidate.
+#   2. Premise is -EV: on a genuinely squeeze-prone universe the entry core loses
+#      money (-0.31%/trade, 30% win, PF 0.91) — high-short junk dumps on pops.
+#   3. The only +EV variant (mega-cap momentum-pop) works ONLY under a fixed
+#      +12%/-5%/10d bracket (+1.09%/trade); under the live trailing-ratchet exit
+#      engine the same entry is -0.94%/trade, negative in all 81 sweep combos.
+#      An edge that flips sign with the exit rule is not a robust edge.
+# Existing positions still exit normally via the shared trade_management engine.
+# Flip to True (and fix the universe/premise) to re-enable.
+ENABLED = False
+
 _cooldown: dict[str, datetime] = {}
 _ran_today: str = ""
 
@@ -157,6 +171,11 @@ def _alloc_for_score(score: float) -> float:
 def run(broker: AlpacaBroker, db_conn):
     """Main entry — called once per day inside the 9:45-15:30 ET window."""
     global _ran_today
+
+    # Backtest-driven kill switch (see ENABLED note above). No new entries; the
+    # shared exit engine still manages any positions already open.
+    if not ENABLED:
+        return
 
     today = _now_utc().strftime("%Y-%m-%d")
     if _ran_today == today:
