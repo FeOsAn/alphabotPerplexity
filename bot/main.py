@@ -329,7 +329,14 @@ def manage_pre_transition_hedge(broker: AlpacaBroker, db_conn):
 
     # ── False → True: open the hedge ─────────────────────────────────────────
     if alert and not _prev_pre_transition_alert:
-        logger.info("PRE_TRANSITION_ALERT: Opening GLD (10%) + SH (5%) hedge")
+        # GLD dropped from the hedge (backtests/regime_overlay.py): rotating into
+        # GLD on a regime flip DEEPENED the 2022 drawdown (-29.6% vs -21.8%) — GLD
+        # sold off with equities in the rate shock. The GLD sleeve is now held as
+        # CASH (better flip defense), while SH (inverse SPY) is kept as the real
+        # short hedge. The broader cash-defense is enforced via the 200DMA exposure
+        # overlay (utils/market_filter.py). Re-add ("GLD", PRE_TRANSITION_GLD_PCT)
+        # below to restore the old behaviour.
+        logger.info("PRE_TRANSITION_ALERT: Opening SH (5%) hedge; GLD sleeve held as cash")
         try:
             equity = float(broker.get_account().get("equity") or 0.0)
             held = {p["symbol"] for p in broker.get_positions()}
@@ -337,7 +344,7 @@ def manage_pre_transition_hedge(broker: AlpacaBroker, db_conn):
             logger.warning(f"[PreTransitionHedge] account/positions fetch failed: {e}")
             equity, held = 0.0, set()
 
-        for symbol, pct in (("GLD", PRE_TRANSITION_GLD_PCT), ("SH", PRE_TRANSITION_SH_PCT)):
+        for symbol, pct in (("SH", PRE_TRANSITION_SH_PCT),):
             if symbol in held:
                 logger.info(f"[PreTransitionHedge] {symbol} already open — skipping hedge buy")
                 continue

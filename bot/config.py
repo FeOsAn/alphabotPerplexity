@@ -112,6 +112,12 @@ STRATEGY_POSITION_SIZES = {
 # old problem of dual_momentum alone trying to take 99% of equity.
 MAX_PORTFOLIO_EXPOSURE = 0.80
 
+# Partial cash-defense overlay (backtests/regime_overlay.py): when SPY < 200DMA,
+# scale the exposure cap down by this factor (0.80 → ~0.48), i.e. a ~60/40
+# long/cash book in downtrends. Best return/regime-flip-loss tradeoff tested:
+# +Sharpe, shallower 2022-flip drawdown, small CAGR give-up. 1.0 disables it.
+REGIME_DERISK_EXPOSURE_MULT = 0.60
+
 # ============================================================
 # Strategy Parameters
 # ============================================================

@@ -376,10 +376,18 @@ class AlpacaBroker:
                 float(p.get("market_value", 0.0)) for p in positions
                 if float(p.get("market_value", 0.0)) > 0
             ) / equity
-            if current_long_exposure >= MAX_PORTFOLIO_EXPOSURE:
+            # Partial cash-defense overlay: below SPY's 200DMA the cap scales down
+            # (0.80 → ~0.48) so new longs are held back in a downtrend. Backtest:
+            # backtests/regime_overlay.py. Fails safe to the full cap on data error.
+            try:
+                from utils.market_filter import effective_exposure_cap
+                _cap = effective_exposure_cap(MAX_PORTFOLIO_EXPOSURE)
+            except Exception:
+                _cap = MAX_PORTFOLIO_EXPOSURE
+            if current_long_exposure >= _cap:
                 logger.info(
                     f"[EXPOSURE CAP] Blocked {symbol} — portfolio at "
-                    f"{current_long_exposure:.1%} (cap: 80%)"
+                    f"{current_long_exposure:.1%} (cap: {_cap:.0%})"
                 )
                 return True
 
