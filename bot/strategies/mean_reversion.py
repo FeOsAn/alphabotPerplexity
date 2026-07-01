@@ -46,6 +46,14 @@ from db import log_trade, log_signal
 logger = logging.getLogger("alphabot.mean_reversion")
 STRATEGY_NAME = "mean_reversion"
 
+# ── New-entry kill switch ─────────────────────────────────────────────────────
+# Scorecard (backtests/scorecard.py, 2015-2026): mean_reversion is barely +EV
+# (+0.03%/trade, PF 1.02) and the WORST performer vs a random-entry baseline
+# (-0.39%/trade). Buying oversold dips on mega-caps underperforms simply being
+# long them. New entries are disabled; the exit loop below still manages and
+# closes any open MR positions. Flip to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
+
 STOP_LOSS_PCT = 0.05   # Tighter 5% stop for mean reversion
 MAX_NEW_ENTRIES_PER_SCAN = 2  # Stagger entries — max 2 new positions per 5-min scan
 
@@ -191,6 +199,12 @@ def run(broker: AlpacaBroker, db_conn):
             from utils.cooldown import set_cooldown
             set_cooldown(sym)
             logger.info(f"[MR] {sym} cooldown set after exit")
+
+    # Backtest-driven kill switch (see ENABLE_NEW_ENTRIES note). Exits above still
+    # run every cycle; only new entries are gated off.
+    if not ENABLE_NEW_ENTRIES:
+        logger.info("[MR] New entries disabled (backtest: no edge vs baseline) — exits only")
+        return
 
     # ── Enter new positions ─────────────────────────────────────────────────────
     current_mr_count = len([

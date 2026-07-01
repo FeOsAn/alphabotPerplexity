@@ -42,6 +42,14 @@ TAKE_PROFIT_PCT  = 0.12   # 12% take profit
 MAX_HOLD_DAYS    = 5
 MAX_GAP_POSITIONS = 3     # Max concurrent gap plays
 
+# ── New-entry kill switch ─────────────────────────────────────────────────────
+# Scorecard (backtests/scorecard.py, 2015-2026): gap_scanner is barely +EV
+# (+0.05%/trade, PF 1.03) and among the worst vs a random-entry baseline
+# (-0.37%/trade). Chasing 2-6% gaps on mega-caps underperforms simply being long
+# them. New entries are disabled; exit checks + pre-market gap protection below
+# still run. Flip to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
+
 # High-volume, earnings-sensitive stocks most likely to gap meaningfully
 GAP_WATCHLIST = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
@@ -278,6 +286,12 @@ def run(broker: AlpacaBroker, db_conn):
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
             _entry_dates.pop(sym, None)
             current_symbols.discard(sym)
+
+    # Backtest-driven kill switch (see ENABLE_NEW_ENTRIES note). Sections 0/1
+    # above (gap protection + exit checks) still run; only new entries are gated.
+    if not ENABLE_NEW_ENTRIES:
+        logger.info("[gap_scanner] New entries disabled (backtest: no edge vs baseline) — exits only")
+        return
 
     # ── 2. Pre-market scan — once per day only ────────────────────────────────
     today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
