@@ -50,6 +50,16 @@ MIN_NOTIONAL = 500_000     # minimum $-notional of unusual activity
 ALLOC_MID = 0.03
 ALLOC_HIGH = 0.05
 
+# ── Kill switch ───────────────────────────────────────────────────────────────
+# Disabled: the unusual-call-flow signal CANNOT be validated with free data —
+# it needs historical per-strike option volume + open interest (paid-only:
+# ORATS / CBOE DataShop / Polygon options). yfinance.option_chain() returns only
+# a live snapshot, so there is no way to prove this signal has edge before
+# committing live capital. Until a paid-options-history backtest demonstrates the
+# flow signal adds alpha, no new entries are opened. Existing positions still
+# exit normally via the shared trade_management engine. Flip to True to re-enable.
+ENABLED = False
+
 _cooldown: dict[str, datetime] = {}
 _ran_today: str = ""
 
@@ -157,6 +167,11 @@ def _passes_filters(sym: str) -> bool:
 def run(broker: AlpacaBroker, db_conn):
     """Main entry — called once per day."""
     global _ran_today
+
+    # Backtest-driven kill switch (see ENABLED note above). No new entries; the
+    # shared exit engine still manages any positions already open.
+    if not ENABLED:
+        return
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if _ran_today == today:
