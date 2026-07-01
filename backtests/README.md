@@ -242,3 +242,49 @@ dual_momentum (rotation sleeve): CAGR 10.64% | Sharpe 0.90 | MaxDD -16.9%
   complexity and correlated drawdown.
 - **Redirect effort to the exit engine, position sizing, and drawdown/regime
   behaviour** — that's where the P&L actually comes from.
+
+---
+
+## 5. Regime-flip protection & the GLD problem (`regime_overlay.py`)
+
+Goal: **max 5-yr return, min loss in regime flips.** Since the equity sleeves
+≈ being long the mega-cap universe (§4), we model the long book as an
+equal-weight mega-cap basket and test regime overlays. 5-yr window (2021-06 →
+2026-06) contains the 2022 bear flip. `2022flipDD` = max drawdown across that
+flip (the number to minimise). Overlay acts on yesterday's MA state (no look-ahead).
+
+```
+5-YEAR                        CAGR  Sharpe   MaxDD  Calmar  2022flipDD
+A basket always-in           19.0%    1.08  -21.8%   0.87     -21.8%
+B basket + 200DMA->cash      13.6%    1.15  -18.3%   0.74     -16.7%
+C basket + 200DMA->GLD       16.8%    1.14  -29.6%   0.57     -29.6%   <- GLD HURTS
+blend 70in/30cash            17.5%    1.17  -19.2%   0.91     -19.2%
+blend 60in/40cash            17.0%    1.20  -18.4%   0.93     -18.4%   <- sweet spot
+blend 50in/50cash            16.5%    1.22  -17.6%   0.94     -17.6%
+SPY buy&hold                 13.1%    0.81  -24.5%   0.54     -24.5%
+```
+
+### Two findings that matter for the regime-flip goal
+
+1. **GLD is the wrong flip hedge.** Rotating the book to GLD on a regime flip
+   (overlay C) made the 2022 drawdown *worse* (−29.6% vs −21.8%) — GLD sold off
+   with equities in the rate shock. The live bot's `PRE_TRANSITION_ALERT` opens
+   GLD (10% equity) as a hedge; this backtest says **replace GLD-rotation with
+   raising cash / cutting exposure.** Cash-defense (B) cut the flip DD to −16.7%.
+
+2. **A partial cash overlay is the efficient-frontier move.** Full de-risk (B)
+   gives up too much return (13.6% vs 19.0% CAGR). A **60/40 blend** — 60% of the
+   book always long, 40% de-risking to cash when SPY < 200DMA — keeps 17.0% CAGR
+   (5-yr) / 20.6% (10-yr) while lifting Sharpe 1.08→1.20 and Calmar 0.87→0.93 and
+   shaving the 2022-flip drawdown by ~3.4 points. That is the best return/flip-loss
+   tradeoff tested.
+
+### Implication for consolidation (§4) under the max-return goal
+
+Consolidation (disabling redundant long sleeves) is now **secondary**: it tidies
+correlated drawdown but may *reduce* capital deployed into the winning basket
+(fewer entry signals), which works against max-return. The high-value change for
+the stated goal is the **regime overlay + dropping the GLD hedge**, not pruning
+sleeves. Recommended order: (1) fix GLD→cash flip defense, (2) add the ~60/40
+cash overlay, (3) only then consider trimming the weakest sleeve (52wh_vol,
+negative standalone Sharpe).
