@@ -118,6 +118,14 @@ MAX_PORTFOLIO_EXPOSURE = 0.80
 # +Sharpe, shallower 2022-flip drawdown, small CAGR give-up. 1.0 disables it.
 REGIME_DERISK_EXPOSURE_MULT = 0.60
 
+# Volatility-targeting overlay (backtests/dd_reduction.py) — the primary drawdown
+# lever. Exposure cap scales by min(1, VOL_TARGET_ANNUAL / SPY_realised_vol),
+# floored at VOL_SCALAR_FLOOR. A 12% target ~halved max drawdown (-33%→-14%) and
+# the 2022-flip DD (-22%→-13%), lifted Sharpe 1.16→1.34 / Calmar 0.70→1.22, for a
+# ~6pt CAGR give-up. Set VOL_TARGET_ANNUAL high (e.g. 1.0) to effectively disable.
+VOL_TARGET_ANNUAL = 0.12      # annualised portfolio vol target
+VOL_SCALAR_FLOOR = 0.30       # never cut new-entry exposure below 30% of base cap
+
 # ============================================================
 # Strategy Parameters
 # ============================================================
