@@ -1,0 +1,24 @@
+{
+  "3b_vol_adj_momentum": {
+    "trades": 782,
+    "win": 0.439,
+    "exp": 0.00175,
+    "pf": 1.106
+  },
+  "3c_mean_rev_rsi2": {
+    "trades": 3513,
+    "win": 0.424,
+    "exp": 0.00516,
+    "pf": 1.358
+  },
+  "3e_donchian_turtle": {
+    "N": 40,
+    "M": 20,
+    "trades": 2102,
+    "win": 0.393,
+    "exp": 0.023,
+    "pf": 1.982
+  },
+  "3d_earnings_calendar": "BLOCKED: Yahoo .calendar needs auth crumb (empty here)",
+  "3f_fundamentals": "BLOCKED: Yahoo .info ROE/margin/debt need auth crumb (empty here)"
+}
