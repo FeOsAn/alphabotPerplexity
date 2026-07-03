@@ -120,12 +120,15 @@ def main():
         st=M.trade_stats(tr); ms=monthly_from_dated(dated)
         sh = ms.mean()/ms.std()*np.sqrt(12) if len(ms)>3 and ms.std()>0 else float("nan")
         rows.append((name,st,sh))
+    DISABLED={"cs_momentum","gap_scanner","options_flow","squeeze_screener","pairs_trading"}
     rows.sort(key=lambda x: (x[1]["avg_ret"]*x[1]["trades"]), reverse=True)
-    w(f"{'strategy':<18}{'trades':>7}{'win%':>6}{'exp/tr':>8}{'PF':>6}{'mSharpe':>8}")
+    w("(v100 live config: gap_scanner + cs_momentum DISABLED; mean_reversion now RSI(2))")
+    w(f"{'strategy':<18}{'status':<9}{'trades':>7}{'win%':>6}{'exp/tr':>8}{'PF':>6}{'mSharpe':>8}")
     for name,st,sh in rows:
-        w(f"{name:<18}{st['trades']:>7}{st['win_rate']*100:>5.0f}%{st['avg_ret']*100:>7.2f}%"
+        status="DISABLED" if name in DISABLED else "active"
+        w(f"{name:<18}{status:<9}{st['trades']:>7}{st['win_rate']*100:>5.0f}%{st['avg_ret']*100:>7.2f}%"
           f"{st['profit_factor']:>6.2f}{sh:>8.2f}")
-        attribution[name]=dict(trades=st["trades"],win_rate=round(st["win_rate"],3),
+        attribution[name]=dict(status=status,trades=st["trades"],win_rate=round(st["win_rate"],3),
             expectancy=round(st["avg_ret"],5),profit_factor=round(st["profit_factor"],3),
             monthly_sharpe=round(sh,3) if sh==sh else None,
             contribution_proxy=round(st["avg_ret"]*st["trades"],4))

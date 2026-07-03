@@ -40,20 +40,15 @@ def fifty_two_wh(df):
 
 
 def mean_reversion(df):
-    c, v = df["Close"], df["Volume"]
-    r = E.rsi(c, 14)
-    bl, bm, bu = E.bbands(c, 20, 2.0)
-    ma50 = E.sma(c, 50)
-    vr = v / v.rolling(20).mean()
-    return (r < 37) & (c <= bl * 1.01) & (vr > 1.2) & (c >= ma50 * 0.85)
+    # v100 live: Connors RSI(2)<10 in an uptrend (close>MA200).
+    c = df["Close"]
+    return (E.rsi(c, 2) < 10) & (c > E.sma(c, 200))
 
 
 def mean_reversion_exit(df, k, entry):
-    """Native MR exit: close back to BB-mid or RSI overbought."""
+    """Native MR exit (v100): quick snap-back above the 5-day MA, or RSI(2) hot."""
     c = df["Close"]
-    r = E.rsi(c, 14)
-    _, bm, _ = E.bbands(c, 20, 2.0)
-    return bool(c.iloc[k] >= bm.iloc[k] or r.iloc[k] > 70)
+    return bool(c.iloc[k] > E.sma(c, 5).iloc[k] or E.rsi(c, 2).iloc[k] > 70)
 
 
 def trend_pullback(df):
