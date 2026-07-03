@@ -25,6 +25,7 @@ REGIME_WEIGHTS = {
         "trend_pullback": 1.5,   # B+G: bull = full authority, long only
         "multi_tf_rsi":   1.2,   # I:   bull = long only, solid edge
         "52wh_vol":       1.0,   # v87: 52wk-high breakout — bull only at full weight
+        "donchian_trend": 1.2,   # v100: turtle breakout — full authority in strong bull
     },
     "BULL_NORMAL": {
         "momentum":       1.0,
@@ -41,6 +42,7 @@ REGIME_WEIGHTS = {
         "trend_pullback": 1.2,
         "multi_tf_rsi":   1.0,
         "52wh_vol":       1.0,   # v87: bull = full weight
+        "donchian_trend": 1.0,   # v100: turtle breakout — full weight in bull
     },
     "CHOPPY": {
         # Trend-following strategies: OFF in chop (proven to bleed)
@@ -59,6 +61,7 @@ REGIME_WEIGHTS = {
         "short_hedge":    0.5,
         "multi_tf_rsi":   0.8,   # I: positive in chop (+0.49%), run at 0.8×
         "52wh_vol":       0.5,   # v87: chop = half weight (fewer clean breakouts)
+        "donchian_trend": 0.0,   # v100: trend-following bleeds in chop — exits only
     },
     "BEAR_MILD": {
         "momentum":       0.0,   # was 0.3 — no longs in bear
@@ -75,6 +78,7 @@ REGIME_WEIGHTS = {
         "trend_pullback": 0.8,   # short-side entries only, internally gated
         "multi_tf_rsi":   1.3,   # best regime: +0.91% avg/trade, short-heavy
         "52wh_vol":       0.0,   # v87: no longs in bear
+        "donchian_trend": 0.0,   # v100: no longs in bear — exits only
     },
     "BEAR_STRONG": {
         "momentum":       0.0,
@@ -91,6 +95,7 @@ REGIME_WEIGHTS = {
         "trend_pullback": 0.6,   # short-side only, conservative
         "multi_tf_rsi":   1.5,   # maximum authority in strong bear
         "52wh_vol":       0.0,   # v87: no longs in bear
+        "donchian_trend": 0.0,   # v100: no longs in strong bear — exits only
     },
     # v95 — composite-score "transition" regime (score 40–70). Momentum/trend
     # strategies are fully blocked; defensive/counter-trend run at 0.75×;
@@ -112,6 +117,7 @@ REGIME_WEIGHTS = {
         "gap_scanner":     0.0,
         "earnings_drift":  0.0,
         "conviction_long": 0.0,
+        "donchian_trend":  0.0,   # v100: trend breakout blocked in transition
         # defensive / counter-trend — reduced
         "mean_reversion":  0.75,
         "vwap_reclaim":    0.75,
@@ -160,6 +166,7 @@ STRATEGY_REGIME_COMPAT = {
     "cs_momentum":      ["bull"],                  # pure 12-1 momentum, bull only
     "quality_momentum": ["bull", "chop"],          # quality tilt survives chop
     "dual_momentum":    ["bull", "chop", "bear", "transition"],  # rotates to GLD, all regimes
+    "donchian_trend":   ["bull", "chop"],          # v100: turtle breakout — swept on bear/transition
 }
 
 DEFAULT_MULTIPLIER = 1.0

@@ -72,6 +72,7 @@ from strategies import fifty_two_wh  # v87 — 52WH-Vol breakout
 from strategies import conviction_long  # v89 — Conviction Long (weekly scan, daily management)
 from strategies import cs_momentum, quality_momentum, dual_momentum  # v91 — deep-backtest momentum sleeves
 from strategies import momentum, breakout, short_hedge
+from strategies import donchian_trend  # v100 — turtle-style trend sleeve
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
 from strategies.trade_management import (
@@ -902,6 +903,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 # TRANSITION regime_weight=0.0.
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
+                (donchian_trend.run,    "Donchian trend"),   # exits only (weight 0)
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (trend_pullback.run,    "Trend pullback"),
@@ -926,6 +928,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 # Below handle exits only — self-skip new entries via regime_weight=0.0
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
+                (donchian_trend.run,    "Donchian trend"),   # exits only (weight 0)
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (spy_dip.run,           "SPY dip"),
@@ -947,6 +950,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (sector_rotation.run,   "Sector rotation"),
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
+                (donchian_trend.run,    "Donchian trend"),  # v100 — turtle breakout
                 (short_hedge.run,       "Short hedge"),
                 (pairs_trading.run,     "Pairs trading"),
                 (insider_buying.run,    "Insider buying"),

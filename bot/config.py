@@ -64,8 +64,13 @@ CONVICTION_RSI_BONUS  = 0.015
 CONVICTION_VOL_BONUS  = 0.015
 # Hard max single position: never exceed 20% of portfolio regardless of conviction
 MAX_SINGLE_POSITION_PCT = 0.15  # hard cap per symbol across all buys
-# Cash floor: keep at least 15% cash at all times
-MIN_CASH_RESERVE_PCT = 0.15
+# Cash floor: keep at least this fraction in cash at all times.
+# Lowered 0.15 -> 0.10 (backtests/deep_analysis.py exposure sweep): the book was
+# chronically ~34% idle vs an 80% target; more deployment adds ~CAGR at FLAT
+# Sharpe, and the vol-targeting overlay (utils/market_filter.py) now caps the
+# downside — so a lower static cash floor is safe. Raise back toward 0.15 to be
+# more conservative.
+MIN_CASH_RESERVE_PCT = 0.10
 # Non-momentum strategies that lack a score-based conviction use this flat base.
 DEFAULT_STRATEGY_ALLOCATION_PCT = 0.05
 

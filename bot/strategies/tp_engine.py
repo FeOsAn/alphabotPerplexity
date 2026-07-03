@@ -52,6 +52,7 @@ _TP_MULTIPLES = {
     "sector_rotation": (0.0, 0.0),   # no fixed TP — rotation managed separately
     "pairs_trading":   (0.0, 0.0),   # TP = z-score target, managed separately
     "short_hedge":     (0.0, 0.0),   # hedge, no TP
+    "donchian_trend":  (0.0, 0.0),   # trend-following: NO TP — exit is the 20d channel
 }
 
 MIN_ATR_FALLBACK_PCT = 0.02  # if ATR unavailable, use 2% of price as proxy

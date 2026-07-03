@@ -107,6 +107,7 @@ _STRATEGY_BASE_STOP = {
     "spy_dip":         0.04,
     "vix_reversal":    0.03,
     "52wh_vol":        0.05,
+    "donchian_trend":  0.10,   # trend-following needs room; the 20d channel exit does the work
 }
 
 
