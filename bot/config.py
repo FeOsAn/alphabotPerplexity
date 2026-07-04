@@ -131,6 +131,15 @@ REGIME_DERISK_EXPOSURE_MULT = 0.60
 VOL_TARGET_ANNUAL = 0.12      # annualised portfolio vol target
 VOL_SCALAR_FLOOR = 0.30       # never cut new-entry exposure below 30% of base cap
 
+# Daily-loss circuit breaker (backtests/circuit_breaker.py): a hard SAFETY halt.
+# If the account is down more than this fraction on the day (equity vs prior
+# close), block ALL new entries for the rest of the session. Exits are never
+# gated, so stops/TPs still fire. Backtested cost at 0.04 on the vol-targeted
+# book: ~zero (Sharpe/MaxDD unchanged) — its value is catching a fast single-day
+# crash or a runaway/data-glitch loop the daily vol signal can't react to in time.
+# Set to 0 to disable.
+CIRCUIT_BREAKER_DAILY_LOSS_PCT = 0.04
+
 # ============================================================
 # Strategy Parameters
 # ============================================================

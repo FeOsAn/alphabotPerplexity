@@ -211,11 +211,49 @@ class AlpacaBroker:
             return float(notional) * mult
         return notional
 
+    def _daily_loss_tripped(self) -> bool:
+        """Daily-loss circuit breaker. True if the account is down more than
+        CIRCUIT_BREAKER_DAILY_LOSS_PCT on the day (equity vs prior close). Cached
+        ~30s to avoid per-order API calls; fails safe to False (never halts on a
+        data error). Alerts once per day when it first trips."""
+        from config import CIRCUIT_BREAKER_DAILY_LOSS_PCT as _CB
+        if not _CB or _CB <= 0:
+            return False
+        import time
+        now = time.time()
+        if now - getattr(self, "_cb_ts", 0.0) < 30.0:
+            return getattr(self, "_cb_val", False)
+        try:
+            loss = self.get_account().get("pnl_today_pct", 0.0) / 100.0
+        except Exception:
+            self._cb_ts = now; self._cb_val = False
+            return False
+        tripped = loss <= -_CB
+        self._cb_ts = now; self._cb_val = tripped
+        if tripped:
+            from datetime import date
+            today = date.today().isoformat()
+            if getattr(self, "_cb_alert_date", None) != today:
+                self._cb_alert_date = today
+                logger.critical(
+                    f"[CIRCUIT BREAKER] Daily loss {loss:+.1%} ≤ -{_CB:.0%} — "
+                    f"halting ALL new entries for the session (exits unaffected)"
+                )
+                try:
+                    from utils.notify import emergency as _emerg
+                    _emerg("🛑 Circuit breaker tripped",
+                           f"Daily loss {loss:+.1%} — new entries halted for the session",
+                           key=f"circuit_breaker_{today}")
+                except Exception:
+                    pass
+        return tripped
+
     def _entry_blocked(self, symbol: str, side: str, strategy: str,
                        notional: float) -> bool:
         """
         Centralised pre-order gate. Returns True if the order should be blocked.
         Enforces:
+          - daily-loss circuit breaker (v100 — hard safety halt, ALL entry sides)
           - cross-strategy symbol cooldown lock (v94 — ALL entry sides)
           - minimum entry notional (v94 — no sub-$500 entries / residuals)
           - symbol blacklist (v75 — FIX 3, BUY only)
@@ -229,6 +267,19 @@ class AlpacaBroker:
         cooldowns are honoured cross-strategy. Closes/trims/buy-to-cover do NOT
         call this gate, so exits are never blocked.
         """
+        # --- Daily-loss circuit breaker (v100) ---------------------------
+        # Hard safety halt: if the account is down > CIRCUIT_BREAKER_DAILY_LOSS_PCT
+        # on the day, block ALL new entries for the rest of the session. Exits do
+        # not funnel through this gate, so stops/TPs still fire. Catches a fast
+        # single-day crash / runaway loop the daily vol-target signal can't react
+        # to in time.
+        if self._daily_loss_tripped():
+            logger.warning(
+                f"[CIRCUIT BREAKER] Blocked {side} {symbol} ({strategy}) — "
+                f"daily-loss halt active"
+            )
+            return True
+
         # --- Cross-strategy cooldown lock (v94) ---------------------------
         # Once ANY strategy stops out of / takes profit on a symbol, NO strategy
         # may re-enter for SYMBOL_COOLDOWN_HOURS. This is what stops the
