@@ -1,0 +1,83 @@
+{
+  "multi_tf_rsi": {
+    "status": "active",
+    "trades": 3587,
+    "win_rate": 0.426,
+    "expectancy": 0.00355,
+    "profit_factor": 1.229,
+    "monthly_sharpe": 0.974,
+    "contribution_proxy": 12.7511
+  },
+  "trend_pullback": {
+    "status": "active",
+    "trades": 3764,
+    "win_rate": 0.425,
+    "expectancy": 0.00303,
+    "profit_factor": 1.197,
+    "monthly_sharpe": 0.619,
+    "contribution_proxy": 11.4114
+  },
+  "breakout": {
+    "status": "active",
+    "trades": 2470,
+    "win_rate": 0.427,
+    "expectancy": 0.00338,
+    "profit_factor": 1.236,
+    "monthly_sharpe": 0.104,
+    "contribution_proxy": 8.3392
+  },
+  "52wh_vol": {
+    "status": "active",
+    "trades": 1794,
+    "win_rate": 0.421,
+    "expectancy": 0.00297,
+    "profit_factor": 1.216,
+    "monthly_sharpe": -0.096,
+    "contribution_proxy": 5.3323
+  },
+  "mean_reversion": {
+    "status": "active",
+    "trades": 4348,
+    "win_rate": 0.604,
+    "expectancy": 0.00083,
+    "profit_factor": 1.091,
+    "monthly_sharpe": 0.711,
+    "contribution_proxy": 3.6267
+  },
+  "gap_scanner": {
+    "status": "DISABLED",
+    "trades": 2346,
+    "win_rate": 0.404,
+    "expectancy": 0.0009,
+    "profit_factor": 1.054,
+    "monthly_sharpe": 0.962,
+    "contribution_proxy": 2.1216
+  },
+  "momentum": {
+    "status": "active",
+    "trades": 554,
+    "win_rate": 0.477,
+    "expectancy": 0.00329,
+    "profit_factor": 1.213,
+    "monthly_sharpe": 0.054,
+    "contribution_proxy": 1.8235
+  },
+  "quality_momentum": {
+    "status": "active",
+    "trades": 393,
+    "win_rate": 0.443,
+    "expectancy": 0.00044,
+    "profit_factor": 1.027,
+    "monthly_sharpe": 0.11,
+    "contribution_proxy": 0.1733
+  },
+  "cs_momentum": {
+    "status": "DISABLED",
+    "trades": 527,
+    "win_rate": 0.416,
+    "expectancy": -0.0015,
+    "profit_factor": 0.915,
+    "monthly_sharpe": -0.068,
+    "contribution_proxy": -0.7927
+  }
+}

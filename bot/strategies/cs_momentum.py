@@ -59,6 +59,14 @@ CS_MOM_UNIVERSE = [
 # Deduplicate while preserving order
 CS_MOM_UNIVERSE = list(dict.fromkeys(CS_MOM_UNIVERSE))
 
+# ── New-entry kill switch ─────────────────────────────────────────────────────
+# Backtest/attribution (backtests/deep_analysis.py, 2015-2026): cs_momentum is the
+# only strategy with NEGATIVE expectancy over 11 years (-0.15%/trade, PF 0.92,
+# monthly Sharpe -0.07) — a parasite. Its 12-1 cross-sectional signal duplicates
+# the other momentum sleeves at a worse hit rate. New entries disabled; exits
+# (rank-drop, time-stop, BEAR flatten) above still run. Flip to True to re-enable.
+ENABLE_NEW_ENTRIES = False
+
 POSITION_PCT = 0.085       # Kelly-derived sizing from 4yr backtest (was 0.12)
 SHORTLIST_N = 12           # rank to a top-12 shortlist (3× the selection set); gates pick the actual buys
 MAX_POSITIONS = 4          # at most 4 new positions per cycle (be selective)
@@ -400,6 +408,11 @@ def run(broker: AlpacaBroker, db_conn):
 
     _check_exits(broker, db_conn, ranked)
     set_state(db_conn, _LAST_DAILY_KEY, today)
+
+    # Backtest-driven kill switch (see ENABLE_NEW_ENTRIES note). Exits above still
+    # run every cycle; only new entries are gated off.
+    if not ENABLE_NEW_ENTRIES:
+        return
 
     # ── Entries: first Monday of month (or first-run override), BULL only ─────
     # Monthly rebalance — momentum persists on monthly scale, reduces turnover.

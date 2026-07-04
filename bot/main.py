@@ -72,6 +72,7 @@ from strategies import fifty_two_wh  # v87 — 52WH-Vol breakout
 from strategies import conviction_long  # v89 — Conviction Long (weekly scan, daily management)
 from strategies import cs_momentum, quality_momentum, dual_momentum  # v91 — deep-backtest momentum sleeves
 from strategies import momentum, breakout, short_hedge
+from strategies import donchian_trend  # v100 — turtle-style trend sleeve
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
 from strategies.trade_management import (
@@ -329,7 +330,14 @@ def manage_pre_transition_hedge(broker: AlpacaBroker, db_conn):
 
     # ── False → True: open the hedge ─────────────────────────────────────────
     if alert and not _prev_pre_transition_alert:
-        logger.info("PRE_TRANSITION_ALERT: Opening GLD (10%) + SH (5%) hedge")
+        # GLD dropped from the hedge (backtests/regime_overlay.py): rotating into
+        # GLD on a regime flip DEEPENED the 2022 drawdown (-29.6% vs -21.8%) — GLD
+        # sold off with equities in the rate shock. The GLD sleeve is now held as
+        # CASH (better flip defense), while SH (inverse SPY) is kept as the real
+        # short hedge. The broader cash-defense is enforced via the 200DMA exposure
+        # overlay (utils/market_filter.py). Re-add ("GLD", PRE_TRANSITION_GLD_PCT)
+        # below to restore the old behaviour.
+        logger.info("PRE_TRANSITION_ALERT: Opening SH (5%) hedge; GLD sleeve held as cash")
         try:
             equity = float(broker.get_account().get("equity") or 0.0)
             held = {p["symbol"] for p in broker.get_positions()}
@@ -337,7 +345,7 @@ def manage_pre_transition_hedge(broker: AlpacaBroker, db_conn):
             logger.warning(f"[PreTransitionHedge] account/positions fetch failed: {e}")
             equity, held = 0.0, set()
 
-        for symbol, pct in (("GLD", PRE_TRANSITION_GLD_PCT), ("SH", PRE_TRANSITION_SH_PCT)):
+        for symbol, pct in (("SH", PRE_TRANSITION_SH_PCT),):
             if symbol in held:
                 logger.info(f"[PreTransitionHedge] {symbol} already open — skipping hedge buy")
                 continue
@@ -895,6 +903,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 # TRANSITION regime_weight=0.0.
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
+                (donchian_trend.run,    "Donchian trend"),   # exits only (weight 0)
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (trend_pullback.run,    "Trend pullback"),
@@ -919,6 +928,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 # Below handle exits only — self-skip new entries via regime_weight=0.0
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
+                (donchian_trend.run,    "Donchian trend"),   # exits only (weight 0)
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (spy_dip.run,           "SPY dip"),
@@ -940,6 +950,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 (sector_rotation.run,   "Sector rotation"),
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
+                (donchian_trend.run,    "Donchian trend"),  # v100 — turtle breakout
                 (short_hedge.run,       "Short hedge"),
                 (pairs_trading.run,     "Pairs trading"),
                 (insider_buying.run,    "Insider buying"),

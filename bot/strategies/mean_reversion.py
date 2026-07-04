@@ -28,23 +28,31 @@ from config import (
 
 def _conviction_multiplier(rsi: float, vol_elevated: bool, vol_ratio: float) -> float:
     """
-    Scale position size by how strong the mean-reversion signal is.
-    RSI=18 + vol 2x avg = maximum conviction. RSI=31 barely oversold = lower.
+    Scale position size by signal strength. v100: rescaled for RSI(2) — the old
+    thresholds (20/24/28) were RSI(14)-scale, and with RSI(2)<10 entries every
+    trade hit the max-conviction branch (silent 1.25-1.5x oversizing on an
+    untested dimension). The validated backtest sized flat, so tiers are modest.
     """
-    if rsi <= 20 and vol_ratio >= 2.0:
-        return 1.5   # RSI deeply oversold + massive volume
-    elif rsi <= 24 and vol_elevated:
-        return 1.25  # very oversold with volume confirmation
-    elif rsi <= 28:
-        return 1.0   # solidly oversold
+    if rsi <= 2.0 and vol_ratio >= 2.0:
+        return 1.25  # pinned RSI(2) + heavy volume — sharpest snaps
+    elif rsi <= 5.0:
+        return 1.0   # solidly oversold on RSI(2)
     else:
-        return 0.75  # barely at threshold (RSI 25-32)
+        return 0.85  # barely under the 10 threshold
 
 
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.mean_reversion")
 STRATEGY_NAME = "mean_reversion"
+
+# ── New-entry switch ──────────────────────────────────────────────────────────
+# RE-ENABLED (v100): the OLD RSI(14)<oversold + BB-lower signal was barely +EV
+# (+0.04%/trade, PF 1.03) — worst vs baseline — so it was disabled. The signal is
+# now Connors RSI(2)<10 in an uptrend (see _compute_signals): +0.35%/trade, 67%
+# win, PF 1.35, robust across all sub-periods (backtests/rsi2_validate.py). As a
+# counter-trend sleeve it also diversifies the (correlated) momentum book.
+ENABLE_NEW_ENTRIES = True
 
 STOP_LOSS_PCT = 0.05   # Tighter 5% stop for mean reversion
 MAX_NEW_ENTRIES_PER_SCAN = 2  # Stagger entries — max 2 new positions per 5-min scan
@@ -59,8 +67,14 @@ MR_WATCHLIST = [
 
 
 def _compute_signals(df: pd.DataFrame) -> dict:
-    """Compute RSI, Bollinger Bands, volume signal for a symbol's daily bars."""
-    if df is None or len(df) < max(MR_RSI_PERIOD, MR_BB_PERIOD) + 10:
+    """Connors RSI(2) mean reversion (v100).
+
+    backtests/rsi2_validate.py: RSI(2)<10 in an uptrend (close>MA200) with a quick
+    snap-back exit (close>MA5) is +0.35%/trade, 67% win, PF 1.35, robust across
+    2015-18/19-22/23-26 — vs the old RSI(14)<oversold + BB-lower version at
+    +0.04%/trade (PF 1.03). Needs >=200 bars for the MA200 trend filter.
+    """
+    if df is None or len(df) < 210:
         return {}
 
     df = df.copy()
@@ -71,45 +85,37 @@ def _compute_signals(df: pd.DataFrame) -> dict:
     close = df["close"]
     volume = df["volume"]
 
-    rsi = _pta.rsi(close, length=MR_RSI_PERIOD)
+    rsi2 = _pta.rsi(close, length=2)
     _bb = _pta.bbands(close, length=MR_BB_PERIOD, std=float(MR_BB_STD))
     bb_lower = _bb[[c for c in _bb.columns if c.startswith('BBL_')][0]]
     bb_mid   = _bb[[c for c in _bb.columns if c.startswith('BBM_')][0]]
     bb_upper = _bb[[c for c in _bb.columns if c.startswith('BBU_')][0]]
 
+    ma200 = float(close.tail(200).mean())
+    ma5   = float(close.tail(5).mean())
+
     vol_avg = volume.rolling(20).mean()
-    # Use prior completed day (iloc[-2]) — today's bar is partial during RTH
-    # and would read ~0.2x avg in the morning, masking real volume.
     vol_last = volume.iloc[-2] if len(volume) >= 2 else volume.iloc[-1]
     vol_avg_last = vol_avg.iloc[-2] if len(vol_avg) >= 2 else vol_avg.iloc[-1]
     vol_elevated = bool(vol_last > vol_avg_last * 1.2)
 
-    latest_rsi   = float(rsi.iloc[-1])
+    latest_rsi   = float(rsi2.iloc[-1])          # RSI(2), not RSI(14)
     latest_close = float(close.iloc[-1])
     latest_bb_lower = float(bb_lower.iloc[-1])
     latest_bb_mid   = float(bb_mid.iloc[-1])
     latest_bb_upper = float(bb_upper.iloc[-1])
     bb_width = (latest_bb_upper - latest_bb_lower) / latest_bb_mid if latest_bb_mid > 0 else 0.0
 
-    # Don't buy if in a longer-term downtrend (price must be within 15% of 50-day MA)
-    ma50 = float(close.tail(50).mean()) if len(close) >= 50 else latest_close
-    not_in_freefall = latest_close >= ma50 * 0.85
+    # Uptrend filter: only buy oversold dips ABOVE the 200-day MA.
+    not_in_freefall = latest_close > ma200
 
     vol_ratio = float(vol_last / vol_avg_last) if vol_avg_last and vol_avg_last > 0 else 1.0
+    oversold_threshold = 10.0
 
-    from utils.adaptive_filters import get_thresholds
-    oversold_threshold = get_thresholds()["mr_rsi_oversold"]
-
-    buy_signal = (
-        latest_rsi < oversold_threshold and
-        latest_close <= latest_bb_lower * 1.01 and
-        vol_elevated and
-        not_in_freefall
-    )
-    sell_signal = (
-        latest_rsi > MR_RSI_OVERBOUGHT or
-        latest_close >= latest_bb_mid
-    )
+    # Entry: RSI(2) < 10 in an uptrend. Exit: quick snap back above the 5-day MA
+    # (or RSI(2) overbought). Hard 5% stop is enforced in run().
+    buy_signal = (latest_rsi < oversold_threshold and latest_close > ma200)
+    sell_signal = (latest_close > ma5 or latest_rsi > 70.0)
 
     return {
         "rsi": latest_rsi,
@@ -150,7 +156,7 @@ def run(broker: AlpacaBroker, db_conn):
     for sym in MR_WATCHLIST:
         try:
             ticker = yf.Ticker(sym)
-            hist = ticker.history(period="3mo")
+            hist = ticker.history(period="12mo")  # v100: need >=200 bars for MA200 filter
             if not hist.empty:
                 sig = _compute_signals(hist)
                 if sig:
@@ -191,6 +197,12 @@ def run(broker: AlpacaBroker, db_conn):
             from utils.cooldown import set_cooldown
             set_cooldown(sym)
             logger.info(f"[MR] {sym} cooldown set after exit")
+
+    # Backtest-driven kill switch (see ENABLE_NEW_ENTRIES note). Exits above still
+    # run every cycle; only new entries are gated off.
+    if not ENABLE_NEW_ENTRIES:
+        logger.info("[MR] New entries disabled (backtest: no edge vs baseline) — exits only")
+        return
 
     # ── Enter new positions ─────────────────────────────────────────────────────
     current_mr_count = len([
@@ -237,10 +249,9 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[MR] Skipping {sym} — earnings blackout (within 2 days)")
             continue
 
-        bb_width = sig.get("bb_width", 1.0)
-        if bb_width < 0.04:
-            logger.debug(f"[MR] {sym}: skipped — BB width {bb_width:.4f} < 0.04 (flat stock, weak reversion potential)")
-            continue
+        # v100: bb_width gate removed — it was tuned for the old BB-lower entry and
+        # is an untested extra filter on the validated RSI(2) signal (the backtest
+        # that proved +0.35%/trade had no such gate). Keeping live == backtested.
 
         mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
         size_pct = min(DEFAULT_STRATEGY_ALLOCATION_PCT * mult, MAX_SINGLE_POSITION_PCT)

@@ -64,8 +64,13 @@ CONVICTION_RSI_BONUS  = 0.015
 CONVICTION_VOL_BONUS  = 0.015
 # Hard max single position: never exceed 20% of portfolio regardless of conviction
 MAX_SINGLE_POSITION_PCT = 0.15  # hard cap per symbol across all buys
-# Cash floor: keep at least 15% cash at all times
-MIN_CASH_RESERVE_PCT = 0.15
+# Cash floor: keep at least this fraction in cash at all times.
+# Lowered 0.15 -> 0.10 (backtests/deep_analysis.py exposure sweep): the book was
+# chronically ~34% idle vs an 80% target; more deployment adds ~CAGR at FLAT
+# Sharpe, and the vol-targeting overlay (utils/market_filter.py) now caps the
+# downside — so a lower static cash floor is safe. Raise back toward 0.15 to be
+# more conservative.
+MIN_CASH_RESERVE_PCT = 0.10
 # Non-momentum strategies that lack a score-based conviction use this flat base.
 DEFAULT_STRATEGY_ALLOCATION_PCT = 0.05
 
@@ -108,9 +113,37 @@ STRATEGY_POSITION_SIZES = {
     "earnings_drift":   0.040,   # estimate
 }
 
-# Hard cap: never deploy > 80% of equity across all long positions. Prevents the
-# old problem of dual_momentum alone trying to take 99% of equity.
-MAX_PORTFOLIO_EXPOSURE = 0.80
+# Hard cap on long deployment. v100: 0.80 -> 0.90 (backtests/profit_max_sweep.py):
+# Sharpe is FLAT (1.31-1.33) across cap 0.6-1.0 once vol-targeting sets the risk
+# level, so the cap purely trades CAGR for drawdown. 0.90 + VOL_TARGET_ANNUAL=0.15
+# is the frontier sweet spot: 16.0% CAGR (vs 12.6% at 0.80/0.12), best-in-grid
+# Sharpe 1.33, MaxDD -14.4% (SPY: -33.7%). Consistent with the 10% cash floor.
+MAX_PORTFOLIO_EXPOSURE = 0.90
+
+# Partial cash-defense overlay (backtests/regime_overlay.py): when SPY < 200DMA,
+# scale the exposure cap down by this factor (0.80 → ~0.48), i.e. a ~60/40
+# long/cash book in downtrends. Best return/regime-flip-loss tradeoff tested:
+# +Sharpe, shallower 2022-flip drawdown, small CAGR give-up. 1.0 disables it.
+REGIME_DERISK_EXPOSURE_MULT = 0.60
+
+# Volatility-targeting overlay (backtests/dd_reduction.py) — the primary drawdown
+# lever. Exposure cap scales by min(1, VOL_TARGET_ANNUAL / SPY_realised_vol),
+# floored at VOL_SCALAR_FLOOR. A 12% target ~halved max drawdown (-33%→-14%) and
+# the 2022-flip DD (-22%→-13%), lifted Sharpe 1.16→1.34 / Calmar 0.70→1.22, for a
+# ~6pt CAGR give-up. Set VOL_TARGET_ANNUAL high (e.g. 1.0) to effectively disable.
+VOL_TARGET_ANNUAL = 0.15      # annualised vol target. v100: 0.12 -> 0.15 — highest
+                              # Sharpe point on the frontier (1.33) AND +CAGR; see
+                              # backtests/profit_max_sweep.py. Lower = safer/less return.
+VOL_SCALAR_FLOOR = 0.30       # never cut new-entry exposure below 30% of base cap
+
+# Daily-loss circuit breaker (backtests/circuit_breaker.py): a hard SAFETY halt.
+# If the account is down more than this fraction on the day (equity vs prior
+# close), block ALL new entries for the rest of the session. Exits are never
+# gated, so stops/TPs still fire. Backtested cost at 0.04 on the vol-targeted
+# book: ~zero (Sharpe/MaxDD unchanged) — its value is catching a fast single-day
+# crash or a runaway/data-glitch loop the daily vol signal can't react to in time.
+# Set to 0 to disable.
+CIRCUIT_BREAKER_DAILY_LOSS_PCT = 0.04
 
 # ============================================================
 # Strategy Parameters
