@@ -113,9 +113,12 @@ STRATEGY_POSITION_SIZES = {
     "earnings_drift":   0.040,   # estimate
 }
 
-# Hard cap: never deploy > 80% of equity across all long positions. Prevents the
-# old problem of dual_momentum alone trying to take 99% of equity.
-MAX_PORTFOLIO_EXPOSURE = 0.80
+# Hard cap on long deployment. v100: 0.80 -> 0.90 (backtests/profit_max_sweep.py):
+# Sharpe is FLAT (1.31-1.33) across cap 0.6-1.0 once vol-targeting sets the risk
+# level, so the cap purely trades CAGR for drawdown. 0.90 + VOL_TARGET_ANNUAL=0.15
+# is the frontier sweet spot: 16.0% CAGR (vs 12.6% at 0.80/0.12), best-in-grid
+# Sharpe 1.33, MaxDD -14.4% (SPY: -33.7%). Consistent with the 10% cash floor.
+MAX_PORTFOLIO_EXPOSURE = 0.90
 
 # Partial cash-defense overlay (backtests/regime_overlay.py): when SPY < 200DMA,
 # scale the exposure cap down by this factor (0.80 → ~0.48), i.e. a ~60/40
@@ -128,7 +131,9 @@ REGIME_DERISK_EXPOSURE_MULT = 0.60
 # floored at VOL_SCALAR_FLOOR. A 12% target ~halved max drawdown (-33%→-14%) and
 # the 2022-flip DD (-22%→-13%), lifted Sharpe 1.16→1.34 / Calmar 0.70→1.22, for a
 # ~6pt CAGR give-up. Set VOL_TARGET_ANNUAL high (e.g. 1.0) to effectively disable.
-VOL_TARGET_ANNUAL = 0.12      # annualised portfolio vol target
+VOL_TARGET_ANNUAL = 0.15      # annualised vol target. v100: 0.12 -> 0.15 — highest
+                              # Sharpe point on the frontier (1.33) AND +CAGR; see
+                              # backtests/profit_max_sweep.py. Lower = safer/less return.
 VOL_SCALAR_FLOOR = 0.30       # never cut new-entry exposure below 30% of base cap
 
 # Daily-loss circuit breaker (backtests/circuit_breaker.py): a hard SAFETY halt.

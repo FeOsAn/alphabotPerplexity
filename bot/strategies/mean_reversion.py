@@ -28,17 +28,17 @@ from config import (
 
 def _conviction_multiplier(rsi: float, vol_elevated: bool, vol_ratio: float) -> float:
     """
-    Scale position size by how strong the mean-reversion signal is.
-    RSI=18 + vol 2x avg = maximum conviction. RSI=31 barely oversold = lower.
+    Scale position size by signal strength. v100: rescaled for RSI(2) — the old
+    thresholds (20/24/28) were RSI(14)-scale, and with RSI(2)<10 entries every
+    trade hit the max-conviction branch (silent 1.25-1.5x oversizing on an
+    untested dimension). The validated backtest sized flat, so tiers are modest.
     """
-    if rsi <= 20 and vol_ratio >= 2.0:
-        return 1.5   # RSI deeply oversold + massive volume
-    elif rsi <= 24 and vol_elevated:
-        return 1.25  # very oversold with volume confirmation
-    elif rsi <= 28:
-        return 1.0   # solidly oversold
+    if rsi <= 2.0 and vol_ratio >= 2.0:
+        return 1.25  # pinned RSI(2) + heavy volume — sharpest snaps
+    elif rsi <= 5.0:
+        return 1.0   # solidly oversold on RSI(2)
     else:
-        return 0.75  # barely at threshold (RSI 25-32)
+        return 0.85  # barely under the 10 threshold
 
 
 from db import log_trade, log_signal
@@ -249,10 +249,9 @@ def run(broker: AlpacaBroker, db_conn):
             logger.info(f"[MR] Skipping {sym} — earnings blackout (within 2 days)")
             continue
 
-        bb_width = sig.get("bb_width", 1.0)
-        if bb_width < 0.04:
-            logger.debug(f"[MR] {sym}: skipped — BB width {bb_width:.4f} < 0.04 (flat stock, weak reversion potential)")
-            continue
+        # v100: bb_width gate removed — it was tuned for the old BB-lower entry and
+        # is an untested extra filter on the validated RSI(2) signal (the backtest
+        # that proved +0.35%/trade had no such gate). Keeping live == backtested.
 
         mult = _conviction_multiplier(sig["rsi"], sig["vol_elevated"], sig.get("vol_ratio", 1.0))
         size_pct = min(DEFAULT_STRATEGY_ALLOCATION_PCT * mult, MAX_SINGLE_POSITION_PCT)

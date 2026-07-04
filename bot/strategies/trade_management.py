@@ -562,7 +562,9 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float,
     """
     try:
         from alpaca.trading.requests import (
-            LimitOrderRequest, StopOrderRequest, StopLossRequest, OrderClass
+            LimitOrderRequest, StopOrderRequest, StopLossRequest, OrderClass,
+            TakeProfitRequest,  # was missing — every OCO ratchet NameError'd into the
+            # plain-stop fallback, silently dropping the TP leg whenever a stop trailed up
         )
         from alpaca.trading.enums import OrderSide, TimeInForce
         from db import get_connection as _gc
