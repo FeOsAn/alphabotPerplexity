@@ -27,13 +27,22 @@ STRATEGY_NAME = "donchian_trend"
 
 ENTRY_CHANNEL = 40      # break above prior 40-day high to enter
 EXIT_CHANNEL  = 20      # break below prior 20-day low to exit
-ALLOCATION_PCT = 0.04   # 4% per position — modest new sleeve
-MAX_POSITIONS  = 8
+# v100.2 (backtests/donchian_expand.py): full 50-name universe + 12 slots beats
+# the launch config (20n/8s) on everything — Sharpe 1.29->1.39, MaxDD -22.5%->
+# -18.7%, CAGR 19.4%->20.3%, sub-periods [1.42/1.31/1.61]. Per-slot size drops
+# 4%->3% so the sleeve cap stays ~36% of equity (12 x 3%).
+ALLOCATION_PCT = 0.03
+MAX_POSITIONS  = 12
 
-# Most-liquid names from the universe (trend-following wants deep liquidity).
+# Full live universe (matches config.UNIVERSE) — more names = more independent
+# breakouts; the 12-slot cap keeps concurrency and sleeve size bounded.
 UNIVERSE = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "JPM",
-    "V", "MA", "HD", "COST", "NFLX", "AMD", "CRM", "ADBE", "WMT", "XOM", "LLY",
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "LLY", "PYPL",
+    "JPM", "V", "XOM", "AVGO", "PG", "MA", "JNJ", "HD", "MRK", "ABBV",
+    "CVX", "COST", "CRM", "BAC", "NFLX", "AMD", "ADBE", "WMT",
+    "MCD", "CSCO", "ORCL", "TXN", "COP", "RTX", "AMGN", "INTU", "SPGI",
+    "CAT", "BKNG", "GE", "HON", "AXP", "MS", "GS", "LMT", "ISRG", "VRTX",
+    "NOW", "PANW", "REGN", "KLAC",
 ]
 
 
