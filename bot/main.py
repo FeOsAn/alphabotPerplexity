@@ -73,7 +73,8 @@ from strategies import conviction_long  # v89 — Conviction Long (weekly scan, 
 from strategies import cs_momentum, quality_momentum, dual_momentum  # v91 — deep-backtest momentum sleeves
 from strategies import momentum, breakout, short_hedge
 from strategies import donchian_trend  # v100 — turtle-style trend sleeve
-from strategies import crypto_trend  # v100.2 — BTC/ETH 200DMA sleeve (uncorrelated)
+from strategies import crypto_trend  # v100.2 — BTC/ETH/SOL 200DMA sleeve (uncorrelated)
+from strategies import gold_trend  # v100.3 — GLD 200DMA sleeve (0.02-corr diversifier)
 from strategies import pairs_trading
 from strategies import insider_buying, options_flow, squeeze_screener
 from strategies.trade_management import (
@@ -993,12 +994,20 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         except Exception as e:
             logger.error(f"TS Momentum error: {e}", exc_info=True)
 
-        # ── Crypto Trend (v100.2): BTC/ETH 200DMA long-flat — runs in ALL equity
-        # regimes (its own trend gate is the regime filter; corr to book 0.03).
+        # ── Crypto Trend (v100.2): BTC/ETH/SOL 200DMA long-flat — runs in ALL
+        # equity regimes (its own trend gate is the regime filter; corr 0.03).
         try:
             crypto_trend.run(broker, db_conn)
         except Exception as e:
             logger.error(f"Crypto Trend error: {e}", exc_info=True)
+
+        # ── Gold Trend (v100.3): GLD 200DMA long-flat — 0.02-corr diversifier,
+        # own gate, all regimes. Skips entry whenever GLD is already held
+        # (dual_momentum rotation / legacy hedge) and only exits GLD it opened.
+        try:
+            gold_trend.run(broker, db_conn)
+        except Exception as e:
+            logger.error(f"Gold Trend error: {e}", exc_info=True)
 
         # ── AI Research: self-manages window (9:45–15:30 ET) + daily fire internally ───────
         # Exit checks run every cycle. New research fires once daily inside the strategy.

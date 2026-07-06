@@ -95,9 +95,12 @@ STRATEGY_CAPITAL_LIMITS = {
                                # 50 names/12 slots beats launch config — Sharpe
                                # 1.29->1.39, MaxDD -22.5%->-18.7%). Blend-curve peak
                                # (~35-45% of book) unchanged from v100.1.
-    "crypto_trend":     0.12,  # v100.2: BTC+ETH 200DMA sleeve (5%+5%), self-policed
-                               # too. corr 0.03 to the book; +10% sleeve lifts book
-                               # Sharpe 1.33->1.61 (backtests/crypto_sleeve.py).
+    "crypto_trend":     0.15,  # v100.3: BTC+ETH+SOL 200DMA sleeve (5% each). corr
+                               # 0.03; SOL lifts sleeve Sharpe 1.08->1.25; weight
+                               # grid optimum has crypto at 15% (backtests/x5_sleeves.py).
+    "gold_trend":       0.10,  # v100.3: GLD 200DMA sleeve. Weak alone (Sharpe 0.61)
+                               # but corr 0.02 — grid shows +10% gold lifts book
+                               # Sharpe 1.70->1.81 and improves the 2022 flip.
     "default":          0.15,  # all other strategies
 }
 

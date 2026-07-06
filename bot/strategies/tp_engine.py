@@ -54,6 +54,7 @@ _TP_MULTIPLES = {
     "short_hedge":     (0.0, 0.0),   # hedge, no TP
     "donchian_trend":  (0.0, 0.0),   # trend-following: NO TP — exit is the 20d channel
     "crypto_trend":    (0.0, 0.0),   # self-managed 200DMA exit; no equity bracket flow
+    "gold_trend":      (0.0, 0.0),   # 200DMA trend exit is the manager; stop = backstop
 }
 
 MIN_ATR_FALLBACK_PCT = 0.02  # if ATR unavailable, use 2% of price as proxy
