@@ -168,6 +168,7 @@ STRATEGY_REGIME_COMPAT = {
     "dual_momentum":    ["bull", "chop", "bear", "transition"],  # rotates to GLD, all regimes
     "donchian_trend":   ["bull", "chop"],          # v100: turtle breakout — swept on bear/transition
     "crypto_trend":     ["bull", "chop", "bear", "transition"],  # v100.2: own 200DMA gate; equity regime irrelevant
+    "gold_trend":       ["bull", "chop", "bear", "transition"],  # v100.3: own 200DMA gate; defensive in equity bear
 }
 
 DEFAULT_MULTIPLIER = 1.0

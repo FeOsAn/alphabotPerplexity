@@ -36,9 +36,14 @@ STRATEGY_NAME = "crypto_trend"
 SLEEVE = [  # (order symbol, position symbol, yahoo symbol, allocation)
     ("BTC/USD", "BTCUSD", "BTC-USD", 0.05),
     ("ETH/USD", "ETHUSD", "ETH-USD", 0.05),
+    # v100.3 (backtests/x5_sleeves.py): adding SOL lifts the sleeve Sharpe
+    # 1.08 -> 1.25 and Calmar 0.74 -> 1.10 under the same 200DMA gate. Caveat
+    # stated plainly: SOL history starts 2020 and it is a survivor pick — the
+    # gate and small size are the protection, not the backtest CAGR.
+    ("SOL/USD", "SOLUSD", "SOL-USD", 0.05),
 ]
 MA_DAYS = 200
-SLEEVE_CAP = 0.12          # self-policed ceiling for the whole crypto sleeve
+SLEEVE_CAP = 0.15          # v100.3: weight grid optimum has crypto at 15% of book
 
 
 def _above_ma200(yahoo_sym: str):
