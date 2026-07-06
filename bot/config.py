@@ -91,6 +91,13 @@ STRATEGY_CAPITAL_LIMITS = {
     "cs_momentum":      0.65,  # 6 holds @ 10% equity each (~60% deployment)
     "quality_momentum": 0.70,  # 8 holds @ 8% equity each (~64% deployment)
     "dual_momentum":    1.00,  # 3 cross-asset slots @ ~33% each (~99% deployment)
+    "donchian_trend":   0.32,  # v100.1: 8 slots @ 4% = 32% of equity (~36% of the
+                               # 90%-deployed book). Blend backtest (backtests/
+                               # frontier_shift.py + blend curve): engine+donchian
+                               # improves monotonically to a ~35-45% donchian share —
+                               # Sharpe 1.33->1.43, CAGR 16.2->17.6%, better 2022 flip,
+                               # and beats the engine in ALL three sub-periods. The
+                               # 0.15 default ceiling was silently halving the sleeve.
     "default":          0.15,  # all other strategies
 }
 
