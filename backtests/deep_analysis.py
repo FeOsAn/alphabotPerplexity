@@ -37,7 +37,7 @@ def basket_and_overlay(panel, aux, vixp):
     spy = aux["SPY"]["Close"].reindex(basket.index).ffill()
     vix = (vixp["Close"] if not vixp.empty else pd.Series(15.0, index=basket.index)).reindex(basket.index).ffill()
     rv = basket.rolling(20).std()*np.sqrt(252)
-    vt = (0.12/rv).clip(upper=1.0).shift(1).fillna(0.0)
+    vt = (0.15/rv).clip(upper=1.0).shift(1).fillna(0.0)  # v100.5: synced to live VOL_TARGET_ANNUAL
     ma200 = spy.rolling(200).mean()
     below = (spy <= ma200)
     ma_mult = pd.Series(1.0, index=basket.index); ma_mult[below] = 0.60

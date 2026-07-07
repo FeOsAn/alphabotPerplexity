@@ -55,6 +55,48 @@ def _target_stop_price(entry: float, current: float, is_short: bool, base_stop: 
     return round(entry * (1 + pct), 2)
 
 
+_cooldowned_orders: set[str] = set()   # order ids already cooldown-synced
+
+
+def _sync_exit_cooldowns(broker) -> None:
+    """v100.5 — close the MU-churn gap: exchange-side stop/TP fills never ran
+    set_cooldown (only strategy-initiated closes did), so another strategy could
+    re-buy the same symbol minutes after a stop-out (MU, 2026-07-07: 5 one-share
+    in/out fills in a day). Sweep today's CLOSED exit orders (stop/limit fills
+    that reduce a position) and set the cross-strategy cooldown for each."""
+    try:
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        from utils.cooldown import set_cooldown
+        from datetime import datetime, timezone
+        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        closed = broker.trading.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED, after=start, limit=200)) or []
+        for o in closed:
+            oid = str(o.id)
+            if oid in _cooldowned_orders:
+                continue
+            status = str(getattr(o, "status", "")).lower()
+            otype = str(getattr(o, "order_type", getattr(o, "type", ""))).lower()
+            if "filled" not in status:
+                continue
+            # exit fills = stop/stop_limit always; limit only when it's a TP
+            # (sell-limit on a long / buy-limit on a short) — market orders are
+            # strategy-initiated and already set their own cooldown.
+            if ("stop" in otype) or (otype == "limit"):
+                _cooldowned_orders.add(oid)
+                try:
+                    set_cooldown(o.symbol)
+                    logger.info(f"[StopWatchdog] cooldown set: {o.symbol} "
+                                f"(exchange {otype} fill {oid[:8]})")
+                except Exception:
+                    pass
+        if len(_cooldowned_orders) > 2000:   # daily ids only; keep bounded
+            _cooldowned_orders.clear()
+    except Exception as e:
+        logger.debug(f"[StopWatchdog] cooldown sync failed: {e}")
+
+
 def ensure_stops(broker, db_conn=None, force: bool = False) -> int:
     """Audit + repair stop coverage. Returns number of positions repaired."""
     global _last_run
@@ -62,6 +104,8 @@ def ensure_stops(broker, db_conn=None, force: bool = False) -> int:
     if not force and now - _last_run < _INTERVAL:
         return 0
     _last_run = now
+
+    _sync_exit_cooldowns(broker)
 
     try:
         from alpaca.trading.requests import (
