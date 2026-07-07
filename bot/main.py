@@ -22,7 +22,9 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v99"
+VERSION = "v100.4"  # bump on every release — the startup log line is how we
+                    # verify what Railway is actually running (deployment of
+                    # v100.x was unverifiable on 2026-07-08 because this said v99)
 
 # --- Liveness / re-entrancy state (Fix 8 + Fix 9) ------------------------------
 # Updated at the top of every run_all_strategies(). Health endpoint serves 503
@@ -1021,6 +1023,17 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
             vwap_reclaim.run(broker, db_conn)
         except Exception as e:
             logger.error(f"VWAP Reclaim error: {e}", exc_info=True)
+
+        # ── Stop watchdog (v100.4): self-healing stop coverage. The live audit
+        # (2026-07-08) found naked positions (JNJ/QQQ no stop), partial coverage
+        # (PANW 6/11 sh) and a never-ratcheted PANW stop below entry at +19.7%
+        # peak gain — and the external Perplexity morning-watchdog cron is dead.
+        # Throttled internally to every 30 min.
+        try:
+            from utils.stop_watchdog import ensure_stops
+            ensure_stops(broker, db_conn)
+        except Exception as e:
+            logger.error(f"Stop watchdog error: {e}", exc_info=True)
 
         logger.info("Strategy run complete")
     finally:
