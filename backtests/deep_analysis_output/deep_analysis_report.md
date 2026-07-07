@@ -1,172 +1,113 @@
-# AlphaBot — Deep Analysis & Strategy Audit (v100 re-run)
-
-*Re-run of the full audit against the CURRENT bot (post-cleanup), July 2026. All
-figures are price-based backtests (2015–2026) via the `backtests/` harness. Scope
-caveats at the end.*
-
-## What changed since the last audit (and it worked)
-
-This is a re-run *after* acting on the previous audit. The roster is now cleaner
-and the two big fixes are confirmed:
-
-| Change | Before | After | Status |
-|---|---|---|---|
-| `mean_reversion` signal | RSI(14): +0.04%/trade, PF 1.03, *worst vs baseline* | **RSI(2) Connors: 60% win, PF 1.09, mSharpe 0.71** | ✅ shipped |
-| `cs_momentum` | −0.15%/trade, PF 0.92 (parasite) | **disabled** | ✅ cut |
-| `gap_scanner` | +0.09%/trade (worst vs baseline) | **disabled** | ✅ cut |
-| Exit engine (TP) | 3–4×ATR (chokes winners) | 5–6×ATR (let runners run) | ✅ shipped |
-| Regime defense | GLD hedge (deepened 2022) | cash + vol-target overlay | ✅ shipped |
-| Risk sizing | none | **vol-targeting → Sharpe 1.30, DD −13.5%** | ✅ shipped |
-
----
-
-## Lead finding
-
-**The bot is now clearly ahead of SPY on a risk-adjusted basis and hits your
-Sharpe target: 1.30 vs SPY's 0.84**, with max drawdown capped at **−13.5% vs
-SPY's −34%**. It beats SPY every down year and halves every crash. The heavy
-lifting is done (vol-targeting + exit fix + roster cleanup). The remaining
-upside is a genuinely *uncorrelated* return stream — see Part 5.
-
----
-
-## Part 1 — Historical performance
-
-### 1a. Return-engine equity curve (vol-targeted, 2015–2026)
-
-| | Engine | SPY |
-|---|---|---|
-| CAGR | 15.7% | 14.2% |
-| Sharpe | **1.30** | 0.84 |
-| Sortino | 1.69 | — |
-| Max drawdown | **−13.5%** | −33.7% |
-| Calmar | 1.16 | 0.42 |
-| Monthly corr to SPY | 0.88 | — |
-
-**Annual vs SPY** (engine wins flat/down years, lags melt-ups): 2015 +6.9/+1.2 ✅ ·
-2017 +36.7/+21.7 ✅ · 2018 +5.2/−4.6 ✅ · 2019 +21.0/+31.2 ❌ · 2021 +24.6/+28.7 ❌ ·
-2022 **−8.0/−18.2 ✅** · 2023 +28.2/+26.2 ✅ · 2024 +25.8/+24.9 ✅ · 2025 +14.3/+17.7 ❌.
-
-**Worst drawdowns** all shallow & recovered: −13.5% (2022, 244d), −13.0% (2018 Q4,
-123d), −12.5% (2025 tariff scare, 106d), −12.2% (COVID, 142d). Nothing worse than
-−14% in 11 years.
-
-### 1b. Strategy attribution (v100 roster; backtest-reconstructed, not live fills)
-
-| Strategy | Status | Trades | Win% | Exp/trade | PF | Monthly Sharpe |
-|---|---|---|---|---|---|---|
-| multi_tf_rsi | active | 3587 | 43% | +0.36% | 1.23 | **0.97** |
-| trend_pullback | active | 3764 | 43% | +0.30% | 1.20 | 0.62 |
-| **mean_reversion** | **active (upgraded)** | 4348 | **60%** | +0.08% | 1.09 | **0.71** |
-| breakout | active | 2470 | 43% | +0.34% | 1.24 | 0.10 |
-| 52wh_vol | active | 1794 | 42% | +0.30% | 1.22 | −0.10 |
-| momentum | active | 554 | 48% | +0.33% | 1.21 | 0.05 |
-| quality_momentum | active | 393 | 44% | +0.04% | 1.03 | 0.11 |
-| gap_scanner | **DISABLED** | 2346 | 40% | +0.09% | 1.05 | — |
-| cs_momentum | **DISABLED** | 527 | 42% | −0.15% | 0.92 | — |
-
-`multi_tf_rsi` remains the workhorse; the upgraded `mean_reversion` is now a
-top-3 contributor and the book's best counter-trend diversifier. The two
-parasites are gone.
-
-### 1c. Regime breakdown
-
-| Regime | Days | % | Engine cum | SPY cum |
-|---|---|---|---|---|
-| BULL | 1698 | 56% | +1188% | +1117% |
-| CHOP | 326 | 11% | −23% | −19% |
-| TRANSITION | 310 | 10% | −18% | −12% |
-| **BEAR** | 503 | 17% | **−34%** | **−50%** |
-
-The engine's structural edge is in BEAR: −16 points better than SPY. That's the
-vol-target + cash-defense overlays working.
-
----
-
-## Part 2 — Current strategy audit
-
-**2a. Underdeployment:** exposure-cap sweep shows Sharpe **flat at 1.30 across
-caps 0.6→1.0** — vol-targeting fixes the risk level, so the cap only trades CAGR
-for drawdown (0.8→15.7%/−13.5%; 1.0→19.7%/−16.8%). Your 34% idle cash isn't
-hurting Sharpe but costs ~4pts CAGR. The binding constraint is the 15% cash-reserve
-floor + signal availability, **not** the 80% cap (you're at 66%, below it). To
-deploy more, lower `MIN_CASH_RESERVE_PCT` — but backtest first.
-
-**2c. Stop/TP:** addressed by the exit-engine work — tp2 widened 3–4×→5–6×ATR
-(Pareto-improving across all sub-periods, shipped).
-
----
-
-## Part 3 — New strategy research
-
-| # | Idea | Result | Verdict |
-|---|---|---|---|
-| 3c | **Mean-rev RSI(2)<10 >MA200** | +0.35–0.52%/trade, 67% win, PF 1.35 | ✅ **shipped** (replaced RSI-14 MR) |
-| 3e | **Donchian turtle (40/20, 2×ATR)** | standalone Sharpe **1.35**, but **0.78 corr** to book | ⚠️ great but NOT a diversifier |
-| 3b | Vol-adjusted momentum | +0.18%/trade, PF 1.11 | ❌ no better than raw |
-| 3a | RS-rotation upgrade | ETF-level; deferred | — |
-| 3d | Earnings calendar | **BLOCKED** (Yahoo `.calendar` auth crumb) | can't test free |
-| 3f | Fundamental quality | **BLOCKED** (Yahoo `.info` empty) | can't test free |
-
-**Donchian nuance:** it's a *better* trend implementation than your current
-trend sleeves (Sharpe 1.35 vs the book's 1.30) but 0.78-correlated — so it's a
-**replacement** candidate for breakout/52wh/momentum, not a diversifying add.
-
----
-
-## Part 4 — Risk analysis
-
-**4a. Tail scenarios** — the overlay roughly halves every crash: COVID −11.6% vs
-SPY −33.4%; 2022 −11.8% vs −23.8%; 2018 Q4 −12.2% vs −18.9%. Blind spot: the
-one-day Volmageddon spike (−6.0% vs −5.9%) — a 20-day vol signal can't react that
-fast; a VIX-spike circuit-breaker would help.
-
-**4b/4c. Concentration & correlation:**
-- **Concentration is fine** — current-weight vol **11.9% < equal-weight 13.2%**;
-  the big V/ABBV/MS positions are low-vol names, so concentration de-risks here.
-- **Hidden wash trade:** LOW (long) and HD (short) are **0.90 correlated** (same
-  sector) — close one leg; it just bleeds spread + fees.
-- **Financials** (JPM/MS/V) avg corr **0.36**; JPM/MS specifically 0.59. Moderate.
-
----
-
-## Part 5 — What to do next
-
-### Top 3 to implement
-1. **Done — vol-targeting** (Sharpe 1.30, DD −13.5%). Optionally raise deployment
-   (cap→0.9 or lower cash floor) for +CAGR at the same Sharpe.
-2. **Decide Donchian**: replace breakout/52wh/momentum with the Donchian trend
-   implementation (Sharpe 1.35). Upgrades trend quality without adding a 4th
-   correlated bet. Needs the swap backtested.
-3. **VIX-spike circuit-breaker** for the one-day tail blind spot (Volmageddon).
-
-### Top 3 to cut (mostly done)
-1. ✅ `cs_momentum` — cut. 2. ✅ `gap_scanner` — cut. 3. **LOW/HD wash trade** —
-close one leg (live-account action, not code).
-
-### The one big thing you're missing
-**A genuinely uncorrelated return stream.** Every equity sleeve is ~0.8–0.9
-correlated to being long the basket (Donchian included). The path from Sharpe
-1.3 (long-only) to 1.5+ (multi-strategy) is a real diversifier — managed-futures/
-trend on ETFs, or a market-neutral factor sleeve — something that pays when the
-book doesn't. That, plus more deployment, is the remaining leverage.
-
-### Honest assessment
-**Yes — competitive and now clearly ahead of SPY risk-adjusted (Sharpe 1.30 vs
-0.84).** Structural *outperformance* in flat/down markets (vol-target + tail
-behavior); structural *underperformance* in melt-up years (it de-risks on
-volatility) — a feature of your min-flip-loss goal, dial-able via
-`VOL_TARGET_ANNUAL`. Residual weaknesses: single-day vol spikes and the lack of
-a truly uncorrelated sleeve. Both fixable.
-
----
-
-## Scope & honesty caveats
-- **"Engine" = vol-targeted equal-weight mega-cap basket** — a faithful *return-engine
-  proxy* (the scorecard proved the strategies ≈ long this universe), not a literal
-  19-strategy tick sim.
-- **Attribution is backtest-reconstructed**, not from your Alpaca fill log.
-- **3d (earnings calendar) & 3f (fundamentals) are data-blocked** — Yahoo needs an
-  auth crumb; would require a paid feed (FMP/Polygon).
-- **Survivorship bias** inflates absolute CAGRs (today's mega-caps); the *edge* vs
-  SPY/baseline holds. No transaction costs modelled.
+    Fetching data (cached after first run)...
+    
+======================================================================
+PART 1a — RETURN-ENGINE EQUITY CURVE (vol-targeted basket, 2015-2026)
+======================================================================
+    Full period: CAGR 17.7% | Sharpe 1.31 | Sortino 1.72 | MaxDD -15.9% | Calmar 1.11
+    [saved] deep_analysis_equity_curve.csv (145 months)
+    
+Annual return — engine vs SPY:
+      2014: engine   +7.5%   SPY   +8.2%   lag 
+      2015: engine   +9.7%   SPY   +1.2%   BEAT
+      2016: engine  +15.3%   SPY  +12.0%   BEAT
+      2017: engine  +36.8%   SPY  +21.7%   BEAT
+      2018: engine   +4.4%   SPY   -4.6%   BEAT
+      2019: engine  +26.5%   SPY  +31.2%   lag 
+      2020: engine  +20.5%   SPY  +18.3%   BEAT
+      2021: engine  +30.1%   SPY  +28.7%   BEAT
+      2022: engine   -9.7%   SPY  -18.2%   BEAT
+      2023: engine  +32.7%   SPY  +26.2%   BEAT
+      2024: engine  +28.1%   SPY  +24.9%   BEAT
+      2025: engine  +15.0%   SPY  +17.7%   lag 
+      2026: engine   +4.9%   SPY   +9.2%   lag 
+    
+SPY monthly-return correlation: 0.90
+    
+Worst 8 drawdown episodes (peak → trough, depth, recovery days):
+      2021-11-09 → 2022-09-30   -15.9%  recovered 2023-06-01 (244d)
+      2020-02-20 → 2020-03-23   -15.0%  recovered 2020-08-12 (142d)
+      2018-10-02 → 2018-12-24   -14.7%  recovered 2019-04-23 (120d)
+      2025-02-20 → 2025-04-08   -14.2%  recovered 2025-07-25 (108d)
+      2015-12-07 → 2016-02-11   -11.6%  recovered 2016-04-18 (67d)
+      2018-01-29 → 2018-04-02   -10.7%  recovered 2018-07-17 (106d)
+      2020-09-03 → 2020-10-28    -9.4%  recovered 2020-12-04 (37d)
+      2015-07-21 → 2015-08-25    -9.2%  recovered 2015-11-02 (69d)
+    
+======================================================================
+PART 1b — STRATEGY ATTRIBUTION (backtest-reconstructed, 2015-2026)
+======================================================================
+    (v100 live config: gap_scanner + cs_momentum DISABLED; mean_reversion now RSI(2))
+    strategy          status    trades  win%  exp/tr    PF mSharpe
+    multi_tf_rsi      active      3587   43%   0.36%  1.23    0.97
+    trend_pullback    active      3764   43%   0.30%  1.20    0.62
+    breakout          active      2470   43%   0.34%  1.24    0.10
+    52wh_vol          active      1794   42%   0.30%  1.22   -0.10
+    mean_reversion    active      4348   60%   0.08%  1.09    0.71
+    gap_scanner       DISABLED    2346   40%   0.09%  1.05    0.96
+    momentum          active       554   48%   0.33%  1.21    0.05
+    quality_momentum  active       393   44%   0.04%  1.03    0.11
+    cs_momentum       DISABLED     527   42%  -0.15%  0.92   -0.07
+    [saved] deep_analysis_strategy_attribution.json
+    
+======================================================================
+PART 1c — REGIME BREAKDOWN (SPY/200DMA + VIX proxy, 2015-2026)
+======================================================================
+      BULL        1698 days (55.9%)  engine cum +1550.4%  SPY cum +1116.8%
+      CHOP         326 days (10.7%)  engine cum   -22.2%  SPY cum   -19.2%
+      TRANSITION   310 days (10.2%)  engine cum   -18.2%  SPY cum   -11.6%
+      BEAR         503 days (16.6%)  engine cum   -38.5%  SPY cum   -50.3%
+    
+======================================================================
+PART 2 — PARAMETER GRIDS
+======================================================================
+    
+2a. Exposure cap (vol-targeted engine, full period):
+      cap 0.6: CAGR  13.2%  Sharpe 1.31  MaxDD -12.0%
+      cap 0.7: CAGR  15.4%  Sharpe 1.31  MaxDD -14.0%
+      cap 0.8: CAGR  17.7%  Sharpe 1.31  MaxDD -15.9%
+      cap 0.9: CAGR  19.9%  Sharpe 1.31  MaxDD -17.9%
+      cap 1.0: CAGR  22.2%  Sharpe 1.31  MaxDD -19.8%
+    
+2c. Stop x TP(ATR) grid — momentum entry (multi_tf_rsi signal), Sharpe:
+    [saved] deep_analysis_backtest_grid.json
+    
+======================================================================
+PART 3 — NEW STRATEGY RESEARCH (price-based; 3d/3f need fundamentals=blocked)
+======================================================================
+    3b vol-adj momentum: N=782 win 44% exp +0.18% PF 1.11
+    3c mean-rev RSI(2)<10 >MA200: N=3513 win 42% exp +0.52% PF 1.36
+    3e Donchian best N=40/M=20: N=2102 win 39% exp +2.30% PF 1.98
+    [saved] deep_analysis_new_strategies.json
+    
+======================================================================
+PART 4 — TAIL RISK, CONCENTRATION, CORRELATION
+======================================================================
+    
+4a. Stress windows (engine vs SPY, cumulative return + maxDD):
+      COVID 2020    engine  -14.3% (DD -15.0%)   SPY  -33.4%
+      2022 bear     engine  -14.5% (DD -15.8%)   SPY  -23.8%
+      2018 Q4       engine  -13.8% (DD -14.7%)   SPY  -18.9%
+      Volmageddon   engine   -6.3% (DD  -7.8%)   SPY   -5.9%
+    
+4b/4c. Current book concentration + 6mo correlation:
+      Current-weight portfolio vol: 11.9%/yr | equal-weight: 13.2%/yr
+      Top-3 concentration: V 17%, ABBV 17%, MS 16% = 50% of gross
+      Financials ['JPM', 'MS', 'V'] avg pairwise corr: 0.36
+    
+  6-month return correlation (rounded):
+            PANW   DDOG    JPM   AAPL    LLY  GOOGL      V   ABBV    LOW     MS    LMT    XOM    QQQ     HD     MU
+      PANW    1.00   0.61   0.03   0.04   0.09   0.15   0.12   0.02  -0.14   0.20  -0.07  -0.17   0.34  -0.11   0.07
+      DDOG    0.61   1.00  -0.09   0.13   0.02   0.05   0.17  -0.05  -0.13   0.12  -0.12  -0.17   0.25  -0.08   0.09
+      JPM     0.03  -0.09   1.00   0.19   0.10   0.16   0.36   0.05   0.24   0.59   0.16  -0.10   0.22   0.27  -0.01
+      AAPL    0.04   0.13   0.19   1.00   0.19   0.22   0.15  -0.06   0.14   0.34  -0.17  -0.16   0.35   0.17   0.04
+      LLY     0.09   0.02   0.10   0.19   1.00   0.26  -0.02   0.34   0.17  -0.07   0.03  -0.12   0.06   0.25  -0.02
+      GOOGL   0.15   0.05   0.16   0.22   0.26   1.00   0.07   0.06   0.28   0.31   0.06  -0.31   0.53   0.27   0.24
+      V       0.12   0.17   0.36   0.15  -0.02   0.07   1.00   0.15   0.07   0.14  -0.01  -0.05   0.08   0.16  -0.11
+      ABBV    0.02  -0.05   0.05  -0.06   0.34   0.06   0.15   1.00   0.11  -0.09   0.10  -0.03  -0.07   0.10  -0.08
+      LOW    -0.14  -0.13   0.24   0.14   0.17   0.28   0.07   0.11   1.00   0.14   0.16  -0.18   0.17   0.90  -0.03
+      MS      0.20   0.12   0.59   0.34  -0.07   0.31   0.14  -0.09   0.14   1.00   0.08  -0.23   0.53   0.14   0.28
+      LMT    -0.07  -0.12   0.16  -0.17   0.03   0.06  -0.01   0.10   0.16   0.08   1.00   0.13  -0.04   0.10   0.00
+      XOM    -0.17  -0.17  -0.10  -0.16  -0.12  -0.31  -0.05  -0.03  -0.18  -0.23   0.13   1.00  -0.35  -0.25  -0.23
+      QQQ     0.34   0.25   0.22   0.35   0.06   0.53   0.08  -0.07   0.17   0.53  -0.04  -0.35   1.00   0.23   0.68
+      HD     -0.11  -0.08   0.27   0.17   0.25   0.27   0.16   0.10   0.90   0.14   0.10  -0.25   0.23   1.00   0.01
+      MU      0.07   0.09  -0.01   0.04  -0.02   0.24  -0.11  -0.08  -0.03   0.28   0.00  -0.23   0.68   0.01   1.00

@@ -1,29 +1,29 @@
 {
   "exposure_cap": {
     "0.6": {
-      "CAGR": 0.1171,
-      "Sharpe": 1.296,
-      "MaxDD": -0.102
+      "CAGR": 0.1316,
+      "Sharpe": 1.309,
+      "MaxDD": -0.1205
     },
     "0.7": {
-      "CAGR": 0.137,
-      "Sharpe": 1.296,
-      "MaxDD": -0.1187
+      "CAGR": 0.1541,
+      "Sharpe": 1.309,
+      "MaxDD": -0.14
     },
     "0.8": {
-      "CAGR": 0.157,
-      "Sharpe": 1.296,
-      "MaxDD": -0.1353
+      "CAGR": 0.1767,
+      "Sharpe": 1.309,
+      "MaxDD": -0.1594
     },
     "0.9": {
-      "CAGR": 0.1772,
-      "Sharpe": 1.296,
-      "MaxDD": -0.1518
+      "CAGR": 0.1994,
+      "Sharpe": 1.309,
+      "MaxDD": -0.1786
     },
     "1.0": {
-      "CAGR": 0.1974,
-      "Sharpe": 1.296,
-      "MaxDD": -0.1681
+      "CAGR": 0.2222,
+      "Sharpe": 1.309,
+      "MaxDD": -0.1977
     }
   },
   "stop_tp": {}

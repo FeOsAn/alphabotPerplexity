@@ -90,7 +90,11 @@ STRATEGY_CAPITAL_LIMITS = {
     "conviction_long":  0.60,  # 2–4 multi-week holds @ ~12% equity each
     "cs_momentum":      0.65,  # 6 holds @ 10% equity each (~60% deployment)
     "quality_momentum": 0.70,  # 8 holds @ 8% equity each (~64% deployment)
-    "dual_momentum":    1.00,  # 3 cross-asset slots @ ~33% each (~99% deployment)
+    "dual_momentum":    0.25,  # v100.5: right-sized from 1.00. Marginal-value test:
+                               # adds +0.02 Sharpe to the final book at 10% weight,
+                               # nothing at 20% (own Sharpe 0.86, corr 0.41). Kept as
+                               # a mild diversifier at its designed ~24% deployment;
+                               # the 1.00 ceiling was a vestigial risk.
     "donchian_trend":   0.36,  # v100.2: 12 slots @ 3% (backtests/donchian_expand.py:
                                # 50 names/12 slots beats launch config — Sharpe
                                # 1.29->1.39, MaxDD -22.5%->-18.7%). Blend-curve peak
