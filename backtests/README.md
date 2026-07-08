@@ -288,3 +288,34 @@ the stated goal is the **regime overlay + dropping the GLD hedge**, not pruning
 sleeves. Recommended order: (1) fix GLD→cash flip defense, (2) add the ~60/40
 cash overlay, (3) only then consider trimming the weakest sleeve (52wh_vol,
 negative standalone Sharpe).
+
+---
+
+## 6. Walk-forward out-of-sample validation (`final_round.py`)
+
+The capstone test: sleeve weights (engine/donchian/crypto/gold) re-chosen every
+6 months from the TRAILING 24 months only, applied out-of-sample to the next 6
+months, 2017–2026. If the stack's Sharpe were an artifact of weight selection,
+it would collapse here. It doesn't:
+
+```
+                              CAGR  Sharpe   MaxDD  Calmar  2022DD   sub-Sharpes
+WALK-FORWARD OOS stack       26.1%    2.01  -16.2%    1.61  -12.5%  [2.06/1.84/2.24]
+static 45/30/15/10 (ref)     25.9%    2.03  -15.7%    1.65  -11.5%  [2.16/1.85/2.22]
+SPY (same window)            14.9%    0.85  -33.7%    0.44  -24.5%
+```
+
+OOS ≈ in-sample ⇒ the weight optimisation contributed ~zero selection bias; the
+performance is in the sleeves. (Universe survivorship remains the honest
+inflator of the absolute numbers; the relative edge vs SPY is the robust claim.)
+
+Also tested in the same round, **rejected**:
+- **Vol-targeted crypto sleeve sizing** — better sleeve risk (MaxDD −46%→−29%,
+  2022 −8.9%) but the BOOK gets worse (Sharpe 1.90→1.85, CAGR 22.4→19.6%):
+  shrinking average crypto exposure shrinks its diversification benefit. Fixed
+  5%-per-coin sizing stays; the sleeve-level drawdown is the accepted cost of
+  the 0.03 correlation.
+- **Donchian speed ensemble (20/10+40/20+55/20)** — sleeve Sharpe 1.35→1.39 and
+  Calmar 1.04→1.23 on paper, but live it requires three channel systems sharing
+  per-symbol positions — exactly the partial-position bookkeeping complexity
+  that caused the 2026-07-08 stop-coverage failures. Not worth the bug class.
