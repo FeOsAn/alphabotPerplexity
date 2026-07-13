@@ -1,0 +1,31 @@
+name: ci
+
+# Defect-class gate (added after the July 2026 live failures):
+#  - pyflakes undefined-name gate  -> the TakeProfitRequest NameError class
+#  - tests/test_source_invariants  -> the OCO-take_profit 422 class, VERSION
+#                                     stamping, entry-gate safety layers
+#  - tests/test_config_invariants  -> the "strategy added but not wired" class
+#  - tests/test_pure_logic         -> risk plumbing math
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps (heavy broker/TA deps are stubbed by tests/conftest.py)
+        run: pip install pandas numpy yfinance pytz requests python-dotenv pyflakes pytest
+      - name: Compile everything
+        run: python -m py_compile $(find bot -name '*.py')
+      - name: Undefined-name gate (hard fail)
+        run: |
+          python -m pyflakes bot/ | tee /tmp/pyflakes.out || true
+          ! grep -q "undefined name" /tmp/pyflakes.out
+      - name: Regression & invariant tests
+        run: python -m pytest tests/ -q

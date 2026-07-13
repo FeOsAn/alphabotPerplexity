@@ -169,6 +169,13 @@ STRATEGY_REGIME_COMPAT = {
     "donchian_trend":   ["bull", "chop"],          # v100: turtle breakout — swept on bear/transition
     "crypto_trend":     ["bull", "chop", "bear", "transition"],  # v100.2: own 200DMA gate; equity regime irrelevant
     "gold_trend":       ["bull", "chop", "bear", "transition"],  # v100.3: own 200DMA gate; defensive in equity bear
+    # v100.7 — gaps found by tests/test_config_invariants.py: these dispatched
+    # without a compat entry, so regime_exit skipped their (legacy) positions on
+    # flips. Classified deliberately:
+    "ts_momentum":      ["bull", "chop", "bear", "transition"],  # macro ETF trend, weighted up in bear
+    "gap_scanner":      ["bull", "chop", "transition"],          # disabled; legacy longs sweep in bear
+    "options_flow":     ["bull", "chop"],                        # disabled; momentum-profile longs
+    "insider_buying":   ["bull", "chop"],                        # disabled; momentum-profile longs
 }
 
 DEFAULT_MULTIPLIER = 1.0

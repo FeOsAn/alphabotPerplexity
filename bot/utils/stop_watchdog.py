@@ -59,6 +59,8 @@ def _target_stop_price(entry: float, current: float, is_short: bool, base_stop: 
 
 
 _cooldowned_orders: set[str] = set()   # order ids already cooldown-synced
+_fail_streak: dict[str, int] = {}      # symbol -> consecutive failed repair passes
+_alerted: set[str] = set()             # de-dup keys for escalation alerts
 
 
 def _sync_exit_cooldowns(broker) -> None:
@@ -229,10 +231,32 @@ def ensure_stops(broker, db_conn=None, force: bool = False) -> int:
                 logger.error(f"[StopWatchdog] {sym} repair failed: {e}")
         if placed:
             repaired += 1
+            _fail_streak.pop(sym, None)
             logger.warning(
                 f"[StopWatchdog] REPAIRED {sym}: was {covered}/{abs_qty} covered -> "
                 f"full-qty stop @ {floor_px} ({(floor_px/current-1)*100:+.1f}% from px)"
             )
+        else:
+            # v100.7 — silent-failure class defense: a position the watchdog
+            # cannot protect for 2+ consecutive passes (>1h naked) pages the
+            # human instead of dying in the logs (the OCO 422 bug hid for
+            # months exactly this way). One alert per symbol per day.
+            _fail_streak[sym] = _fail_streak.get(sym, 0) + 1
+            if _fail_streak[sym] >= 2:
+                from datetime import date
+                key = f"watchdog_naked_{sym}_{date.today().isoformat()}"
+                if key not in _alerted:
+                    _alerted.add(key)
+                    logger.critical(f"[StopWatchdog] {sym} UNPROTECTED for "
+                                    f"{_fail_streak[sym]} passes — escalating")
+                    try:
+                        from utils.notify import emergency as _emerg
+                        _emerg("⚠️ Position unprotected",
+                               f"{sym}: stop placement failing repeatedly "
+                               f"({_fail_streak[sym]} watchdog passes). Check orders.",
+                               key=key)
+                    except Exception:
+                        pass
 
     if repaired:
         logger.warning(f"[StopWatchdog] repaired {repaired} position(s) this pass")
