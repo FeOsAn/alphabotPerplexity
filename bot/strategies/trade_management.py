@@ -131,17 +131,18 @@ _state_restored: bool = False              # gate so restore runs only once
 #   - Calm stocks (low ATR) get tighter stops
 #   - You never give back more than ~1 ATR of profit once in a tier
 
-_ATR_RATCHET_TIERS = [
-    # (min_gain_pct, lock_floor_pct, atr_mult)
-    # Once gain >= min_gain, stop = max(lock_floor, gain - atr_mult * ATR/entry)
-    # lock_floor ensures we always lock in at least this much gain
-    (0.25, 0.18, 1.0),  # >= +25%: floor +18%, give 1 ATR room
-    (0.18, 0.12, 1.0),  # >= +18%: floor +12%, give 1 ATR room
-    (0.12, 0.07, 1.2),  # >= +12%: floor +7%,  give 1.2 ATR room
-    (0.08, 0.04, 1.5),  # >= +8%:  floor +4%,  give 1.5 ATR room
-    (0.05, 0.02, 1.5),  # >= +5%:  floor +2%,  give 1.5 ATR room
-    (0.03, 0.00, 2.0),  # >= +3%:  floor breakeven, give 2 ATR room
-]
+# v100.6 — RATCHET TIERS DISABLED (empty ladder = positions ride the base stop
+# until TP / channel / dead-money exit). Evidence, both kinds:
+#   Backtest (backtests/exit_atr_sweep.py + exit_atr_robust.py): no-trailing +
+#   wide TP beats current-trailing in ALL THREE sub-periods on Sharpe AND CAGR
+#   at equal MaxDD (0.90/0.95/1.47 vs 0.78/0.57/0.76; full-sample 14.3%/1.08
+#   vs 9.7%/0.97, MaxDD -21.9% vs -21.6%).
+#   Live (week of 2026-07-06): the tier ladder converted a flat-to-up SPY week
+#   into -1.65%: LOW/QQQ/LMT/MRVL stopped at the week's lows (QQQ sold 701 =
+#   the exact bottom, re-bought 724 two days later), and by Monday JPM/JNJ/MS/
+#   ABBV/PANW all sat 1.0-2.7% from their ratcheted stops — churn machines.
+# Restore the old ladder from git history to re-enable.
+_ATR_RATCHET_TIERS: list = []
 
 
 def _atr_ratchet_stop_pct(
@@ -481,12 +482,15 @@ def place_bracket_orders(
         # --- Order B: OCO (TP2 limit + stop loss) for bracket_qty shares ---
         oco_order_id = None
         try:
+            # v100.6 — OCO takes NO take_profit leg in alpaca-py (that's BRACKET
+            # class); the parent limit_price IS the TP. Passing both 422'd every
+            # OCO in this account's history — zero OCO orders ever existed live;
+            # all protection silently degraded to plain stops via fallbacks.
             oco_req = LimitOrderRequest(
                 symbol=symbol, qty=bracket_qty, side=sell_side,
                 limit_price=round(tp2, 2),
                 time_in_force=TimeInForce.GTC,
                 order_class=OrderClass.OCO,
-                take_profit=TakeProfitRequest(limit_price=round(tp2, 2)),
                 stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
             )
             oco_result = broker.trading.submit_order(oco_req)
@@ -660,7 +664,7 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float,
                     limit_price=round(tp2_price, 2),
                     time_in_force=TimeInForce.GTC,
                     order_class=OrderClass.OCO,
-                    take_profit=TakeProfitRequest(limit_price=round(tp2_price, 2)),
+                    # v100.6: no take_profit leg on OCO (see place_bracket_orders)
                     stop_loss=StopLossRequest(stop_price=round(new_stop_price, 2)),
                 )
                 new_result = broker.trading.submit_order(new_req)
@@ -2529,7 +2533,7 @@ def migrate_missing_brackets(broker) -> int:
                 limit_price=round(tp2, 2),
                 time_in_force=TimeInForce.GTC,
                 order_class=AlpacaOrderClass.OCO,
-                take_profit=TakeProfitRequest(limit_price=round(tp2, 2)),
+                # v100.6: no take_profit leg on OCO (see place_bracket_orders)
                 stop_loss=StopLossRequest(stop_price=round(stop_price, 2)),
             )
             result = broker.trading.submit_order(oco_req)

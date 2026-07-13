@@ -419,6 +419,28 @@ class AlpacaBroker:
                 )
                 return True
 
+        # --- Index/sector-ETF cluster cap (v100.6, BUY side only) ---------
+        # Stops different strategies stacking near-identical beta (QQQ+XLK+IWM
+        # +META, ~24.5% of equity, all bought 2026-07-10 and all down together
+        # on 07-13). Block new index/sector-ETF buys once existing ETF gross
+        # exceeds INDEX_ETF_CLUSTER_CAP of equity. GLD excluded (diversifier).
+        if side.lower() == "buy" and equity > 0:
+            try:
+                from config import INDEX_ETF_CLUSTER_CAP, INDEX_ETF_SYMBOLS
+                if symbol in INDEX_ETF_SYMBOLS:
+                    etf_gross = sum(
+                        abs(float(p.get("market_value", 0.0))) for p in positions
+                        if p["symbol"] in INDEX_ETF_SYMBOLS
+                    ) / equity
+                    if etf_gross >= INDEX_ETF_CLUSTER_CAP:
+                        logger.info(
+                            f"[ETF CLUSTER CAP] Blocked {symbol} — index/sector-ETF "
+                            f"gross at {etf_gross:.1%} (cap {INDEX_ETF_CLUSTER_CAP:.0%})"
+                        )
+                        return True
+            except Exception:
+                pass
+
         # --- Hard portfolio exposure cap (80%, BUY side only) -------------
         # Never deploy more than MAX_PORTFOLIO_EXPOSURE of equity across all
         # long positions. Stops dual_momentum (and friends) from grabbing 99%.
