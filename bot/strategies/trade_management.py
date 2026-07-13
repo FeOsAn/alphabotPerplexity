@@ -680,7 +680,6 @@ def update_exchange_stop(broker, symbol: str, new_stop_price: float,
         if not tp2_price or not new_order_id:
             # Fallback: plain stop covering full remaining qty
             try:
-                from alpaca.trading.requests import StopOrderRequest
                 stop_req = StopOrderRequest(
                     symbol=symbol, qty=abs_qty, side=order_side,
                     stop_price=round(new_stop_price, 2),

@@ -575,7 +575,7 @@ def run(broker, db_conn=None):
                 "qty": qty,
             }
             logger.info(
-                f"[EarningsNLP] ORDER: {side.upper()} {qty} {sym} @ ~${price:.2f} "
+                f"[EarningsNLP] ORDER: {direction.upper()} {qty} {sym} @ ~${price:.2f} "
                 f"(PEAD {direction}, conf {confidence:.2f})"
             )
             # M10: record the signal so back-tests can score hit rate
