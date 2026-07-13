@@ -36,7 +36,10 @@ _last_run: float = 0.0
 _SKIP_SYMBOLS = {"BTCUSD", "ETHUSD", "SOLUSD"}   # crypto sleeve self-manages
 
 # mirror of trade_management's ratchet tiers: (min_gain, lock_floor)
-_TIERS = [(0.25, 0.18), (0.18, 0.12), (0.12, 0.07), (0.08, 0.04), (0.05, 0.02), (0.03, 0.0)]
+# v100.6: EMPTY — trailing tiers disabled everywhere (see the evidence note at
+# trade_management._ATR_RATCHET_TIERS). The watchdog now enforces BASE-stop
+# coverage only, and still never loosens an existing (tighter) stop.
+_TIERS: list = []
 
 
 def _tier_floor(gain: float) -> float | None:
@@ -110,7 +113,7 @@ def ensure_stops(broker, db_conn=None, force: bool = False) -> int:
     try:
         from alpaca.trading.requests import (
             GetOrdersRequest, StopOrderRequest, LimitOrderRequest,
-            TakeProfitRequest, StopLossRequest, OrderClass,
+            StopLossRequest, OrderClass,
         )
         from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
     except Exception as e:
@@ -196,29 +199,40 @@ def ensure_stops(broker, db_conn=None, force: bool = False) -> int:
         time.sleep(3)  # v88 cancel -> sleep -> replace
 
         order_side = OrderSide.BUY if is_short else OrderSide.SELL
-        try:
-            if tp_px and not is_short:
+        placed = False
+        if tp_px and not is_short:
+            try:
+                # v100.6 — OCO takes NO take_profit leg in alpaca-py (that's the
+                # BRACKET class); the parent limit_price IS the TP. The old dual
+                # spec 422'd, which left TP-only positions (IWM/QQQ/TGT) naked
+                # for a full pass after their TP had been cancelled.
                 req = LimitOrderRequest(
                     symbol=sym, qty=abs_qty, side=order_side,
                     limit_price=round(tp_px, 2), time_in_force=TimeInForce.GTC,
                     order_class=OrderClass.OCO,
-                    take_profit=TakeProfitRequest(limit_price=round(tp_px, 2)),
                     stop_loss=StopLossRequest(stop_price=floor_px),
                 )
-            else:
+                broker.trading.submit_order(req)
+                placed = True
+            except Exception as e:
+                logger.warning(f"[StopWatchdog] {sym} OCO failed ({e}) — plain-stop fallback")
+        if not placed:
+            try:
+                # protection first: never leave the position naked until next pass
                 req = StopOrderRequest(
                     symbol=sym, qty=abs_qty, side=order_side,
                     stop_price=floor_px, time_in_force=TimeInForce.GTC,
                 )
-            broker.trading.submit_order(req)
+                broker.trading.submit_order(req)
+                placed = True
+            except Exception as e:
+                logger.error(f"[StopWatchdog] {sym} repair failed: {e}")
+        if placed:
             repaired += 1
             logger.warning(
                 f"[StopWatchdog] REPAIRED {sym}: was {covered}/{abs_qty} covered -> "
                 f"full-qty stop @ {floor_px} ({(floor_px/current-1)*100:+.1f}% from px)"
-                + (f" + TP {tp_px}" if tp_px and not is_short else "")
             )
-        except Exception as e:
-            logger.error(f"[StopWatchdog] {sym} repair failed: {e}")
 
     if repaired:
         logger.warning(f"[StopWatchdog] repaired {repaired} position(s) this pass")

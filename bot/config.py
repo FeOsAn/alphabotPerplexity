@@ -150,6 +150,18 @@ VOL_TARGET_ANNUAL = 0.15      # annualised vol target. v100: 0.12 -> 0.15 — hi
                               # backtests/profit_max_sweep.py. Lower = safer/less return.
 VOL_SCALAR_FLOOR = 0.30       # never cut new-entry exposure below 30% of base cap
 
+# Index/sector-ETF cluster cap (v100.6): different strategies were stacking
+# near-identical beta — on 2026-07-10 the bot held QQQ + XLK + IWM + META
+# (~24.5% of equity, pairwise corr up to ~0.9) bought the same day, which all
+# fell together on 07-13. New BUYS of index/sector ETFs are blocked once the
+# existing index/sector-ETF gross exceeds this fraction of equity. Cheap
+# structural insurance in the same spirit as the circuit breaker.
+INDEX_ETF_CLUSTER_CAP = 0.12
+INDEX_ETF_SYMBOLS = {
+    "SPY", "QQQ", "IWM", "DIA", "VTI", "VOO",
+    "XLK", "XLF", "XLE", "XLV", "XLY", "XLI", "XLP", "XLU", "XLB", "XLRE",
+}
+
 # Daily-loss circuit breaker (backtests/circuit_breaker.py): a hard SAFETY halt.
 # If the account is down more than this fraction on the day (equity vs prior
 # close), block ALL new entries for the rest of the session. Exits are never

@@ -15,39 +15,40 @@ logger = logging.getLogger("alphabot.tp_engine")
 
 # ATR multiples by strategy — how far we expect each strategy's moves to run.
 #
-# tp2 widened for TREND/MOMENTUM/catalyst strategies (backtests/exit_atr_sweep.py
-# + exit_atr_robust.py): the old tp2 of 3-4x ATR (~6-8% on mega-caps) was cutting
-# winners off early. Widening tp2 to ~5.5x ATR while KEEPING tp1 (the partial take
-# preserves first-half risk control) and the trailing ratchet is a Pareto win
-# across 2015-18 / 2019-22 / 2023-26 (Sharpe up in every window, drawdown flat-to-
-# better). Quick snap-back strategies (mean_reversion, vwap, spy_dip, vix_reversal,
-# 52wh_vol) keep their tight targets — their edge is the fast reversion, not a runner.
+# v100.6: trend/momentum-family tp2 -> 7.0x ATR, matching the tested no-trailing
+# winner (backtests/exit_atr_robust.py W3: stop~6%/tp2=7x/NO ratchet beats the
+# tight-trailing config in ALL THREE sub-periods on Sharpe AND CAGR at equal
+# MaxDD). Pairs with _ATR_RATCHET_TIERS=[] in trade_management (trailing off) —
+# see the evidence note there, incl. the live 2026-07 whipsaw week. tp1 (partial
+# take) retained for first-half risk control. Quick snap-back strategies
+# (mean_reversion, vwap, spy_dip, vix_reversal, 52wh_vol) keep tight targets —
+# their edge is the fast reversion, not a runner.
 _TP_MULTIPLES = {
     # strategy: (tp1_atr_mult, tp2_atr_mult)
-    "momentum":        (1.5, 5.0),   # trending — let the runner run (was 3.0)
-    "trend_pullback":  (1.5, 5.0),   # pullback continuation (was 3.0)
-    "multi_tf_rsi":    (1.5, 5.0),   # multi-timeframe RSI (was 3.0)
-    "breakout":        (2.0, 6.0),   # breakouts can run hard (was 4.0; measured-move still overrides)
+    "momentum":        (1.5, 7.0),   # trending — let the runner run (was 3.0)
+    "trend_pullback":  (1.5, 7.0),   # pullback continuation (was 3.0)
+    "multi_tf_rsi":    (1.5, 7.0),   # multi-timeframe RSI (was 3.0)
+    "breakout":        (2.0, 7.0),   # breakouts can run hard (was 4.0; measured-move still overrides)
     "52wh_vol":        (1.0, 2.0),   # 52wk-high breakout: quick single TP — unchanged
-    "trend_following": (2.0, 6.0),   # longest duration trades (was 5.0)
+    "trend_following": (2.0, 7.0),   # longest duration trades (was 5.0)
     "mean_reversion":  (1.0, 2.0),   # snap-back, tighter target — unchanged
     "vwap_reclaim":    (1.0, 2.0),   # intraday reclaim, quick — unchanged
     "gap_scanner":     (1.5, 3.0),   # disabled; unchanged
     "earnings_drift":  (1.5, 4.0),   # PEAD drift — let drift run (was 2.5)
     "event_driven":    (1.5, 4.0),   # catalyst drift (was 2.5)
-    "ts_momentum":     (1.5, 5.0),   # macro/sector trend (was 3.0)
+    "ts_momentum":     (1.5, 7.0),   # macro/sector trend (was 3.0)
     "squeeze_screener":(2.0, 4.0),   # disabled; unchanged
     "spy_dip":         (1.0, 2.0),   # quick dip-buy — unchanged
     "vix_reversal":    (1.0, 2.0),   # quick fear bounce — unchanged
-    "ai_research":     (1.5, 5.0),   # research-driven momentum — let winners run (was 3.0)
+    "ai_research":     (1.5, 7.0),   # research-driven momentum — let winners run (was 3.0)
     "insider_buying":  (1.5, 3.0),   # disabled; unchanged
     "options_flow":    (1.5, 3.0),   # disabled; unchanged
     "earnings_prediction": (1.5, 4.0),  # earnings catalyst drift (was 2.5)
     # earnings_nlp deprecated in v90 — dead/orphaned strategy (never dispatched,
     # superseded by earnings_prediction); config removed.
-    "conviction_long": (2.0, 6.0),   # multi-week conviction holds — wide runner (was 4.0)
-    "cs_momentum":     (1.5, 5.0),   # 12-1 cross-sectional momentum (was 3.0)
-    "quality_momentum":(2.0, 6.0),   # quality+momentum combo (was 4.0)
+    "conviction_long": (2.0, 7.0),   # multi-week conviction holds — wide runner (was 4.0)
+    "cs_momentum":     (1.5, 7.0),   # 12-1 cross-sectional momentum (was 3.0)
+    "quality_momentum":(2.0, 7.0),   # quality+momentum combo (was 4.0)
     "dual_momentum":   (3.0, 6.0),   # cross-asset dual momentum — already wide, unchanged
     "sector_rotation": (0.0, 0.0),   # no fixed TP — rotation managed separately
     "pairs_trading":   (0.0, 0.0),   # TP = z-score target, managed separately
