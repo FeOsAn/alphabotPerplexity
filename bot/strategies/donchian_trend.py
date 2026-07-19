@@ -31,7 +31,7 @@ EXIT_CHANNEL  = 20      # break below prior 20-day low to exit
 # the launch config (20n/8s) on everything — Sharpe 1.29->1.39, MaxDD -22.5%->
 # -18.7%, CAGR 19.4%->20.3%, sub-periods [1.42/1.31/1.61]. Per-slot size drops
 # 4%->3% so the sleeve cap stays ~36% of equity (12 x 3%).
-ALLOCATION_PCT = 0.03
+ALLOCATION_PCT = 0.033  # v100.9: 12 slots x 3.3% ~ 0.40 ceiling (blend-curve flat-Sharpe zone)
 MAX_POSITIONS  = 12
 
 # Full live universe (matches config.UNIVERSE) — more names = more independent
