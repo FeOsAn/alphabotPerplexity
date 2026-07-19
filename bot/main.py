@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v100.8"  # bump on every release — the startup log line is how we
+VERSION = "v100.9"  # bump on every release — the startup log line is how we
                     # verify what Railway is actually running (deployment of
                     # v100.x was unverifiable on 2026-07-08 because this said v99)
 

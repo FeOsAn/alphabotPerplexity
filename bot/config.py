@@ -70,7 +70,7 @@ MAX_SINGLE_POSITION_PCT = 0.15  # hard cap per symbol across all buys
 # Sharpe, and the vol-targeting overlay (utils/market_filter.py) now caps the
 # downside — so a lower static cash floor is safe. Raise back toward 0.15 to be
 # more conservative.
-MIN_CASH_RESERVE_PCT = 0.10
+MIN_CASH_RESERVE_PCT = 0.05  # v100.9: paired with the 0.95 cap (0.05+0.95=1.00)
 # Non-momentum strategies that lack a score-based conviction use this flat base.
 DEFAULT_STRATEGY_ALLOCATION_PCT = 0.05
 
@@ -95,7 +95,7 @@ STRATEGY_CAPITAL_LIMITS = {
                                # nothing at 20% (own Sharpe 0.86, corr 0.41). Kept as
                                # a mild diversifier at its designed ~24% deployment;
                                # the 1.00 ceiling was a vestigial risk.
-    "donchian_trend":   0.36,  # v100.2: 12 slots @ 3% (backtests/donchian_expand.py:
+    "donchian_trend":   0.40,  # v100.2: 12 slots @ 3% (backtests/donchian_expand.py:
                                # 50 names/12 slots beats launch config — Sharpe
                                # 1.29->1.39, MaxDD -22.5%->-18.7%). Blend-curve peak
                                # (~35-45% of book) unchanged from v100.1.
@@ -132,7 +132,7 @@ STRATEGY_POSITION_SIZES = {
 # level, so the cap purely trades CAGR for drawdown. 0.90 + VOL_TARGET_ANNUAL=0.15
 # is the frontier sweet spot: 16.0% CAGR (vs 12.6% at 0.80/0.12), best-in-grid
 # Sharpe 1.33, MaxDD -14.4% (SPY: -33.7%). Consistent with the 10% cash floor.
-MAX_PORTFOLIO_EXPOSURE = 0.90
+MAX_PORTFOLIO_EXPOSURE = 0.95  # v100.9 tilt: +0.5pt CAGR at flat Sharpe (backtests /tmp tilt test, grid frontier)
 
 # Partial cash-defense overlay (backtests/regime_overlay.py): when SPY < 200DMA,
 # scale the exposure cap down by this factor (0.80 → ~0.48), i.e. a ~60/40
