@@ -73,8 +73,14 @@ def _sync_exit_cooldowns(broker) -> None:
         from alpaca.trading.requests import GetOrdersRequest
         from alpaca.trading.enums import QueryOrderStatus
         from utils.cooldown import set_cooldown
-        from datetime import datetime, timezone
-        start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        from datetime import datetime, timezone, timedelta
+        # v100.8 — look back 72h, not just today: a stop fill late yesterday
+        # escaped the sweep after the midnight window rollover (the in-memory
+        # dedupe set also resets on restart), letting MS re-enter 24h after its
+        # 2026-07-13 stop-out despite the 48h cooldown. The _cooldowned_orders
+        # set keeps re-sweeps idempotent; set_cooldown re-arms from fill count
+        # not call time, so re-setting an already-set cooldown is harmless.
+        start = datetime.now(timezone.utc) - timedelta(hours=72)
         closed = broker.trading.get_orders(GetOrdersRequest(
             status=QueryOrderStatus.CLOSED, after=start, limit=200)) or []
         for o in closed:
@@ -91,11 +97,23 @@ def _sync_exit_cooldowns(broker) -> None:
             if ("stop" in otype) or (otype == "limit"):
                 _cooldowned_orders.add(oid)
                 try:
-                    set_cooldown(o.symbol)
-                    logger.info(f"[StopWatchdog] cooldown set: {o.symbol} "
-                                f"(exchange {otype} fill {oid[:8]})")
+                    # remaining cooldown counts from the FILL time, so a re-sweep
+                    # of an old fill never extends the window past fill+48h
+                    from config import SYMBOL_COOLDOWN_HOURS
+                    filled_at = getattr(o, "filled_at", None) or getattr(o, "updated_at", None)
+                    hours_left = SYMBOL_COOLDOWN_HOURS
+                    if filled_at is not None:
+                        age_h = (datetime.now(timezone.utc) - filled_at).total_seconds() / 3600.0
+                        hours_left = SYMBOL_COOLDOWN_HOURS - age_h
+                    if hours_left > 0:
+                        set_cooldown(o.symbol, hours=hours_left)
+                        logger.info(f"[StopWatchdog] cooldown set: {o.symbol} "
+                                    f"({hours_left:.0f}h left, exchange {otype} fill {oid[:8]})")
                 except Exception:
-                    pass
+                    try:
+                        set_cooldown(o.symbol)
+                    except Exception:
+                        pass
         if len(_cooldowned_orders) > 2000:   # daily ids only; keep bounded
             _cooldowned_orders.clear()
     except Exception as e:

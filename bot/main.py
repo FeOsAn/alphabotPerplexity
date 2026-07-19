@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v100.7"  # bump on every release — the startup log line is how we
+VERSION = "v100.8"  # bump on every release — the startup log line is how we
                     # verify what Railway is actually running (deployment of
                     # v100.x was unverifiable on 2026-07-08 because this said v99)
 
@@ -487,7 +487,18 @@ def _restore_state(db_conn):
 
 
 def send_daily_recap(broker: AlpacaBroker) -> bool:
-    """Send daily P&L summary to ntfy after market close."""
+    """Send daily P&L summary to ntfy after market close.
+
+    v100.8 — double-notification root cause: the legacy Perplexity EOD cron
+    (16:30 ET, per the handoff doc) AND this recap (16:35 ET) both push a daily
+    P&L summary to the same ntfy topic -> two pings/day. Preferred fix: delete
+    the Perplexity scheduled tasks (they also run stop-fixing/trading crons that
+    fight the bot). If you'd rather keep Perplexity's, set DAILY_RECAP_ENABLED=0
+    on Railway to silence this one instead.
+    """
+    if os.getenv("DAILY_RECAP_ENABLED", "1") not in ("1", "true", "True"):
+        logger.info("[Recap] DAILY_RECAP_ENABLED=0 — skipping bot-side recap")
+        return False
     try:
         account = broker.get_account()
         equity = float(account["equity"])
