@@ -45,6 +45,16 @@ from config import (
 from db import log_trade, log_signal, get_state, set_state
 
 logger = logging.getLogger("alphabot.trend_pullback")
+
+# ── New-entry kill switch (v101 — "the deletion release") ─────────────────────
+# Scorecard evidence (backtests/scorecard.py): this sleeve's entries are WORSE
+# than random-timed entries on the same universe under the same exit engine
+# (vs_base -0.10%/trade), and redundant with kept sleeves (0.67-corr twin of multi_tf_rsi, which has 5x its monthly Sharpe). Together the four culled
+# momentum sleeves generated ~750 trades/yr of ~zero-alpha churn — roughly
+# 1.5-2% of the book per year in real-world friction the backtests never
+# charged — and this strategy family is where every operational bug of July
+# 2026 lived. Exits/stops still run; flip to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
 STRATEGY_NAME = "trend_pullback"
 
 # Universe — broad liquid equities, same as momentum
@@ -261,6 +271,9 @@ def run(broker: AlpacaBroker, db_conn):
     """Main strategy entry point — called every bot cycle."""
     # ── Time-stop exits (run every cycle, independent of regime) ───────────────
     _check_time_stops(broker, db_conn)
+
+    if not ENABLE_NEW_ENTRIES:
+        return
 
     # ── Regime gate ──────────────────────────────────────────────────────────
     try:

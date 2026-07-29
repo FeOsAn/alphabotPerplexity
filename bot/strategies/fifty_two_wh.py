@@ -47,6 +47,16 @@ from db import log_trade, log_signal, get_state, set_state, get_position_state
 from utils.clock import today_utc
 
 logger = logging.getLogger("alphabot.fifty_two_wh")
+
+# ── New-entry kill switch (v101 — "the deletion release") ─────────────────────
+# Scorecard evidence (backtests/scorecard.py): this sleeve's entries are WORSE
+# than random-timed entries on the same universe under the same exit engine
+# (vs_base -0.12%/trade, standalone monthly Sharpe -0.10), and redundant with kept sleeves (donchian_trend covers 52wk-high breakouts). Together the four culled
+# momentum sleeves generated ~750 trades/yr of ~zero-alpha churn — roughly
+# 1.5-2% of the book per year in real-world friction the backtests never
+# charged — and this strategy family is where every operational bug of July
+# 2026 lived. Exits/stops still run; flip to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
 STRATEGY_NAME = "52wh_vol"
 
 FIFTY_TWO_WH_MAX_POSITIONS = 4
@@ -354,6 +364,9 @@ def run(broker: AlpacaBroker, db_conn):
 
     # Manage existing positions every cycle (independent of regime gating).
     _check_exits(broker, db_conn)
+
+    if not ENABLE_NEW_ENTRIES:
+        return
 
     # Regime gate — block new entries in chop AND bear (mirrors breakout.py).
     try:

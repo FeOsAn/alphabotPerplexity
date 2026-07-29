@@ -29,6 +29,16 @@ from config import (
 from db import log_trade, log_signal, get_state, set_state
 
 logger = logging.getLogger("alphabot.momentum")
+
+# ── New-entry kill switch (v101 — "the deletion release") ─────────────────────
+# Scorecard evidence (backtests/scorecard.py): this sleeve's entries are WORSE
+# than random-timed entries on the same universe under the same exit engine
+# (vs_base -0.13%/trade), and redundant with kept sleeves (multi_tf_rsi + donchian_trend cover trend entries). Together the four culled
+# momentum sleeves generated ~750 trades/yr of ~zero-alpha churn — roughly
+# 1.5-2% of the book per year in real-world friction the backtests never
+# charged — and this strategy family is where every operational bug of July
+# 2026 lived. Exits/stops still run; flip to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
 STRATEGY_NAME = "momentum"
 
 MOMENTUM_REBALANCE_DAYS = 5    # rebalance weekly (every 5 trading days)
@@ -315,6 +325,10 @@ def run(broker: AlpacaBroker, db_conn):
     global _last_rebalance
 
     if not _should_rebalance(db_conn):
+        _check_stops(broker, db_conn)
+        return
+
+    if not ENABLE_NEW_ENTRIES:
         _check_stops(broker, db_conn)
         return
 
