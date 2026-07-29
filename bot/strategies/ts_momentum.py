@@ -11,6 +11,11 @@ from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
+# ── New-entry kill switch (v101.1) ────────────────────────────────────────────
+# Pre-registered validation FAILED (backtests/validate_small_sleeves.py): Sharpe 0.77 but 0.76-correlated to the engine — diluted beta, not a diversifier.
+# Exits/stops still run; flip to True only with new passing evidence.
+ENABLE_NEW_ENTRIES = False
+
 # Universe — liquid macro ETFs and sector ETFs
 TS_UNIVERSE = [
     # Broad market
@@ -102,6 +107,9 @@ def run(broker, db_conn=None):
     global _last_rebalance
 
     _restore_state(broker)
+
+    if not ENABLE_NEW_ENTRIES:
+        return
 
     now = datetime.now(timezone.utc)
     month_key = now.strftime("%Y-%m")

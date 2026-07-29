@@ -28,6 +28,11 @@ from config import MIN_CASH_RESERVE_PCT
 from db import log_trade, log_signal
 
 logger = logging.getLogger("alphabot.spy_dip")
+
+# ── New-entry kill switch (v101.1) ────────────────────────────────────────────
+# Pre-registered validation FAILED (backtests/validate_small_sleeves.py): dip-waiting UNDERPERFORMS random entry on the same ETFs (+0.78%% vs +1.56%%/trade control).
+# Exits/stops still run; flip to True only with new passing evidence.
+ENABLE_NEW_ENTRIES = False
 STRATEGY_NAME = "spy_dip"
 
 STOP_LOSS_PCT   = 0.04   # 4% stop — ETFs are less volatile than single stocks
@@ -170,6 +175,10 @@ def run(broker: AlpacaBroker, db_conn):
             log_trade(db_conn, STRATEGY_NAME, sym, "sell_regime",
                       pos["qty"], pos["current_price"], pos["unrealized_pnl"])
             current_symbols.discard(sym)
+
+    if not ENABLE_NEW_ENTRIES:
+        logger.info("[SPY Dip] entries disabled (v101.1 validation fail) — exits only")
+        return
 
     # ── 2. Entry (regime-gated) ───────────────────────────────────────────────
     # v83: only enters in bull — dip-in-uptrend needs an uptrend. v90: this gate

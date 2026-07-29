@@ -55,3 +55,9 @@ IS the empirical yield estimate for this data: ~1 real edge per 4 tested, all
 of them simple. The registry + decay checks + pre-registration above capture
 the valuable 20% of that architecture at 2% of the cost. Revisit only with:
 point-in-time constituent data, intraday data, or a genuinely new asset class.
+
+## 2026-07-29 round: pre-registered small-sleeve validation (all CULLED)
+spy_dip (+0.78%/tr vs +1.56% random control — dip-waiting costs money on index
+ETFs) · sector_rotation (Sharpe 0.82 < 0.87 EW-sectors — selection worthless) ·
+ts_momentum (Sharpe 0.77, corr 0.76 — diluted engine beta). Thresholds were
+declared before running; verdicts executed without renegotiation.
