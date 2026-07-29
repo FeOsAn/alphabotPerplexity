@@ -34,6 +34,16 @@ from db import log_trade, log_signal, get_state, set_state
 from utils.clock import today_utc
 
 logger = logging.getLogger("alphabot.breakout")
+
+# ── New-entry kill switch (v101 — "the deletion release") ─────────────────────
+# Scorecard evidence (backtests/scorecard.py): this sleeve's entries are WORSE
+# than random-timed entries on the same universe under the same exit engine
+# (vs_base -0.09%/trade), and redundant with kept sleeves (0.59-corr to 52wh_vol; donchian_trend is the better breakout). Together the four culled
+# momentum sleeves generated ~750 trades/yr of ~zero-alpha churn — roughly
+# 1.5-2% of the book per year in real-world friction the backtests never
+# charged — and this strategy family is where every operational bug of July
+# 2026 lived. Exits/stops still run; flip to True to re-enable entries.
+ENABLE_NEW_ENTRIES = False
 STRATEGY_NAME = "breakout"
 
 # v71: Per-day re-entry guard. A symbol that was bought today by breakout
@@ -312,6 +322,9 @@ def run(broker: AlpacaBroker, db_conn):
     3. Enter new breakouts if capacity allows
     """
     logger.info("=== Breakout Strategy: Scanning for 52-week high breakouts ===")
+
+    if not ENABLE_NEW_ENTRIES:
+        return
 
     # v83: block in chop AND bear
     try:
