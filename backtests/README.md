@@ -319,3 +319,25 @@ Also tested in the same round, **rejected**:
   Calmar 1.04→1.23 on paper, but live it requires three channel systems sharing
   per-symbol positions — exactly the partial-position bookkeeping complexity
   that caused the 2026-07-08 stop-coverage failures. Not worth the bug class.
+
+---
+
+## 7. Survivorship test — the honest haircut (`survivorship_test.py`)
+
+Engine re-run on the largest US caps **as knowable in 2014** (incl. the era's
+future losers: GE, IBM, T, WFC, C, XOM…), identical overlay, zero hindsight:
+
+```
+                       CAGR   Sharpe  MaxDD   Calmar  2022DD
+ENGINE (2014 universe) 11.0%   1.03   -16.5%   0.66   -2.9% (2022 yr)
+SPY                    13.8%   0.84   -33.7%   0.41  -18.2% (2022 yr)
+ENGINE (hindsight ref) 17.7%   1.31   -15.9%   1.11
+```
+
+**Survivorship premium ≈ 6.7 CAGR points/yr (lower bound; delisted names
+unfetchable).** What survives without hindsight: the RISK claims — Sharpe 1.03
+vs 0.84, half the drawdown, 2022 at −2.9% vs −18.2%. What does NOT survive:
+"beats SPY on raw CAGR" — the equity engine alone lags SPY by ~3pts/yr on a
+hindsight-free universe. The diversifier sleeves (donchian/crypto/gold) are
+mechanical and universe-light, so the full stack retains a CAGR edge, but every
+absolute number in this repo should be read with this haircut in mind.
