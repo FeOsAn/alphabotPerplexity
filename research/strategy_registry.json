@@ -13,50 +13,137 @@
       "status": "VALIDATED",
       "hypothesis": "Pullbacks within confirmed uptrends (RSI40>52, price>EMA50, RSI10 turning up from 38-56) resolve upward within days.",
       "evidence": "scorecard.py 2015-2026: 3587 trades, 43% win, +0.36%/trade, PF 1.23, monthly Sharpe 0.97 (best sleeve).",
-      "expected_live": {"win_rate": [0.35, 0.52], "expectancy_pct": [0.1, 0.7], "trades_per_week": [2, 10]},
+      "expected_live": {
+        "win_rate": [
+          0.35,
+          0.52
+        ],
+        "expectancy_pct": [
+          0.1,
+          0.7
+        ],
+        "trades_per_week": [
+          2,
+          10
+        ]
+      },
       "retire_if": "60+ live trades with expectancy < 0 OR win rate < 0.30",
-      "last_validated": "2026-07-29", "revalidate_by": "2026-10-31"
+      "last_validated": "2026-07-29",
+      "revalidate_by": "2026-10-31"
     },
     "mean_reversion_rsi2": {
       "status": "VALIDATED",
       "hypothesis": "Sharp oversold snaps (RSI2<10) above the 200DMA revert to the 5DMA within days (Connors).",
       "evidence": "rsi2_validate.py: +0.35%/trade, 67% win, PF 1.35, robust 2015-18/19-22/23-26.",
-      "expected_live": {"win_rate": [0.55, 0.75], "expectancy_pct": [0.05, 0.6], "trades_per_week": [1, 12]},
+      "expected_live": {
+        "win_rate": [
+          0.55,
+          0.75
+        ],
+        "expectancy_pct": [
+          0.05,
+          0.6
+        ],
+        "trades_per_week": [
+          1,
+          12
+        ]
+      },
       "retire_if": "60+ live trades with win rate < 0.50 OR expectancy < -0.1%",
-      "last_validated": "2026-07-11", "revalidate_by": "2026-10-31"
+      "last_validated": "2026-07-11",
+      "revalidate_by": "2026-10-31"
     },
     "donchian_trend": {
       "status": "VALIDATED",
       "hypothesis": "Multi-week breakouts to 40d highs on liquid large-caps persist; exit on 20d-low break. Low win rate, fat right tail.",
       "evidence": "donchian_validate/expand: sleeve Sharpe 1.39, PF ~2, +2.3%/trade, subs [1.42/1.31/1.61].",
-      "expected_live": {"win_rate": [0.25, 0.50], "expectancy_pct": [0.5, 4.0], "trades_per_week": [0, 6]},
+      "expected_live": {
+        "win_rate": [
+          0.25,
+          0.5
+        ],
+        "expectancy_pct": [
+          0.5,
+          4.0
+        ],
+        "trades_per_week": [
+          0,
+          6
+        ]
+      },
       "retire_if": "40+ live trades with PF < 1.0; do NOT retire on win rate (structurally ~39%)",
-      "last_validated": "2026-07-25", "revalidate_by": "2026-10-31"
+      "last_validated": "2026-07-25",
+      "revalidate_by": "2026-10-31"
     },
     "crypto_trend": {
       "status": "VALIDATED_CONDITIONAL",
       "hypothesis": "BTC/ETH/SOL trend-persist above their 200DMA; being flat below avoids crypto winters. Value = 0.03 corr to equity book, not the CAGR.",
       "evidence": "crypto_sleeve/x5: +10-15% sleeve lifts book Sharpe 1.33->1.6+; 2022 exit worked. CAVEAT: asset-class inclusion is hindsight-selected; sized small deliberately.",
-      "expected_live": {"behavior": "flat when coins < 200DMA (correct all July 2026); entries only above"},
+      "expected_live": {
+        "behavior": "flat when coins < 200DMA (correct all July 2026); entries only above"
+      },
       "retire_if": "trend gate demonstrably fails twice: >15% sleeve DD while gate said long in a sustained downtrend",
-      "last_validated": "2026-07-25", "revalidate_by": "2027-01-31"
+      "last_validated": "2026-07-25",
+      "revalidate_by": "2027-01-31"
     },
     "gold_trend": {
       "status": "VALIDATED_CONDITIONAL",
       "hypothesis": "GLD above its 200DMA earns; 0.02 correlation to book makes even Sharpe 0.61 additive at 10%.",
       "evidence": "x5_sleeves grid: +10% gold lifts book Sharpe 1.70->1.81, improves 2022 flip.",
-      "expected_live": {"behavior": "single position, trend-gated; overlap-guarded vs dual_momentum GLD"},
+      "expected_live": {
+        "behavior": "single position, trend-gated; overlap-guarded vs dual_momentum GLD"
+      },
       "retire_if": "12mo live with negative contribution AND corr to book > 0.3",
-      "last_validated": "2026-07-25", "revalidate_by": "2027-01-31"
+      "last_validated": "2026-07-25",
+      "revalidate_by": "2027-01-31"
     },
-    "quality_momentum": {"status": "MARGINAL", "evidence": "exp +0.04%/trade, PF 1.03, ~baseline. Kept: low turnover (33 trades/yr), harvests beta.", "retire_if": "30+ live trades expectancy < -0.3%", "revalidate_by": "2026-10-31"},
-    "dual_momentum": {"status": "MARGINAL", "evidence": "Own Sharpe 0.86 < SPY; +0.02 book Sharpe at 10%. Ceiling right-sized to 0.25.", "retire_if": "revalidation shows book contribution < 0 two quarters running", "revalidate_by": "2026-10-31"},
-    "spy_dip": {"status": "UNVALIDATED", "evidence": "Never individually backtested (ETF dip-buy, small size). Cluster cap now bounds it.", "retire_if": "first individual backtest fails baseline", "revalidate_by": "2026-09-30"},
-    "sector_rotation": {"status": "UNVALIDATED", "evidence": "Never individually backtested. RS-upgrade test deferred.", "revalidate_by": "2026-09-30"},
-    "conviction_long": {"status": "UNVALIDATED", "evidence": "Fundamental scanner; not price-backtestable free. Judged on live fills only.", "retire_if": "20+ live closed positions with expectancy < 0", "revalidate_by": "2026-12-31"},
-    "short_hedge_vix_reversal": {"status": "STRUCTURAL", "evidence": "Defensive plumbing, sized small; judged on regime behavior not expectancy.", "revalidate_by": "2027-01-31"},
-    "ts_momentum,earnings_drift,earnings_prediction,ai_research,vwap_reclaim,event_driven": {"status": "UNVALIDATED", "evidence": "Small/external-data sleeves, never individually validated. Candidates for the next cull if live fills underperform.", "revalidate_by": "2026-09-30"},
-    "breakout,52wh_vol,momentum,trend_pullback": {"status": "RETIRED_v101", "evidence": "Entries worse than random baseline (vs_base -0.09..-0.13); ~750 trades/yr friction. Exits still managed."},
-    "gap_scanner,mean_reversion_rsi14,cs_momentum,pairs_trading,squeeze_screener,options_flow,insider_buying": {"status": "RETIRED", "evidence": "See backtests/README - no edge / unvalidatable / negative."}
+    "quality_momentum": {
+      "status": "MARGINAL",
+      "evidence": "exp +0.04%/trade, PF 1.03, ~baseline. Kept: low turnover (33 trades/yr), harvests beta.",
+      "retire_if": "30+ live trades expectancy < -0.3%",
+      "revalidate_by": "2026-10-31"
+    },
+    "dual_momentum": {
+      "status": "MARGINAL",
+      "evidence": "Own Sharpe 0.86 < SPY; +0.02 book Sharpe at 10%. Ceiling right-sized to 0.25.",
+      "retire_if": "revalidation shows book contribution < 0 two quarters running",
+      "revalidate_by": "2026-10-31"
+    },
+    "spy_dip": {
+      "status": "RETIRED_v101.1",
+      "evidence": "validate_small_sleeves: +0.78%/tr vs +1.56% random-entry control \u2014 dip filter destroys value on index ETFs."
+    },
+    "sector_rotation": {
+      "status": "RETIRED_v101.1",
+      "evidence": "validate_small_sleeves: rotation Sharpe 0.82 < equal-weight sectors 0.87 \u2014 selection adds nothing."
+    },
+    "conviction_long": {
+      "status": "UNVALIDATED",
+      "evidence": "Fundamental scanner; not price-backtestable free. Judged on live fills only.",
+      "retire_if": "20+ live closed positions with expectancy < 0",
+      "revalidate_by": "2026-12-31"
+    },
+    "short_hedge_vix_reversal": {
+      "status": "STRUCTURAL",
+      "evidence": "Defensive plumbing, sized small; judged on regime behavior not expectancy.",
+      "revalidate_by": "2027-01-31"
+    },
+    "breakout,52wh_vol,momentum,trend_pullback": {
+      "status": "RETIRED_v101",
+      "evidence": "Entries worse than random baseline (vs_base -0.09..-0.13); ~750 trades/yr friction. Exits still managed."
+    },
+    "gap_scanner,mean_reversion_rsi14,cs_momentum,pairs_trading,squeeze_screener,options_flow,insider_buying": {
+      "status": "RETIRED",
+      "evidence": "See backtests/README - no edge / unvalidatable / negative."
+    },
+    "earnings_drift,earnings_prediction,ai_research,vwap_reclaim,event_driven": {
+      "status": "UNVALIDATED",
+      "evidence": "Small/external-data sleeves, never individually validated. Candidates for the next cull if live fills underperform.",
+      "revalidate_by": "2026-09-30"
+    },
+    "ts_momentum": {
+      "status": "RETIRED_v101.1",
+      "evidence": "validate_small_sleeves: Sharpe 0.77, corr(engine) 0.76 \u2014 diluted beta, fails diversifier bar."
+    }
   }
 }

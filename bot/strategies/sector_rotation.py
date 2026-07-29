@@ -43,6 +43,11 @@ def _conviction_multiplier(momentum: float) -> float:
 from db import log_trade, log_signal, get_state, set_state
 
 logger = logging.getLogger("alphabot.sector_rotation")
+
+# ── New-entry kill switch (v101.1) ────────────────────────────────────────────
+# Pre-registered validation FAILED (backtests/validate_small_sleeves.py): 3m-momentum selection adds nothing over equal-weighting all sectors (Sharpe 0.82 vs 0.87).
+# Exits/stops still run; flip to True only with new passing evidence.
+ENABLE_NEW_ENTRIES = False
 STRATEGY_NAME = "sector_rotation"
 
 # S&P 500 sector ETFs — liquid, low spread, highly representative
@@ -232,6 +237,10 @@ def run(broker: AlpacaBroker, db_conn):
     """Run sector rotation rebalance if due."""
     if not _should_rebalance(db_conn, broker):
         # Still enforce stop losses between rebalances
+        _check_stops(broker, db_conn)
+        return
+
+    if not ENABLE_NEW_ENTRIES:
         _check_stops(broker, db_conn)
         return
 
