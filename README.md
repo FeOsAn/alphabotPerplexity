@@ -101,7 +101,9 @@ STARTUP_PING_ENABLED=1               # 0 silences the deploy proof-of-life ping
 
 ### Diagnosing notifications
 
-`GET /diag` on the Railway URL returns JSON — version, cycle age, `recap_enabled`, `recap_sent_date`, circuit-breaker state, and the resolved ntfy topic with the last send's HTTP status and error. Check it before digging through Railway logs. (`GET /` stays a bare 200/503 for Railway's healthcheck.)
+`GET /diag` on the Railway URL returns JSON — version, cycle age, `recap_enabled`, `recap_sent_date`, circuit-breaker state, and the last send's HTTP status and error. Check it before digging through Railway logs. (`GET /` stays a bare 200/503 for Railway's healthcheck.)
+
+The ntfy topic appears there only as a fingerprint (`per***at(24)`), never in full: `/diag` is served on Railway's public domain, and an ntfy topic is an unauthenticated bearer secret — anyone holding it can read your recaps and publish fake alerts. The full topic is logged at startup, where it stays private.
 
 On every deploy the bot sends a one-per-day proof-of-life ping naming the resolved topic and whether the recap is enabled. Receiving it means the channel works end to end; not receiving it means the channel — not the schedule — is the problem.
 

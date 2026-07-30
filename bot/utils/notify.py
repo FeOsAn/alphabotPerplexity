@@ -65,12 +65,29 @@ def log_config() -> None:
         logger.info("[ntfy] target resolved: server=%s topic=%s", SERVER, TOPIC)
 
 
+def _mask(topic: str) -> str:
+    """
+    Mask the topic for any output that could leave the container.
+
+    An ntfy.sh topic is an unauthenticated bearer secret: anyone who learns it
+    can both read your portfolio notifications and publish fake ones. /diag is
+    reachable on Railway's public domain, so it gets a fingerprint — enough to
+    confirm "yes, that's the topic I configured" — never the value. The full
+    topic goes to the logs, which are private.
+    """
+    if not topic:
+        return "(none)"
+    if len(topic) <= 6:
+        return f"{topic[0]}***({len(topic)})"
+    return f"{topic[:3]}***{topic[-2:]}({len(topic)})"
+
+
 def last_status() -> dict:
-    """Notification-path diagnostics for the /health endpoint."""
+    """Notification-path diagnostics for the /diag endpoint (topic masked)."""
     return {
         "configured": CONFIGURED,
         "server": SERVER,
-        "topic": TOPIC,
+        "topic_fingerprint": _mask(TOPIC),
         "last_attempt": _last_attempt_iso,
         "last_ok": _last_ok_iso,
         "last_http_status": _last_status,

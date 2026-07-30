@@ -66,7 +66,24 @@ def test_send_reports_failure_status(monkeypatch):
     st = n.last_status()
     assert st["last_http_status"] == 403
     assert "403" in st["last_error"]
-    assert st["topic"] == "t"
+    assert st["configured"] is True
+
+
+def test_diag_never_leaks_the_topic(monkeypatch):
+    """
+    /diag is reachable on Railway's public domain and an ntfy topic is an
+    unauthenticated bearer secret — publishing it would let anyone read the
+    portfolio recaps and forge alerts. Only a fingerprint may escape.
+    """
+    secret = "perplexitybotnr1foa_goat"
+    n = _reload_notify(monkeypatch, NTFY_TOPIC=secret)
+    st = n.last_status()
+    assert "topic" not in st, "raw topic key must not be served"
+    blob = repr(st)
+    assert secret not in blob, "full topic leaked into diagnostics"
+    fp = st["topic_fingerprint"]
+    assert fp.startswith("per") and fp.endswith(f"({len(secret)})")
+    assert "exitybotnr1foa" not in fp
 
 
 def test_send_success_records_ok(monkeypatch):
