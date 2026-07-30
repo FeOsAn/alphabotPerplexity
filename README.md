@@ -85,9 +85,25 @@ ALPACA_API_KEY=      # Paper account key
 ALPACA_SECRET_KEY=   # Paper account secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 PERPLEXITY_API_KEY=  # Conviction scanner research signal (dimension 4)
+
+# Notifications (v101.2)
+NTFY_TOPIC=perplexitybotnr1foa_goat  # REQUIRED — see warning below
+NTFY_URL=                            # optional; full URL, overrides NTFY_TOPIC
+DAILY_RECAP_ENABLED=1                # 0 silences the bot's EOD recap entirely
+STARTUP_PING_ENABLED=1               # 0 silences the deploy proof-of-life ping
 ```
 
 > **`PERPLEXITY_API_KEY` is currently NOT set.** Without it the conviction scanner degrades gracefully to 3-dimension scoring, substituting a quantitative proxy for the research signal. Add the key in Railway → Variables to enable full 4-dimension scoring.
+
+> **`NTFY_TOPIC` must be set.** If neither `NTFY_TOPIC` nor `NTFY_URL` is present the bot logs CRITICAL at startup and falls back to `ntfy.sh/alphabot` — a generic **public** topic that is not yours. Since v101.2 this is loud rather than silent, but it is still a misconfiguration.
+
+> **`DAILY_RECAP_ENABLED=0` produces total silence** if the legacy Perplexity EOD cron has also been deleted. That combination was the 2026-07-30 no-notifications incident: two independent fixes for the *double*-notification problem applied at once. Turn one of them back on.
+
+### Diagnosing notifications
+
+`GET /diag` on the Railway URL returns JSON — version, cycle age, `recap_enabled`, `recap_sent_date`, circuit-breaker state, and the resolved ntfy topic with the last send's HTTP status and error. Check it before digging through Railway logs. (`GET /` stays a bare 200/503 for Railway's healthcheck.)
+
+On every deploy the bot sends a one-per-day proof-of-life ping naming the resolved topic and whether the recap is enabled. Receiving it means the channel works end to end; not receiving it means the channel — not the schedule — is the problem.
 
 ---
 
