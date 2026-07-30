@@ -1,5 +1,5 @@
 """
-AlphaBot — Main entry point  (v99)
+AlphaBot — Main entry point
 Multi-factor algorithmic trading bot for Alpaca Markets
 Runs 24/7 on Railway. Handles all strategies + API server.
 """
@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v101.1"  # bump on every release — the startup log line is how we
+VERSION = "v101.2"  # bump on every release — the startup log line is how we
                     # verify what Railway is actually running (deployment of
                     # v100.x was unverifiable on 2026-07-08 because this said v99)
 
@@ -486,6 +486,11 @@ def _restore_state(db_conn):
         logger.warning(f"[State] Restore failed: {e}")
 
 
+def recap_enabled() -> bool:
+    """Is the bot-side daily recap switched on? (DAILY_RECAP_ENABLED, default on)"""
+    return os.getenv("DAILY_RECAP_ENABLED", "1") in ("1", "true", "True")
+
+
 def send_daily_recap(broker: AlpacaBroker) -> bool:
     """Send daily P&L summary to ntfy after market close.
 
@@ -495,8 +500,13 @@ def send_daily_recap(broker: AlpacaBroker) -> bool:
     the Perplexity scheduled tasks (they also run stop-fixing/trading crons that
     fight the bot). If you'd rather keep Perplexity's, set DAILY_RECAP_ENABLED=0
     on Railway to silence this one instead.
+
+    v101.2 — that kill switch is a footgun: turning it on produced total silence
+    with no signal anywhere, and the caller logged "send failed, will retry" for
+    three hours over what was a deliberate setting. Callers now check
+    recap_enabled() first, so "off" and "broken" are never confused again.
     """
-    if os.getenv("DAILY_RECAP_ENABLED", "1") not in ("1", "true", "True"):
+    if not recap_enabled():
         logger.info("[Recap] DAILY_RECAP_ENABLED=0 — skipping bot-side recap")
         return False
     try:
@@ -684,14 +694,18 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
         # ── Daily P&L recap: 20:00–22:59 UTC (9 PM–midnight BST), weekdays only ─
         # Fires after market close (4 PM ET = 9 PM BST = 20:00 UTC).
         if (now_utc.hour in (20, 21, 22)
-                and weekday < 5 and _recap_sent_date != today_utc):
+                and weekday < 5 and _recap_sent_date != today_utc
+                and recap_enabled()):
             try:
                 success = send_daily_recap(broker)
                 if success:
                     _recap_sent_date = today_utc
                     _persist_daily_state(db_conn)
                 else:
-                    logger.warning("[Recap] Send failed — will retry next cycle")
+                    logger.warning(
+                        "[Recap] Send FAILED (ntfy target %s) — will retry next cycle",
+                        notify.last_status(),
+                    )
             except Exception as e:
                 logger.error(f"[Recap] Outer failure: {e}")
 
@@ -1095,6 +1109,28 @@ def start_health_server():
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
+            # /diag — JSON diagnostics (v101.2). "/" stays a bare 200/503 because
+            # Railway's healthcheck reads it; do not change its semantics.
+            # Exists because the 2026-07-30 silent-notification outage could not
+            # be diagnosed from outside: whether the recap was disabled, pointed
+            # at the wrong topic, or erroring was invisible without Railway logs.
+            if self.path.rstrip("/") in ("/diag", "/status"):
+                import json as _json
+                body = _json.dumps({
+                    "version": VERSION,
+                    "last_cycle_age_sec": (None if _last_cycle_ts == 0.0
+                                           else round(time.time() - _last_cycle_ts, 1)),
+                    "recap_enabled": recap_enabled(),
+                    "recap_sent_date": _recap_sent_date,
+                    "circuit_breaker_active": _circuit_breaker_active,
+                    "ntfy": notify.last_status(),
+                }, indent=2).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             # Before the first cycle has run, _last_cycle_ts is 0.0 — treat as
             # healthy during the startup grace window so Railway doesn't kill
             # the container before strategies have had a chance to fire.
@@ -1142,6 +1178,33 @@ def _scheduled_recap(broker: AlpacaBroker, db_conn):
         logger.error(f"[Recap] Scheduled fire error: {e}")
 
 
+def _startup_ping_once(db_conn):
+    """
+    Prove the notification channel on every deploy — at most once per day.
+
+    v101.2. The 2026-07-30 outage looked identical from the user's side whether
+    the bot was dead, disabled, or publishing to the wrong topic. This ping
+    collapses that ambiguity: receive it and the channel works end to end;
+    don't and the channel is the problem. Throttled via bot_state so Railway's
+    restart-on-crash policy can't turn it into a notification storm.
+    """
+    if os.getenv("STARTUP_PING_ENABLED", "1") not in ("1", "true", "True"):
+        return
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        stamp = f"{today}:{VERSION}"
+        if get_state(db_conn, "startup_ping_stamp") == stamp:
+            logger.info("[Startup] ping already sent for %s — suppressed", stamp)
+            return
+        if notify.startup_ping(VERSION, recap_enabled()):
+            set_state(db_conn, "startup_ping_stamp", stamp)
+            logger.info("[Startup] ntfy proof-of-life sent (topic=%s)", notify.TOPIC)
+        else:
+            logger.error("[Startup] ntfy proof-of-life FAILED — %s", notify.last_status())
+    except Exception as e:
+        logger.error(f"[Startup] ping error: {e}")
+
+
 def _bracket_heartbeat(broker: AlpacaBroker):
     """
     Periodic safety net: re-run migrate_missing_brackets() during market hours
@@ -1166,6 +1229,8 @@ def main():
     from utils.clock import log_timestamp, now_et, market_open_et, minutes_to_close
     logger.info(f"=== AlphaBot Starting ({VERSION}) ===")
     logger.info(f"[Clock] {log_timestamp()} | Market open: {market_open_et()} | Mins to close: {minutes_to_close()}")
+    notify.log_config()
+    logger.info(f"[Config] daily recap {'ENABLED' if recap_enabled() else 'DISABLED (DAILY_RECAP_ENABLED=0)'}")
 
     start_health_server()  # Must bind to $PORT or Railway kills the container
 
@@ -1192,6 +1257,9 @@ def main():
 
     # Restore circuit breaker + daily one-shot dates from bot_state (H2 + M22)
     _restore_state(db_conn)
+
+    # Prove the ntfy channel on deploy (v101.2) — see _startup_ping_once
+    _startup_ping_once(db_conn)
 
     # Hydrate trailing-stop / ratchet / partial-taken state from DB (H4)
     try:
