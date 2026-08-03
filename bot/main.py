@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v101.2"  # bump on every release — the startup log line is how we
+VERSION = "v101.3"  # bump on every release — the startup log line is how we
                     # verify what Railway is actually running (deployment of
                     # v100.x was unverifiable on 2026-07-08 because this said v99)
 
@@ -1205,6 +1205,38 @@ def _startup_ping_once(db_conn):
         logger.error(f"[Startup] ping error: {e}")
 
 
+def _fatal_startup(reason: str, detail: str = "") -> None:
+    """
+    Page the user, then die.
+
+    v101.3. v101.2 added a deploy proof-of-life ping to make silent failures
+    visible — but placed it *after* both fatal startup gates, so the most likely
+    crash cause (bad or rotated Alpaca credentials on Railway) exited before the
+    ping could fire. Railway then restarts, fails identically, and gives up after
+    restartPolicyMaxRetries: a dead bot, unmanaged positions, and total silence.
+    That is exactly what happened over the 2026-08-01 weekend.
+
+    Fatal startup failures now push before exiting. Deliberately NOT throttled
+    across restarts: there is no durable state this early (the credential gate
+    runs before init_db), and a trading bot that cannot start is worth the
+    repeats — Railway caps them at restartPolicyMaxRetries anyway. The alert is
+    best-effort and never masks the original failure.
+    """
+    logger.error("[Startup] FATAL: %s %s", reason, detail)
+    try:
+        notify.send(
+            title="🚨 AlphaBot FAILED TO START",
+            body=(f"{reason}\n{detail[:200]}\n\n"
+                  f"Version {VERSION}. The bot is NOT running — positions are "
+                  f"unmanaged (no stop repair, no exits) until this is fixed."),
+            priority="urgent",
+            tags="rotating_light",
+        )
+    except Exception as e:                      # never mask the real failure
+        logger.error("[Startup] fatal-alert push failed: %s", e)
+    sys.exit(1)
+
+
 def _bracket_heartbeat(broker: AlpacaBroker):
     """
     Periodic safety net: re-run migrate_missing_brackets() during market hours
@@ -1235,8 +1267,8 @@ def main():
     start_health_server()  # Must bind to $PORT or Railway kills the container
 
     if ALPACA_API_KEY == "YOUR_API_KEY_HERE":
-        logger.error("API keys not configured!")
-        sys.exit(1)
+        _fatal_startup("Alpaca API keys are not configured on Railway.",
+                       "ALPACA_API_KEY is still the placeholder value.")
 
     init_db()
     db_conn = get_connection()
@@ -1247,8 +1279,9 @@ def main():
     try:
         acct = broker.get_account()
     except Exception as e:
-        logger.error(f"[Startup] Alpaca connectivity check failed: {e}", exc_info=True)
-        sys.exit(1)
+        logger.error("[Startup] Alpaca connectivity check failed", exc_info=True)
+        _fatal_startup("Alpaca rejected the credentials or is unreachable.",
+                       f"{type(e).__name__}: {e}")
     logger.info(f"Connected | Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f}")
 
     # Restore strategy tags from DB so positions aren't labelled 'unknown' after restart

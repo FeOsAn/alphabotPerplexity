@@ -124,3 +124,60 @@ def test_startup_ping_states_recap_status(monkeypatch):
     assert "DISABLED" in bodies[-1]["message"]
     n.startup_ping("v101.2", recap_enabled=True)
     assert "ENABLED" in bodies[-1]["message"]
+
+
+# ── fatal-startup paging (v101.3) ────────────────────────────────────────────
+# v101.2 put the deploy proof-of-life ping AFTER both fatal startup gates, so a
+# bad-credentials exit was completely silent — the exact failure that left the
+# bot dead and unnoticed over the 2026-08-01 weekend. These pin the fix.
+
+def _import_main(monkeypatch):
+    monkeypatch.setenv("NTFY_TOPIC", "t")
+    monkeypatch.setenv("ALPACA_API_KEY", "dummy")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "dummy")
+    import importlib
+    return importlib.import_module("main")
+
+
+def test_fatal_startup_pages_then_exits(monkeypatch):
+    import pytest
+    m = _import_main(monkeypatch)
+    sent = []
+    monkeypatch.setattr(m.notify, "send",
+                        lambda **kw: (sent.append(kw), True)[1])
+    with pytest.raises(SystemExit) as ex:
+        m._fatal_startup("creds bad", "Unauthorized")
+    assert ex.value.code == 1
+    assert len(sent) == 1, "a fatal startup must push before exiting"
+    assert sent[0]["priority"] == "urgent"
+    assert "creds bad" in sent[0]["body"]
+    assert "not running" in sent[0]["body"].lower()
+
+
+def test_fatal_startup_exits_even_if_push_fails(monkeypatch):
+    """The alert is best-effort — it must never mask the real failure."""
+    import pytest
+    m = _import_main(monkeypatch)
+
+    def boom(**kw):
+        raise RuntimeError("ntfy down")
+
+    monkeypatch.setattr(m.notify, "send", boom)
+    with pytest.raises(SystemExit):
+        m._fatal_startup("creds bad", "Unauthorized")
+
+
+def test_startup_gates_do_not_exit_silently():
+    """
+    Source guard: every sys.exit in main()'s startup sequence must go through
+    _fatal_startup, which pages first. A bare sys.exit there is the regression.
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / "bot" / "main.py").read_text()
+    body = src[src.index("def main():"):]
+    head = body[:body.index("logger.info(f\"Connected")]
+    assert "sys.exit(" not in head, (
+        "bare sys.exit in the startup gates — use _fatal_startup so the "
+        "failure is announced instead of silent"
+    )
