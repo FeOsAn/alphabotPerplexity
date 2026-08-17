@@ -4,7 +4,7 @@
     "expected": {
       "daily_sharpe_1y_min": 0.6,
       "max_drawdown_alert": -0.12,
-      "notes": "Modeled stack ~Sharpe 1.9 hindsight / ~1.2-1.4 survivorship-adjusted; alert if trailing-6m realized Sharpe < 0.3 or DD exceeds -12% (vol-targeting should prevent)."
+      "notes": "Modeled stack ~Sharpe 1.9 hindsight / ~1.2-1.4 survivorship-adjusted; alert if trailing-6m realized Sharpe < 0.3 or DD exceeds -12% (vol-targeting should prevent). 2026-08-17: live gross must be reconciled vs modeled deployment weekly \u2014 42% vs 95% cap ran undetected Jun-Aug 2026."
     },
     "retire_if": "n/a - book level; escalate to full revalidation instead"
   },
@@ -28,7 +28,7 @@
         ]
       },
       "retire_if": "60+ live trades with expectancy < 0 OR win rate < 0.30",
-      "last_validated": "2026-07-29",
+      "last_validated": "2026-08-17",
       "revalidate_by": "2026-10-31"
     },
     "mean_reversion_rsi2": {
@@ -50,13 +50,13 @@
         ]
       },
       "retire_if": "60+ live trades with win rate < 0.50 OR expectancy < -0.1%",
-      "last_validated": "2026-07-11",
+      "last_validated": "2026-08-17",
       "revalidate_by": "2026-10-31"
     },
     "donchian_trend": {
       "status": "VALIDATED",
       "hypothesis": "Multi-week breakouts to 40d highs on liquid large-caps persist; exit on 20d-low break. Low win rate, fat right tail.",
-      "evidence": "donchian_validate/expand: sleeve Sharpe 1.39, PF ~2, +2.3%/trade, subs [1.42/1.31/1.61].",
+      "evidence": "donchian_validate/expand: sleeve Sharpe 1.39, PF ~2, +2.3%/trade, subs [1.42/1.31/1.61]. v101.4: unvalidated chop/transition regime gate removed (donchian_gate_test: gate costs Sharpe 1.28->1.05); stack refresh through 2026-08-14 12m-Sharpe 1.56.",
       "expected_live": {
         "win_rate": [
           0.25,
@@ -72,7 +72,7 @@
         ]
       },
       "retire_if": "40+ live trades with PF < 1.0; do NOT retire on win rate (structurally ~39%)",
-      "last_validated": "2026-07-25",
+      "last_validated": "2026-08-17",
       "revalidate_by": "2026-10-31"
     },
     "crypto_trend": {

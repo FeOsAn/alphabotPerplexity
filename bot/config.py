@@ -115,13 +115,18 @@ STRATEGY_POSITION_SIZES = {
     "cs_momentum":      0.085,   # was 0.12 — Kelly says smaller, higher conviction
     "quality_momentum": 0.060,   # was 0.13
     "dual_momentum":    0.120,   # was 0.33 — BIGGEST CHANGE: was taking 99% of portfolio
-    "mean_reversion":   0.025,   # was 0.06
+    "mean_reversion":   0.035,   # v101.4: 0.025 -> 0.035. The validated stack models
+                                 # the equity engine at 45% of book; live gross ran
+                                 # ~42% TOTAL. aug2026_round T3a: half-gross = half
+                                 # CAGR at identical Sharpe — cash drag, not safety.
     "breakout":         0.080,   # unchanged
     "trend_pullback":   0.030,   # was 0.08
     "short_hedge":      0.030,   # was 0.06
     "52wh_vol":         0.080,   # unchanged
     "vwap_reclaim":     0.040,   # was 0.06 (estimate)
-    "multi_tf_rsi":     0.040,   # was 0.06 (estimate)
+    "multi_tf_rsi":     0.055,   # v101.4: 0.040 -> 0.055 (same evidence as
+                                 # mean_reversion above; best-validated equity sleeve,
+                                 # monthly Sharpe 0.97 — size toward modeled weight)
     "conviction_long":  0.120,   # unchanged
     "spy_dip":          0.040,   # estimate
     "earnings_drift":   0.040,   # estimate

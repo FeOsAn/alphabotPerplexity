@@ -22,7 +22,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime, timezone
 import pytz
 
-VERSION = "v101.3"  # bump on every release — the startup log line is how we
+VERSION = "v101.4"  # bump on every release — the startup log line is how we
                     # verify what Railway is actually running (deployment of
                     # v100.x was unverifiable on 2026-07-08 because this said v99)
 
@@ -932,7 +932,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 # TRANSITION regime_weight=0.0.
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
-                (donchian_trend.run,    "Donchian trend"),   # exits only (weight 0)
+                (donchian_trend.run,    "Donchian trend"),   # v101.4: entries ON (gate tested negative)
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (trend_pullback.run,    "Trend pullback"),
@@ -957,7 +957,7 @@ def run_all_strategies(broker: AlpacaBroker, db_conn):
                 # Below handle exits only — self-skip new entries via regime_weight=0.0
                 (momentum.run,          "Momentum"),
                 (breakout.run,          "Breakout"),
-                (donchian_trend.run,    "Donchian trend"),   # exits only (weight 0)
+                (donchian_trend.run,    "Donchian trend"),   # v101.4: entries ON (gate tested negative)
                 (trend_following.run,   "Trend following"),
                 (sector_rotation.run,   "Sector rotation"),
                 (spy_dip.run,           "SPY dip"),

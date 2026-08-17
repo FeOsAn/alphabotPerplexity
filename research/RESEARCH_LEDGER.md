@@ -56,6 +56,21 @@ of them simple. The registry + decay checks + pre-registration above capture
 the valuable 20% of that architecture at 2% of the cost. Revisit only with:
 point-in-time constituent data, intraday data, or a genuinely new asset class.
 
+## 2026-08-17 round: cash-drag attribution + donchian chop gate (aug2026_round, donchian_gate_test)
+Live book ran ~42% gross vs 95% cap since the culls. T1: shipped stack refreshed
+through 2026-08-14 — 12m Sharpe 1.56, PASS. T2: weight grid ±10 — best neighbor
++0.04 Sharpe, KEEP 45/30/15/10. T3: half-gross = half CAGR (22.4%→9.7%) at
+IDENTICAL Sharpe — the gap is pure cash drag. Attribution: crypto+gold correctly
+flat (all four assets < 200DMA); 30/50 names in donchian long-state yet sleeve
+under-filled. Root cause: donchian regime weight 0.0 in CHOPPY/TRANSITION — an
+UNVALIDATED gate on a sleeve validated gateless. Tested: gate costs Sharpe
+1.28→1.05, CAGR 17→12% (Jun–Aug26: +2.3% vs +9.7%). SHIPPED: gate removed
+(bear gates kept — untested removal); multi_tf_rsi 0.040→0.055,
+mean_reversion 0.025→0.035 (size toward the modeled 45% engine weight).
+LESSON (standing): per-sleeve validation without an aggregate deployment check
+let the book run at half its validated gross for two months. Weekly recon now
+compares live gross vs modeled.
+
 ## 2026-07-29 round: pre-registered small-sleeve validation (all CULLED)
 spy_dip (+0.78%/tr vs +1.56% random control — dip-waiting costs money on index
 ETFs) · sector_rotation (Sharpe 0.82 < 0.87 EW-sectors — selection worthless) ·
