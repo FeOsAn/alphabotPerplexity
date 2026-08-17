@@ -61,7 +61,12 @@ REGIME_WEIGHTS = {
         "short_hedge":    0.5,
         "multi_tf_rsi":   0.8,   # I: positive in chop (+0.49%), run at 0.8×
         "52wh_vol":       0.5,   # v87: chop = half weight (fewer clean breakouts)
-        "donchian_trend": 0.0,   # v100: trend-following bleeds in chop — exits only
+        "donchian_trend": 1.0,   # v101.4: the chop gate was never validated — the
+                                 # sleeve's Sharpe 1.39 (subs 1.42/1.31/1.61) was
+                                 # earned WITHOUT it. Tested (donchian_gate_test):
+                                 # gating entries on sideways tape costs Sharpe
+                                 # 1.28->1.05, CAGR 17->12%; the 20d-low exit is
+                                 # the sleeve's own chop defense. Bear gates kept.
     },
     "BEAR_MILD": {
         "momentum":       0.0,   # was 0.3 — no longs in bear
@@ -117,7 +122,9 @@ REGIME_WEIGHTS = {
         "gap_scanner":     0.0,
         "earnings_drift":  0.0,
         "conviction_long": 0.0,
-        "donchian_trend":  0.0,   # v100: trend breakout blocked in transition
+        "donchian_trend":  1.0,   # v101.4: same evidence as CHOPPY — sideways-tape
+                                  # entry blocking tests negative (donchian_gate_test);
+                                  # live sideways maps to CHOPPY or TRANSITION
         # defensive / counter-trend — reduced
         "mean_reversion":  0.75,
         "vwap_reclaim":    0.75,
