@@ -56,6 +56,18 @@ of them simple. The registry + decay checks + pre-registration above capture
 the valuable 20% of that architecture at 2% of the cost. Revisit only with:
 point-in-time constituent data, intraday data, or a genuinely new asset class.
 
+## 2026-08-25 round: bear gate + regime sweep + unvalidated-sleeve caps (donchian_bear_gate)
+Book -2.1% Aug3-25 vs SPY +1.1% — negative alpha, not beta. Donchian ruled OUT:
+reconstruction shows 12/12 slots since Aug 17, +0.59pts contribution. Bear gate
+tested per the symmetric pre-reg rule: gated Sharpe 0.94 vs 1.29 AND worse MaxDD
+— removed (BEAR_MILD/STRONG 0->1.0); regime-flip force-sweep also removed from
+compat (the validated sleeve's only exit is the 20d-low; v101.4 briefly had
+transition entries on while transition flips swept them). Donchian is now fully
+gateless = its validated config. RISK ALIGNMENT (explicitly NOT backtest-derived
+— these sleeves are price-unvalidatable): conviction_long ceiling 0.60->0.25,
+ai_research 0.20->0.10, default 0.15->0.08 pending the 2026-09-30 fill review.
+Crypto sleeve flipped LONG ~mid-Aug (BTC/ETH/SOL crossed above 200DMA) — in-design.
+
 ## 2026-08-17 round: cash-drag attribution + donchian chop gate (aug2026_round, donchian_gate_test)
 Live book ran ~42% gross vs 95% cap since the culls. T1: shipped stack refreshed
 through 2026-08-14 — 12m Sharpe 1.56, PASS. T2: weight grid ±10 — best neighbor
