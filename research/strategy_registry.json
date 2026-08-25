@@ -56,7 +56,7 @@
     "donchian_trend": {
       "status": "VALIDATED",
       "hypothesis": "Multi-week breakouts to 40d highs on liquid large-caps persist; exit on 20d-low break. Low win rate, fat right tail.",
-      "evidence": "donchian_validate/expand: sleeve Sharpe 1.39, PF ~2, +2.3%/trade, subs [1.42/1.31/1.61]. v101.4: unvalidated chop/transition regime gate removed (donchian_gate_test: gate costs Sharpe 1.28->1.05); stack refresh through 2026-08-14 12m-Sharpe 1.56.",
+      "evidence": "donchian_validate/expand: sleeve Sharpe 1.39, PF ~2, +2.3%/trade, subs [1.42/1.31/1.61]. v101.4: unvalidated chop/transition regime gate removed (donchian_gate_test: gate costs Sharpe 1.28->1.05); stack refresh through 2026-08-14 12m-Sharpe 1.56. v101.5: bear gate + regime-flip sweep removed (donchian_bear_gate: gated Sh 0.94 vs 1.29, worse DD) \u2014 sleeve now fully gateless, matching validation.",
       "expected_live": {
         "win_rate": [
           0.25,
@@ -119,7 +119,7 @@
     },
     "conviction_long": {
       "status": "UNVALIDATED",
-      "evidence": "Fundamental scanner; not price-backtestable free. Judged on live fills only.",
+      "evidence": "Fundamental scanner; not price-backtestable free. Judged on live fills only. v101.5: ceiling 0.60->0.25 pending fill review.",
       "retire_if": "20+ live closed positions with expectancy < 0",
       "revalidate_by": "2026-12-31"
     },

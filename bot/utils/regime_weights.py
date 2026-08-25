@@ -66,7 +66,8 @@ REGIME_WEIGHTS = {
                                  # earned WITHOUT it. Tested (donchian_gate_test):
                                  # gating entries on sideways tape costs Sharpe
                                  # 1.28->1.05, CAGR 17->12%; the 20d-low exit is
-                                 # the sleeve's own chop defense. Bear gates kept.
+                                 # the sleeve's own chop defense. (Bear gates were
+                                 # kept here, then also removed in v101.5 on test.)
     },
     "BEAR_MILD": {
         "momentum":       0.0,   # was 0.3 — no longs in bear
@@ -83,7 +84,11 @@ REGIME_WEIGHTS = {
         "trend_pullback": 0.8,   # short-side entries only, internally gated
         "multi_tf_rsi":   1.3,   # best regime: +0.91% avg/trade, short-heavy
         "52wh_vol":       0.0,   # v87: no longs in bear
-        "donchian_trend": 0.0,   # v100: no longs in bear — exits only
+        "donchian_trend": 1.0,   # v101.5: bear gate tested (donchian_bear_gate):
+                                 # gated Sharpe 0.94 vs 1.29 ungated AND worse
+                                 # MaxDD (-19.9 vs -18.4) — blocked re-entries
+                                 # can't rebuild in recoveries. Sleeve validated
+                                 # gateless; book-level overlay is the bear brake.
     },
     "BEAR_STRONG": {
         "momentum":       0.0,
@@ -100,7 +105,7 @@ REGIME_WEIGHTS = {
         "trend_pullback": 0.6,   # short-side only, conservative
         "multi_tf_rsi":   1.5,   # maximum authority in strong bear
         "52wh_vol":       0.0,   # v87: no longs in bear
-        "donchian_trend": 0.0,   # v100: no longs in strong bear — exits only
+        "donchian_trend": 1.0,   # v101.5: same evidence (donchian_bear_gate)
     },
     # v95 — composite-score "transition" regime (score 40–70). Momentum/trend
     # strategies are fully blocked; defensive/counter-trend run at 0.75×;
@@ -173,7 +178,10 @@ STRATEGY_REGIME_COMPAT = {
     "cs_momentum":      ["bull"],                  # pure 12-1 momentum, bull only
     "quality_momentum": ["bull", "chop"],          # quality tilt survives chop
     "dual_momentum":    ["bull", "chop", "bear", "transition"],  # rotates to GLD, all regimes
-    "donchian_trend":   ["bull", "chop"],          # v100: turtle breakout — swept on bear/transition
+    "donchian_trend":   ["bull", "chop", "bear", "transition"],  # v101.5: regime sweep
+                        # removed — the validated sleeve's ONLY exit is the 20d-low;
+                        # force-closing on flips was never in any backtest (and
+                        # v101.4 had entries on in transition while flips swept them)
     "crypto_trend":     ["bull", "chop", "bear", "transition"],  # v100.2: own 200DMA gate; equity regime irrelevant
     "gold_trend":       ["bull", "chop", "bear", "transition"],  # v100.3: own 200DMA gate; defensive in equity bear
     # v100.7 — gaps found by tests/test_config_invariants.py: these dispatched

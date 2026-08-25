@@ -81,13 +81,17 @@ MAX_GROSS_EXPOSURE_PCT = 1.5
 # Per-strategy capital ceiling — keep one strategy from starving the rest.
 STRATEGY_CAPITAL_LIMITS = {
     "momentum":         0.30,
-    "ai_research":      0.20,
+    "ai_research":      0.10,  # v101.5: UNVALIDATED (fill review 2026-09-30) — halved pending evidence
     "sector_rotation":  0.25,
     "breakout":         0.20,
     "ts_momentum":      0.20,
     "trend_following":  0.15,
     "pairs_trading":    0.15,
-    "conviction_long":  0.60,  # 2–4 multi-week holds @ ~12% equity each
+    "conviction_long":  0.25,  # v101.5: 0.60 -> 0.25. UNVALIDATED sleeve (registry:
+                               # judged on live fills only, review 2026-09-30) held
+                               # the largest ceiling in the book while Aug ran -2.1%
+                               # vs SPY +1.1%. Ceilings now track validation status;
+                               # restore only after the fill review passes.
     "cs_momentum":      0.65,  # 6 holds @ 10% equity each (~60% deployment)
     "quality_momentum": 0.70,  # 8 holds @ 8% equity each (~64% deployment)
     "dual_momentum":    0.25,  # v100.5: right-sized from 1.00. Marginal-value test:
@@ -105,7 +109,7 @@ STRATEGY_CAPITAL_LIMITS = {
     "gold_trend":       0.10,  # v100.3: GLD 200DMA sleeve. Weak alone (Sharpe 0.61)
                                # but corr 0.02 — grid shows +10% gold lifts book
                                # Sharpe 1.70->1.81 and improves the 2022 flip.
-    "default":          0.15,  # all other strategies
+    "default":          0.08,  # v101.5: 0.15 -> 0.08 — the default bucket is all unvalidated scanners
 }
 
 # Kelly-derived sizing from 4yr backtest (1,875 combinations). Dual momentum reduced from 99% to 24% — biggest improvement.
